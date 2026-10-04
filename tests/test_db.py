@@ -1277,3 +1277,24 @@ def test_a_verified_backup_leaves_the_newest_three(dbpath):
     assert len(ours) == 3 and ours[:2] == old[2:]
     assert ours[2] == Path(d.migration["backup"]).name
     assert (bdir / "notes.txt").exists() and (bdir / "other-20260101T000000Z-x.sqlite").exists()
+
+
+def test_an_existing_database_gains_the_new_video_detail_unknown(tmp_path):
+    """A v1 database made before the detail columns existed upgrades on open;
+    the video's detail reads as unknown: no topics, no people, perspective
+    NULL (coding.md, "Storage and migrations": NULL is the honest history;
+    docs/design/storage-schema.md, "Migrations"). Moved from ytlm's
+    tests/test_digest.py (nagarkar/ytlm#50)."""
+    path = tmp_path / "transcript.sqlite"
+    conn = sqlite3.connect(path)
+    conn.executescript(SCHEMA_V1.read_text())
+    for column in ("topics", "people", "perspective"):
+        conn.execute(f"ALTER TABLE videos DROP COLUMN {column}")
+    conn.execute(
+        "INSERT INTO videos (id, created_at, created_by, schema_version, url) "
+        "VALUES ('x', '2026-09-01T00:00:00Z', 'cli', '1', 'u')"
+    )
+    conn.commit()
+    conn.close()
+    video = Store(db.Database(path)).video("x")
+    assert (video["topics"], video["people"], video["perspective"]) == ([], [], None)
