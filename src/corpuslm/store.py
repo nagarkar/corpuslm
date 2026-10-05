@@ -303,6 +303,58 @@ class Store:
         )
         return [self._corpus_row(r["id"]) for r in rows]
 
+    def merge_corpora(self, into_id: str, from_ids: Sequence[str], *, created_by: str) -> dict:
+        """Fold corpora into `into_id` in one transaction. Each membership
+        moves to the target, marked `merged_from` in its metadata (a video
+        already there keeps the target's row; the folded one is dropped).
+        Each folded corpus, whole (row, lists, members), is appended to the
+        target's `metadata.merged_from`, which the change log records; then
+        its corpus-level artifacts (derived), lists and row are deleted."""
+        if into_id in from_ids:
+            raise ValueError("a corpus is not merged into itself")
+        moved = already = 0
+        removed = []
+        with self.db.transaction():
+            target = self._corpus_row(into_id)
+            record = loads(target["metadata"], {})
+            kept = list(record.get("merged_from") or [])
+            for cid in from_ids:
+                corpus = self._corpus_row(cid)
+                members = [
+                    dict(r)
+                    for r in self.db.all(
+                        "SELECT id, video_id, reason, created_at, created_by, metadata "
+                        "FROM corpus_members WHERE corpus_id = ? ORDER BY created_at, rowid",
+                        (cid,),
+                    )
+                ]
+                snapshot = dict(corpus) | {
+                    "metadata": loads(corpus["metadata"], {}),
+                    "members": [m | {"metadata": loads(m["metadata"], {})} for m in members],
+                    "merged_at": now_iso(),
+                    "merged_by": created_by,
+                }
+                kept.append(snapshot)
+                for m in members:
+                    if self.is_member(into_id, m["video_id"]):
+                        self.db.execute("DELETE FROM corpus_members WHERE id = ?", (m["id"],))
+                        already += 1
+                        continue
+                    meta = loads(m["metadata"], {}) | {"merged_from": cid}
+                    self.db.update(
+                        "corpus_members",
+                        m["id"],
+                        {"corpus_id": into_id, "metadata": json.dumps(meta, sort_keys=True)},
+                    )
+                    moved += 1
+                self.db.execute("DELETE FROM artifacts WHERE corpus_id = ?", (cid,))
+                for table, _ in CORPUS_LISTS.values():
+                    self.db.execute(f"DELETE FROM {table} WHERE corpus_id = ?", (cid,))
+                self.db.execute("DELETE FROM corpora WHERE id = ?", (cid,))
+                removed.append(corpus["name"])
+            self.set_corpus_metadata(into_id, record | {"merged_from": kept})
+        return {"moved": moved, "already_members": already, "removed": removed}
+
     # ---- fetch attempts (evidence, append-only) ---------------------------------
 
     def append_fetch_attempt(
