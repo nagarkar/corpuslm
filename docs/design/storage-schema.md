@@ -333,6 +333,12 @@ History: master.
 | video_id | TEXT | no | the video; unique with corpus_id |
 | reason | TEXT | no | one of `author`, `discovered`, `consumer` |
 
+A merge (`Store.merge_corpora`) moves a membership by changing its `corpus_id` and
+setting `metadata.merged_from` to the folded corpus's id, so the change log records the
+move. The folded corpus's row, lists and members, whole, are appended to the target
+corpus's `metadata.merged_from` before the folded rows are deleted: nothing a corpus
+held is lost with its row.
+
 ### `fetch_attempts`
 
 History: append-only.
@@ -536,6 +542,7 @@ segment changed, so it carries the previous hash):
 
 ## Changes
 
+- 2026-10-05: Corpora merge: `Store.merge_corpora` folds corpora into one in a transaction; each folded corpus is kept whole in the target's `metadata.merged_from` (nagarkar/ytlm#21)
 - 2026-10-03: Written: the Repository, STRICT/CHECK/FOREIGN KEY, lists as rows, explicit segment column names, derived membership status, history per kind (change log by trigger, append-only decisions), verdict content hashes with lineage, the `runs` table, user_version migrations with a verified backup under `<workspace>/backups/`, and the state-file tables, metalm conformance (#23)
 - 2026-10-03: Owner rulings: verdict lookup stays key + span (documented exception); backups keep the newest three, older ones deleted after a verified new backup (#23).
 - 2026-10-03: Every whole-file write (state files, `tabs.json`, vault notes, `.env`, the manuscript files and `toc.toml` ytlm writes for authorlm, the Docs write record) goes through `paths.write_atomic`; the `tabs.json` gap is closed, metalm conformance (#23)
