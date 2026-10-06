@@ -131,3 +131,29 @@ def test_a_corpus_is_not_merged_into_itself(store):
     with pytest.raises(ValueError, match="into itself"):
         store.merge_corpora(a, [a], created_by="cli")
     assert store.corpus(a) is not None
+
+
+def test_dropping_a_videos_transcript_rows_empties_its_segments_index_and_named_artifacts(store):
+    """The derived state of one video goes whole (ytlm `video drop-transcript`):
+    its segments and their FTS5 rows (the segments_ad trigger), and the
+    artifact rows of the nodes named; another video's rows and the nodes not
+    named are left alone."""
+    other = "vidBBBBBBB2"
+    for vid in (VID, other):
+        store.add_video(vid, "u", created_by="cli")
+        store.replace_segments(vid, [{"idx": 0, "t0": 0.0, "t1": 1.0, "text": "namaste dharma"}])
+        for node in ("metadata", "captions", "pass3"):
+            store.record_artifact(
+                vid, node, path=f"videos/{vid}/{node}", sha256="a" * 64, state="built",
+                inputs={}, provenance={}, created_by="cli",
+            )  # fmt: skip
+    assert store.segment_count(VID) == 1 and store.segment_count() == 2
+    assert [a["node"] for a in store.artifacts_of(VID)] == ["captions", "metadata", "pass3"]
+
+    assert store.delete_segments(VID) == 1
+    assert store.delete_artifacts(VID, ["captions", "pass3", "srt"]) == 2
+
+    assert store.segment_count(VID) == 0 and store.segment_count(other) == 1
+    assert [h["video_id"] for h in store.search("dharma", corpus_id=None, limit=5)] == [other]
+    assert [a["node"] for a in store.artifacts_of(VID)] == ["metadata"]
+    assert len(store.artifacts_of(other)) == 3

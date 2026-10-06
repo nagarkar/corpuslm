@@ -416,6 +416,25 @@ class Store:
         self.db.update("artifacts", row["id"], {"state": "stale"})
         return True
 
+    def artifacts_of(self, owner: str) -> list[dict]:
+        """Every artifact row of one video or corpus, by node name."""
+        return [
+            dict(r)
+            for r in self.db.all("SELECT * FROM artifacts WHERE owner = ? ORDER BY node", (owner,))
+        ]
+
+    def delete_artifacts(self, owner: str, nodes: Sequence[str]) -> int:
+        """Remove the artifact rows of `nodes` for one owner (derived state, no
+        history); the runner then finds them missing and builds them. Returns
+        the rows removed."""
+        if not nodes:
+            return 0
+        marks = ", ".join("?" * len(nodes))
+        cur = self.db.execute(
+            f"DELETE FROM artifacts WHERE owner = ? AND node IN ({marks})", (owner, *nodes)
+        )
+        return cur.rowcount
+
     def artifact_health(self) -> dict:
         """Counts for `status`: built per node, stale, pass 3 drops, and
         provisional transcripts."""
@@ -467,8 +486,15 @@ class Store:
                     ),
                 )
 
-    def segment_count(self) -> int:
-        return self._row("SELECT COUNT(*) AS n FROM segments")["n"]
+    def delete_segments(self, video_id: str) -> int:
+        """Remove one video's segments; the segments_ad trigger removes their
+        FTS5 rows. Returns the segments removed."""
+        return self.db.execute("DELETE FROM segments WHERE video_id = ?", (video_id,)).rowcount
+
+    def segment_count(self, video_id: str | None = None) -> int:
+        if video_id is None:
+            return self._row("SELECT COUNT(*) AS n FROM segments")["n"]
+        return self._row("SELECT COUNT(*) AS n FROM segments WHERE video_id = ?", (video_id,))["n"]
 
     def search(self, match: str, *, corpus_id: str | None, limit: int) -> list[dict]:
         """FTS5 hits, best first, through vw_search_segments. Raises
