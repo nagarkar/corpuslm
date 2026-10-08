@@ -25,6 +25,7 @@ erDiagram
   videos ||--o{ video_tags : "tags"
   videos ||--o{ video_topics : "topics"
   videos ||--o{ video_people : "people"
+  videos ||--o{ video_sources : "sources"
   videos ||--o{ fetch_attempts : "attempts"
   videos ||--o{ artifacts : "artifacts"
   videos ||--o{ review_verdicts : "verdicts"
@@ -163,7 +164,7 @@ keep lineage.
 
 ## Migrations: user_version, a verified backup, one transaction (2026-10-03)
 
-The schema version is `PRAGMA user_version` (`db.USER_VERSION`, now 2; a
+The schema version is `PRAGMA user_version` (`db.USER_VERSION`, now 3; a
 database made before it was tracked reads 0 and has the v1 schema, frozen
 in `tests/fixtures/schema_v1.sql`). On open, `db.migrate`:
 
@@ -171,7 +172,7 @@ in `tests/fixtures/schema_v1.sql`). On open, `db.migrate`:
    (`NewerDatabase`; nothing is touched);
 2. gives a new, empty file the whole schema in one transaction;
 3. upgrades an older database in place: first a backup through SQLite's
-   backup API to `<db folder>/backups/<db file stem>-<UTC timestamp>-before-v2.sqlite`
+   backup API to `<db folder>/backups/<db file stem>-<UTC timestamp>-before-v<target>.sqlite`
    (`db.BACKUPS_DIRNAME`, in `src/corpuslm/db.py`), verified with
    `PRAGMA integrity_check` and a row count of every author table
    (`review_verdicts`, `speaker_verdicts`, `corrections`); then the rebuild
@@ -276,6 +277,20 @@ History: list `people` of `videos`.
 | name | TEXT | no | a person in the video |
 | role | TEXT | no | host, guest ... (`''` when none) |
 
+### `video_sources`
+
+History: list `sources` of `videos`.
+
+The row's `created_at` is the date the
+video was found through that source (nagarkar/ytlm#61).
+
+| column | type | null | meaning |
+|---|---|---|---|
+| (base) | | | |
+| video_id | TEXT | no | the video |
+| position | INTEGER | no | order in the list, from 0 |
+| source_id | TEXT | no | a playlist or channel id the video was found through |
+
 ### `corpora`
 
 History: master.
@@ -314,6 +329,9 @@ History: list `perspective` of `corpora`.
 ### `corpus_sources`
 
 History: list `sources` of `corpora`.
+
+Legacy since version 3: ytlm no longer writes
+or reads it; a video records its own sources (`video_sources`).
 
 | column | type | null | meaning |
 |---|---|---|---|
@@ -552,3 +570,4 @@ segment changed, so it carries the previous hash):
 - 2026-10-03: The key + span ruling is dated in the "(Ruled YYYY-MM-DD)" form, metalm conformance (#23)
 - 2026-10-03: Code links carry a line anchor; the entity diagram is split in two (video side, corpus side); example rows for `videos`, `review_verdicts` and `runs`, metalm conformance (#23)
 - 2026-10-03: Moved from ytlm to corpuslm with `db.py`, `store.py`, `model.py` and `clock.py`; the canonical hash and the verdict subject hash move to `identity.py`; the SQL function `ytlm_subject_sha256` is renamed `corpuslm_subject_sha256` (registered per connection, never stored); the error for a newer database names corpuslm; the JSON state files stay in ytlm's copy of this document (nagarkar/ytlm#50)
+- 2026-10-08: Version 3: `video_sources` (a video records the playlists and channels it was found through, dated by the row); `corpus_sources` kept, unused (nagarkar/ytlm#61)

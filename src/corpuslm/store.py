@@ -5,7 +5,7 @@ writes SQL; `db.py` holds the connection, the schema and the migrations.
 The tables are described in docs/design/storage-schema.md.
 
 Rows come back as plain dicts. A video or corpus carries its lists
-(`tags`, `topics`, `people`; `topic`, `perspective`, `sources`) as Python
+(`tags`, `topics`, `people`, `sources`; `topic`, `perspective`, `sources`) as Python
 lists, read from their one-row-per-element tables. Decisions are
 append-only: the `*_verdict` and `correction` writers add a row, and the
 readers return the newest row per slot."""
@@ -24,6 +24,7 @@ VIDEO_LISTS: dict[str, tuple[str, tuple[str, ...]]] = {
     "tags": ("video_tags", ("tag",)),
     "topics": ("video_topics", ("topic",)),
     "people": ("video_people", ("name", "role")),
+    "sources": ("video_sources", ("source_id",)),
 }
 CORPUS_LISTS: dict[str, tuple[str, tuple[str, ...]]] = {
     "topic": ("corpus_topics", ("topic",)),
@@ -34,6 +35,7 @@ _LIST_PREFIX = {
     "video_tags": "vtg",
     "video_topics": "vtp",
     "video_people": "vpp",
+    "video_sources": "vsr",
     "corpus_topics": "ctp",
     "corpus_perspectives": "cps",
     "corpus_sources": "csr",
