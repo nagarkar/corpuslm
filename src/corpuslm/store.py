@@ -368,6 +368,18 @@ class Store:
             | {"video_id": video_id, "fetcher": fetcher, "outcome": outcome, "detail": detail},
         )
 
+    def fetch_attempt_counts(self) -> list[dict]:
+        """How many attempts each fetcher made per UTC day and outcome, oldest
+        day first. Counts only; the detail text never leaves the table."""
+        return [
+            dict(r)
+            for r in self.db.all(
+                "SELECT substr(created_at, 1, 10) AS day, fetcher, outcome, COUNT(*) AS n, "
+                "MAX(substr(detail, 1, 120)) AS last_detail FROM fetch_attempts "
+                "GROUP BY 1, 2, 3 ORDER BY 1, 2, 3"
+            )
+        ]
+
     # ---- artifact index (derived state) ------------------------------------------
 
     def _owner_column(self, owner: str) -> str:

@@ -80,3 +80,10 @@ def test_a_version_2_database_gains_the_table_after_a_backup(tmp_path):
         assert d.one("PRAGMA integrity_check")[0] == "ok"
     finally:
         d.close()
+
+
+def test_fetch_attempt_counts_group_by_day_fetcher_and_outcome(store):
+    for fetcher, outcome in [("supadata", "ok"), ("supadata", "ok"), ("supadata", "error")]:
+        store.append_fetch_attempt(VID, fetcher, outcome, "HTTP 429", created_by="cli")
+    rows = {(r["fetcher"], r["outcome"]): r["n"] for r in store.fetch_attempt_counts()}
+    assert rows == {("supadata", "ok"): 2, ("supadata", "error"): 1}
