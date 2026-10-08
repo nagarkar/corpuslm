@@ -1,11 +1,11 @@
 """The Repository (architecture.md, "OOAD patterns"): the one module that
 reads and writes the workspace database. Every other module asks it by
-name (`video`, `record_artifact`, `append_review_verdict` ...) and never
+name (`source`, `record_artifact`, `append_review_verdict` ...) and never
 writes SQL; `db.py` holds the connection, the schema and the migrations.
 The tables are described in docs/design/storage-schema.md.
 
-Rows come back as plain dicts. A video or corpus carries its lists
-(`tags`, `topics`, `people`, `sources`; `topic`, `perspective`, `sources`) as Python
+Rows come back as plain dicts. A source or corpus carries its lists
+(`tags`, `topics`, `people`, `feeds`; `topic`, `perspective`) as Python
 lists, read from their one-row-per-element tables. Decisions are
 append-only: the `*_verdict` and `correction` writers add a row, and the
 readers return the newest row per slot."""
@@ -20,25 +20,23 @@ from typing import Any
 from .db import Database, ko_fields, loads, now_iso
 
 # A master row's lists: list name → (table, parent column, element columns).
-VIDEO_LISTS: dict[str, tuple[str, tuple[str, ...]]] = {
-    "tags": ("video_tags", ("tag",)),
-    "topics": ("video_topics", ("topic",)),
-    "people": ("video_people", ("name", "role")),
-    "sources": ("video_sources", ("source_id",)),
+SOURCE_LISTS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "tags": ("source_tags", ("tag",)),
+    "topics": ("source_topics", ("topic",)),
+    "people": ("source_people", ("name", "role")),
+    "feeds": ("source_feeds", ("feed_id",)),
 }
 CORPUS_LISTS: dict[str, tuple[str, tuple[str, ...]]] = {
     "topic": ("corpus_topics", ("topic",)),
     "perspective": ("corpus_perspectives", ("perspective",)),
-    "sources": ("corpus_sources", ("source_id",)),
 }
 _LIST_PREFIX = {
-    "video_tags": "vtg",
-    "video_topics": "vtp",
-    "video_people": "vpp",
-    "video_sources": "vsr",
+    "source_tags": "vtg",
+    "source_topics": "vtp",
+    "source_people": "vpp",
+    "source_feeds": "sfd",
     "corpus_topics": "ctp",
     "corpus_perspectives": "cps",
-    "corpus_sources": "csr",
 }
 
 
@@ -121,17 +119,17 @@ class Store:
         listed = {k: v for k, v in changes.items() if k in lists}
         return scalar, listed
 
-    # ---- videos ------------------------------------------------------------
+    # ---- sources -----------------------------------------------------------
 
-    def video(self, video_id: str) -> dict | None:
-        row = self.db.one("SELECT * FROM videos WHERE id = ?", (video_id,))
-        return None if row is None else self._with_lists(row, VIDEO_LISTS, "video_id")
+    def source(self, source_id: str) -> dict | None:
+        row = self.db.one("SELECT * FROM sources WHERE id = ?", (source_id,))
+        return None if row is None else self._with_lists(row, SOURCE_LISTS, "source_id")
 
-    def _video_row(self, video_id: str) -> dict:
-        video = self.video(video_id)
-        if video is None:
-            raise KeyError(f"unknown video {video_id!r}")
-        return video
+    def _source_row(self, source_id: str) -> dict:
+        row = self.source(source_id)
+        if row is None:
+            raise KeyError(f"unknown source {source_id!r}")
+        return row
 
     def _corpus_row(self, corpus_id: str) -> dict:
         corpus = self.corpus(corpus_id)
@@ -139,36 +137,41 @@ class Store:
             raise KeyError(f"unknown corpus {corpus_id!r}")
         return corpus
 
-    def has_video(self, video_id: str) -> bool:
-        return self.db.one("SELECT 1 FROM videos WHERE id = ?", (video_id,)) is not None
+    def has_source(self, source_id: str) -> bool:
+        return self.db.one("SELECT 1 FROM sources WHERE id = ?", (source_id,)) is not None
 
-    def video_ids(self) -> list[str]:
-        return [r["id"] for r in self.db.all("SELECT id FROM videos ORDER BY created_at, rowid")]
+    def source_ids(self) -> list[str]:
+        return [r["id"] for r in self.db.all("SELECT id FROM sources ORDER BY created_at, rowid")]
 
-    def add_video(self, video_id: str, url: str, *, created_by: str) -> bool:
-        """False when the video is already in the catalog."""
-        if self.has_video(video_id):
+    def add_source(
+        self, source_id: str, locator: str, *, created_by: str, kind: str = "youtube"
+    ) -> bool:
+        """False when the source is already in the catalog."""
+        if self.has_source(source_id):
             return False
-        self.db.insert("videos", ko_fields(id=video_id, created_by=created_by) | {"url": url})
+        self.db.insert(
+            "sources",
+            ko_fields(id=source_id, created_by=created_by) | {"kind": kind, "locator": locator},
+        )
         return True
 
-    def update_video(self, video_id: str, changes: dict[str, Any], *, created_by: str = "cli"):
+    def update_source(self, source_id: str, changes: dict[str, Any], *, created_by: str = "cli"):
         """Scalar columns update in place (logged by trigger); `tags`,
         `topics` and `people` replace their lists."""
-        scalar, listed = self._split(changes, VIDEO_LISTS)
+        scalar, listed = self._split(changes, SOURCE_LISTS)
         with self.db.transaction():
             if scalar:
-                self.db.update("videos", video_id, scalar)
+                self.db.update("sources", source_id, scalar)
             for name, values in listed.items():
-                table, columns = VIDEO_LISTS[name]
-                self._write_list(table, "video_id", video_id, columns, values, created_by)
+                table, columns = SOURCE_LISTS[name]
+                self._write_list(table, "source_id", source_id, columns, values, created_by)
 
-    def video_counts_by(self, column: str) -> dict[str, int]:
+    def source_counts_by(self, column: str) -> dict[str, int]:
         if column not in ("status", "fetcher"):
             raise ValueError(f"no count by {column!r}")
         return {
             r["k"]: r["n"]
-            for r in self.db.all(f"SELECT {column} AS k, COUNT(*) AS n FROM videos GROUP BY 1")
+            for r in self.db.all(f"SELECT {column} AS k, COUNT(*) AS n FROM sources GROUP BY 1")
         }
 
     # ---- corpora and membership -----------------------------------------------
@@ -211,12 +214,12 @@ class Store:
                 self._write_list(table, "corpus_id", corpus_id, columns, values, created_by)
 
     def ingested_member_rows(self, corpus_id: str) -> list[dict]:
-        """The corpus document's members: ingested video rows (without their
+        """The corpus document's members: ingested source rows (without their
         lists), by publication date then id."""
         return [
             dict(r)
             for r in self.db.all(
-                "SELECT v.* FROM videos v JOIN corpus_members m ON m.video_id = v.id "
+                "SELECT v.* FROM sources v JOIN corpus_members m ON m.source_id = v.id "
                 "WHERE m.corpus_id = ? AND v.status = 'ingested' ORDER BY v.published_at, v.id",
                 (corpus_id,),
             )
@@ -226,27 +229,27 @@ class Store:
         """Replace a corpus's metadata object (logged by the change-log trigger)."""
         self.db.update("corpora", corpus_id, {"metadata": json.dumps(metadata, sort_keys=True)})
 
-    def is_member(self, corpus_id: str, video_id: str) -> bool:
+    def is_member(self, corpus_id: str, source_id: str) -> bool:
         return (
             self.db.one(
-                "SELECT 1 FROM corpus_members WHERE corpus_id = ? AND video_id = ?",
-                (corpus_id, video_id),
+                "SELECT 1 FROM corpus_members WHERE corpus_id = ? AND source_id = ?",
+                (corpus_id, source_id),
             )
             is not None
         )
 
-    def add_member(self, corpus_id: str, video_id: str, reason: str, *, created_by: str) -> str:
+    def add_member(self, corpus_id: str, source_id: str, reason: str, *, created_by: str) -> str:
         return self.db.insert(
             "corpus_members",
             ko_fields("mem", created_by=created_by)
-            | {"corpus_id": corpus_id, "video_id": video_id, "reason": reason},
+            | {"corpus_id": corpus_id, "source_id": source_id, "reason": reason},
         )
 
-    def member_video_ids(self, corpus_id: str) -> list[str]:
+    def member_source_ids(self, corpus_id: str) -> list[str]:
         return [
-            r["video_id"]
+            r["source_id"]
             for r in self.db.all(
-                "SELECT video_id FROM corpus_members WHERE corpus_id = ? "
+                "SELECT source_id FROM corpus_members WHERE corpus_id = ? "
                 "ORDER BY created_at, rowid",
                 (corpus_id,),
             )
@@ -258,7 +261,7 @@ class Store:
         )["n"]
 
     def member_status_counts(self, corpus_id: str) -> dict[str, int]:
-        """Membership status is derived from the video's status
+        """Membership status is derived from the source's status
         (vw_corpus_members): queued, ingested or failed."""
         return {
             r["member_status"]: r["n"]
@@ -278,12 +281,12 @@ class Store:
         )
         return [dict(r) for r in rows]
 
-    def member_videos(self, corpus_id: str, *, ingested_only: bool = False) -> list[dict]:
-        """Member video rows (with their lists) plus `member_status` and
+    def member_sources(self, corpus_id: str, *, ingested_only: bool = False) -> list[dict]:
+        """Member source rows (with their lists) plus `member_status` and
         `member_reason`, in publication order."""
         rows = self.db.all(
             "SELECT v.id, m.member_status, m.reason AS member_reason "
-            "FROM vw_corpus_members m JOIN videos v ON v.id = m.video_id "
+            "FROM vw_corpus_members m JOIN sources v ON v.id = m.source_id "
             "WHERE m.corpus_id = ? "
             + ("AND v.status = 'ingested' " if ingested_only else "")
             + "ORDER BY v.published_at, v.title, v.id",
@@ -291,17 +294,17 @@ class Store:
         )
         out = []
         for r in rows:
-            video = self._video_row(r["id"])
-            video["member_status"] = r["member_status"]
-            video["member_reason"] = r["member_reason"]
-            out.append(video)
+            row = self._source_row(r["id"])
+            row["member_status"] = r["member_status"]
+            row["member_reason"] = r["member_reason"]
+            out.append(row)
         return out
 
-    def corpora_of_video(self, video_id: str) -> list[dict]:
+    def corpora_of_source(self, source_id: str) -> list[dict]:
         rows = self.db.all(
             "SELECT c.id FROM corpora c JOIN corpus_members m ON m.corpus_id = c.id "
-            "WHERE m.video_id = ? ORDER BY c.name",
-            (video_id,),
+            "WHERE m.source_id = ? ORDER BY c.name",
+            (source_id,),
         )
         return [self._corpus_row(r["id"]) for r in rows]
 
@@ -325,7 +328,7 @@ class Store:
                 members = [
                     dict(r)
                     for r in self.db.all(
-                        "SELECT id, video_id, reason, created_at, created_by, metadata "
+                        "SELECT id, source_id, reason, created_at, created_by, metadata "
                         "FROM corpus_members WHERE corpus_id = ? ORDER BY created_at, rowid",
                         (cid,),
                     )
@@ -338,7 +341,7 @@ class Store:
                 }
                 kept.append(snapshot)
                 for m in members:
-                    if self.is_member(into_id, m["video_id"]):
+                    if self.is_member(into_id, m["source_id"]):
                         self.db.execute("DELETE FROM corpus_members WHERE id = ?", (m["id"],))
                         already += 1
                         continue
@@ -360,12 +363,12 @@ class Store:
     # ---- fetch attempts (evidence, append-only) ---------------------------------
 
     def append_fetch_attempt(
-        self, video_id: str, fetcher: str, outcome: str, detail: str, *, created_by: str
+        self, source_id: str, fetcher: str, outcome: str, detail: str, *, created_by: str
     ) -> str:
         return self.db.insert(
             "fetch_attempts",
             ko_fields("fet", created_by=created_by)
-            | {"video_id": video_id, "fetcher": fetcher, "outcome": outcome, "detail": detail},
+            | {"source_id": source_id, "fetcher": fetcher, "outcome": outcome, "detail": detail},
         )
 
     def fetch_attempt_counts(self) -> list[dict]:
@@ -383,11 +386,11 @@ class Store:
     # ---- artifact index (derived state) ------------------------------------------
 
     def _owner_column(self, owner: str) -> str:
-        if self.has_video(owner):
-            return "video_id"
+        if self.has_source(owner):
+            return "source_id"
         if self.db.one("SELECT 1 FROM corpora WHERE id = ?", (owner,)):
             return "corpus_id"
-        raise KeyError(f"artifact owner {owner!r} is neither a video nor a corpus")
+        raise KeyError(f"artifact owner {owner!r} is neither a source nor a corpus")
 
     def artifact(self, owner: str, node: str) -> dict | None:
         row = self.db.one("SELECT * FROM artifacts WHERE owner = ? AND node = ?", (owner, node))
@@ -431,7 +434,7 @@ class Store:
         return True
 
     def artifacts_of(self, owner: str) -> list[dict]:
-        """Every artifact row of one video or corpus, by node name."""
+        """Every artifact row of one source or corpus, by node name."""
         return [
             dict(r)
             for r in self.db.all("SELECT * FROM artifacts WHERE owner = ? ORDER BY node", (owner,))
@@ -480,18 +483,18 @@ class Store:
 
     # ---- segments and search (derived index) ---------------------------------------
 
-    def replace_segments(self, video_id: str, segments: Iterable[dict]) -> None:
-        """The FTS rows of one video, rebuilt whole. Transcript segments keep
+    def replace_segments(self, source_id: str, segments: Iterable[dict]) -> None:
+        """The FTS rows of one source, rebuilt whole. Transcript segments keep
         their JSON names (idx, t0, t1); the columns are position,
         start_seconds and end_seconds."""
         with self.db.transaction():
-            self.db.execute("DELETE FROM segments WHERE video_id = ?", (video_id,))
+            self.db.execute("DELETE FROM segments WHERE source_id = ?", (source_id,))
             for seg in segments:
                 self.db.execute(
-                    "INSERT INTO segments(video_id, position, start_seconds, end_seconds, "
+                    "INSERT INTO segments(source_id, position, start_seconds, end_seconds, "
                     "speaker, text) VALUES (?, ?, ?, ?, ?, ?)",
                     (
-                        video_id,
+                        source_id,
                         seg["idx"],
                         seg["t0"],
                         seg["t1"],
@@ -500,28 +503,30 @@ class Store:
                     ),
                 )
 
-    def delete_segments(self, video_id: str) -> int:
-        """Remove one video's segments; the segments_ad trigger removes their
+    def delete_segments(self, source_id: str) -> int:
+        """Remove one source's segments; the segments_ad trigger removes their
         FTS5 rows. Returns the segments removed."""
-        return self.db.execute("DELETE FROM segments WHERE video_id = ?", (video_id,)).rowcount
+        return self.db.execute("DELETE FROM segments WHERE source_id = ?", (source_id,)).rowcount
 
-    def segment_count(self, video_id: str | None = None) -> int:
-        if video_id is None:
+    def segment_count(self, source_id: str | None = None) -> int:
+        if source_id is None:
             return self._row("SELECT COUNT(*) AS n FROM segments")["n"]
-        return self._row("SELECT COUNT(*) AS n FROM segments WHERE video_id = ?", (video_id,))["n"]
+        return self._row("SELECT COUNT(*) AS n FROM segments WHERE source_id = ?", (source_id,))[
+            "n"
+        ]
 
     def search(self, match: str, *, corpus_id: str | None, limit: int) -> list[dict]:
         """FTS5 hits, best first, through vw_search_segments. Raises
         sqlite3.OperationalError when `match` is not valid FTS5 syntax."""
         sql = (
-            "SELECT h.video_id, h.position, h.start_seconds, h.end_seconds, h.title, "
+            "SELECT h.source_id, h.position, h.start_seconds, h.end_seconds, h.title, "
             "snippet(segments_fts, 0, '[', ']', '…', 14) AS snippet, "
             "bm25(segments_fts) AS rank "
             "FROM segments_fts JOIN vw_search_segments h ON h.segment_rowid = segments_fts.rowid "
             "WHERE segments_fts MATCH ? "
             + (
                 "AND EXISTS (SELECT 1 FROM corpus_members m "
-                "WHERE m.video_id = h.video_id AND m.corpus_id = ?) "
+                "WHERE m.source_id = h.source_id AND m.corpus_id = ?) "
                 if corpus_id
                 else ""
             )
@@ -559,7 +564,7 @@ class Store:
     def append_review_verdict(
         self,
         *,
-        video_id: str,
+        source_id: str,
         key: str,
         kind: str,
         verdict: str,
@@ -570,12 +575,12 @@ class Store:
         metadata: dict | None = None,
         created_by: str,
     ) -> str:
-        """A new verdict row; the newest row for (video_id, key) is in force.
+        """A new verdict row; the newest row for (source_id, key) is in force.
         `previous_subject_sha256` is filled when the slot's current verdict
         judged different content (lineage: new hash → old hash)."""
         current = self.db.one(
-            "SELECT subject_sha256 FROM vw_current_review_verdicts WHERE video_id = ? AND key = ?",
-            (video_id, key),
+            "SELECT subject_sha256 FROM vw_current_review_verdicts WHERE source_id = ? AND key = ?",
+            (source_id, key),
         )
         previous = (
             current["subject_sha256"]
@@ -583,7 +588,7 @@ class Store:
             else None
         )
         row = ko_fields("ver", created_by=created_by) | {
-            "video_id": video_id,
+            "source_id": source_id,
             "key": key,
             "kind": kind,
             "verdict": verdict,
@@ -598,43 +603,43 @@ class Store:
             row["metadata"] = json.dumps(metadata, sort_keys=True)
         return self.db.insert("review_verdicts", row)
 
-    def current_review_verdicts(self, video_id: str) -> dict[str, dict]:
+    def current_review_verdicts(self, source_id: str) -> dict[str, dict]:
         """key → the verdict in force (the newest row for that key)."""
         return {
             r["key"]: dict(r)
             for r in self.db.all(
-                "SELECT * FROM vw_current_review_verdicts WHERE video_id = ? ORDER BY key",
-                (video_id,),
+                "SELECT * FROM vw_current_review_verdicts WHERE source_id = ? ORDER BY key",
+                (source_id,),
             )
         }
 
-    def review_verdict_history(self, video_id: str, key: str) -> list[dict]:
+    def review_verdict_history(self, source_id: str, key: str) -> list[dict]:
         """Every verdict ever given for one slot, oldest first."""
         return [
             dict(r)
             for r in self.db.all(
-                "SELECT * FROM review_verdicts WHERE video_id = ? AND key = ? ORDER BY rowid",
-                (video_id, key),
+                "SELECT * FROM review_verdicts WHERE source_id = ? AND key = ? ORDER BY rowid",
+                (source_id, key),
             )
         ]
 
     def append_speaker_verdict(
-        self, *, video_id: str, role: str, name: str, created_by: str
+        self, *, source_id: str, role: str, name: str, created_by: str
     ) -> str:
         return self.db.insert(
             "speaker_verdicts",
             ko_fields("spk", created_by=created_by)
-            | {"video_id": video_id, "role": role, "name": name},
+            | {"source_id": source_id, "role": role, "name": name},
         )
 
-    def current_speaker_names(self, video_id: str) -> dict[str, str]:
+    def current_speaker_names(self, source_id: str) -> dict[str, str]:
         """role → the author's name in force for that role."""
         return {
             r["role"]: r["name"]
             for r in self.db.all(
-                "SELECT role, name FROM vw_current_speaker_verdicts WHERE video_id = ? "
+                "SELECT role, name FROM vw_current_speaker_verdicts WHERE source_id = ? "
                 "ORDER BY role",
-                (video_id,),
+                (source_id,),
             )
         }
 
@@ -644,7 +649,7 @@ class Store:
         span_norm: str,
         verdict: str,
         kind: str,
-        origin_video: str,
+        origin_source: str,
         origin_key: str,
         created_by: str,
     ) -> str:
@@ -655,7 +660,7 @@ class Store:
                 "span_norm": span_norm,
                 "verdict": verdict,
                 "kind": kind,
-                "origin_video": origin_video,
+                "origin_source": origin_source,
                 "origin_key": origin_key,
             },
         )
@@ -683,7 +688,7 @@ class Store:
         )
 
     def close_run(
-        self, run_id: str, *, status: str, videos: int, failed_items: int, detail: str = ""
+        self, run_id: str, *, status: str, sources: int, failed_items: int, detail: str = ""
     ) -> None:
         if status not in ("ok", "error"):
             raise ValueError(f"a run closes as ok or error, not {status!r}")
@@ -693,7 +698,7 @@ class Store:
             {
                 "status": status,
                 "finished_at": now_iso(),
-                "videos": videos,
+                "sources": sources,
                 "failed_items": failed_items,
                 "detail": detail,
             },
@@ -705,7 +710,7 @@ class Store:
 
     def last_successful_run(self) -> dict | None:
         row = self.db.one(
-            "SELECT id, scope, started_at, finished_at, videos FROM runs "
+            "SELECT id, scope, started_at, finished_at, sources FROM runs "
             "WHERE status = 'ok' ORDER BY finished_at DESC, rowid DESC LIMIT 1"
         )
         return None if row is None else dict(row)

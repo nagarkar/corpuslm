@@ -28,7 +28,6 @@ def _corpus(store, name):
             "subject": "",
             "topic": [],
             "perspective": [],
-            "sources": [],
             "auto_ingest": 0,
             "llm_cleanup": 1,
         },
@@ -59,15 +58,15 @@ def test_a_lock_is_taken_refreshed_by_its_holder_and_released_only_by_it(store):
 
 
 def test_counts_by_an_unknown_column_are_declined(store):
-    store.add_video(VID, "u", created_by="cli")
+    store.add_source(VID, "u", created_by="cli")
     # a new video is `added` (docs/design/storage-schema.md, table videos)
-    assert store.video_counts_by("status") == {"added": 1}
+    assert store.source_counts_by("status") == {"added": 1}
     with pytest.raises(ValueError, match="title"):
-        store.video_counts_by("title")
+        store.source_counts_by("title")
 
 
 def test_mark_stale_reports_whether_there_was_an_artifact(store):
-    store.add_video(VID, "u", created_by="cli")
+    store.add_source(VID, "u", created_by="cli")
     assert store.mark_stale(VID, "pass3") is False
     store.record_artifact(
         VID,
@@ -85,8 +84,8 @@ def test_mark_stale_reports_whether_there_was_an_artifact(store):
     assert health["stale"] == 1 and health["built"] == {} and health["ambiguities"] == 3
 
 
-def _video(store, video_id):
-    store.add_video(video_id, f"https://youtu.be/{video_id}", created_by="cli")
+def _video(store, source_id):
+    store.add_source(source_id, f"https://youtu.be/{source_id}", created_by="cli")
 
 
 def test_merging_corpora_moves_every_membership_and_keeps_each_folded_corpus_whole(store):
@@ -95,7 +94,7 @@ def test_merging_corpora_moves_every_membership_and_keeps_each_folded_corpus_who
     corpus's row, lists and members are kept under the target's
     `metadata.merged_from` (written to the change log), and the folded rows go."""
     a, b, into = (_corpus(store, n) for n in ("Physics/A", "Physics/B", "Physics"))
-    store.update_corpus(a, {"topic": ["Entropy"], "sources": ["PLx"], "person": "Ann"})
+    store.update_corpus(a, {"topic": ["Entropy"], "person": "Ann"})
     for vid in ("vidAAAAAAA1", "vidAAAAAAA2", "vidAAAAAAA3"):
         _video(store, vid)
     moved_member = store.add_member(a, "vidAAAAAAA1", "author", created_by="cli")
@@ -112,15 +111,15 @@ def test_merging_corpora_moves_every_membership_and_keeps_each_folded_corpus_who
     assert board == {"moved": 2, "already_members": 1, "removed": ["Physics/A", "Physics/B"]}
     assert store.corpus(a) is None and store.corpus(b) is None
     assert store.artifact(a, "corpus_note") is None
-    assert sorted(store.member_video_ids(into)) == ["vidAAAAAAA1", "vidAAAAAAA2", "vidAAAAAAA3"]
+    assert sorted(store.member_source_ids(into)) == ["vidAAAAAAA1", "vidAAAAAAA2", "vidAAAAAAA3"]
     row = store.db.one("SELECT * FROM corpus_members WHERE id = ?", (moved_member,))
     assert row["corpus_id"] == into and row["reason"] == "author"
     assert db.loads(row["metadata"], {})["merged_from"] == a
     kept = db.loads(store.corpus(into)["metadata"], {})["merged_from"]
     assert [k["name"] for k in kept] == ["Physics/A", "Physics/B"]
-    assert kept[0]["topic"] == ["Entropy"] and kept[0]["sources"] == ["PLx"]
+    assert kept[0]["topic"] == ["Entropy"]
     assert kept[0]["person"] == "Ann" and kept[0]["id"] == a
-    assert [m["video_id"] for m in kept[1]["members"]] == ["vidAAAAAAA2", "vidAAAAAAA3"]
+    assert [m["source_id"] for m in kept[1]["members"]] == ["vidAAAAAAA2", "vidAAAAAAA3"]
     assert kept[1]["members"][0]["reason"] == "discovered"
     logged = [c["column_name"] for c in store.changes_of("corpora", into)]
     assert "metadata" in logged
@@ -140,7 +139,7 @@ def test_dropping_a_videos_transcript_rows_empties_its_segments_index_and_named_
     named are left alone."""
     other = "vidBBBBBBB2"
     for vid in (VID, other):
-        store.add_video(vid, "u", created_by="cli")
+        store.add_source(vid, "u", created_by="cli")
         store.replace_segments(vid, [{"idx": 0, "t0": 0.0, "t1": 1.0, "text": "namaste dharma"}])
         for node in ("metadata", "captions", "pass3"):
             store.record_artifact(
@@ -154,6 +153,6 @@ def test_dropping_a_videos_transcript_rows_empties_its_segments_index_and_named_
     assert store.delete_artifacts(VID, ["captions", "pass3", "srt"]) == 2
 
     assert store.segment_count(VID) == 0 and store.segment_count(other) == 1
-    assert [h["video_id"] for h in store.search("dharma", corpus_id=None, limit=5)] == [other]
+    assert [h["source_id"] for h in store.search("dharma", corpus_id=None, limit=5)] == [other]
     assert [a["node"] for a in store.artifacts_of(VID)] == ["metadata"]
     assert len(store.artifacts_of(other)) == 3
