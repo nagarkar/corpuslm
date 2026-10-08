@@ -40,7 +40,7 @@ from .identity import canonical_sha256  # noqa: F401  (re-exported: db.canonical
 
 # PRAGMA user_version of the schema below. 0 is a database made before the
 # version was tracked (the v1 schema, frozen in tests/fixtures/schema_v1.sql).
-USER_VERSION = 2
+USER_VERSION = 3
 
 BACKUPS_DIRNAME = "backups"
 # How many verified backups `<workspace>/backups/` keeps (owner ruling
@@ -106,6 +106,14 @@ CREATE TABLE IF NOT EXISTS video_people (
     position INTEGER NOT NULL CHECK (position >= 0),
     name TEXT NOT NULL,
     role TEXT NOT NULL DEFAULT '',
+    UNIQUE (video_id, position)
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS video_sources (
+    {KNOWLEDGE_OBJECT_COLUMNS},
+    video_id TEXT NOT NULL REFERENCES videos(id),
+    position INTEGER NOT NULL CHECK (position >= 0),
+    source_id TEXT NOT NULL,
     UNIQUE (video_id, position)
 ) STRICT;
 
@@ -277,6 +285,7 @@ LIST_TABLES: tuple[tuple[str, str, str, str], ...] = (
     ("video_tags", "video_id", "tags", "{r}.tag"),
     ("video_topics", "video_id", "topics", "{r}.topic"),
     ("video_people", "video_id", "people", "json_object('name', {r}.name, 'role', {r}.role)"),
+    ("video_sources", "video_id", "sources", "{r}.source_id"),
     ("corpus_topics", "corpus_id", "topic", "{r}.topic"),
     ("corpus_perspectives", "corpus_id", "perspective", "{r}.perspective"),
     ("corpus_sources", "corpus_id", "sources", "{r}.source_id"),
@@ -725,6 +734,19 @@ def migrate(conn: sqlite3.Connection, db_path: Path) -> dict:
         return {"from": version, "to": USER_VERSION, "backup": None, "created": True}
     saved = backup(conn, db_path, label=f"before-v{USER_VERSION}")
     deleted = prune_backups(db_path)  # only after the new one verified
+    if version == 2:
+        # v2 -> v3 adds tables, triggers and views, all written IF NOT EXISTS.
+        if not _run_in_transaction(
+            conn, lambda c: _statements(SCHEMA), from_version=2, to_version=USER_VERSION
+        ):
+            return {"from": 2, "to": USER_VERSION, "backup": str(saved), "by": "another process"}
+        check = conn.execute("PRAGMA integrity_check").fetchone()[0]
+        if check != "ok":
+            raise MigrationFailed(
+                f"{db_path} after migration: integrity_check {check}. "
+                f"The verified backup is {saved}."
+            )
+        return {"from": 2, "to": USER_VERSION, "backup": str(saved), "backups_deleted": deleted}
     conn.create_function("corpuslm_subject_sha256", 4, _subject_sha256, deterministic=True)
     before = _counts(conn, AUTHOR_TABLES)
 

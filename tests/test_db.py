@@ -102,8 +102,8 @@ def _verdict(store: Store, vid=VID, key="amb-0001", verdict="Dharma", sha=HASH_A
 
 
 def test_fresh_file_gets_user_version(database, dbpath):
-    # storage-schema.md: "The schema version is PRAGMA user_version (db.USER_VERSION, now 2)"
-    assert db.USER_VERSION == 2
+    # storage-schema.md: "The schema version is PRAGMA user_version (db.USER_VERSION, now 3)"
+    assert db.USER_VERSION == 3
     assert database.one("PRAGMA user_version")[0] == db.USER_VERSION
     raw = sqlite3.connect(dbpath)
     try:
@@ -898,7 +898,7 @@ def test_v1_upgrades_to_user_version(migrated, dbpath):
 
 
 def test_v1_backup_is_verified_and_complete(migrated, dbpath):
-    # "first a backup ... to <workspace>/backups/<db file stem>-<UTC timestamp>-before-v2.sqlite ...
+    # "first a backup ... to <workspace>/backups/<db file stem>-<UTC timestamp>-before-v3.sqlite ...
     #  verified with PRAGMA integrity_check and a row count of every author table"
     _, _, original_rv = migrated
     bdir = dbpath.parent / db.BACKUPS_DIRNAME
@@ -906,7 +906,7 @@ def test_v1_backup_is_verified_and_complete(migrated, dbpath):
     files = [p for p in bdir.iterdir() if p.is_file() and p.suffix == ".sqlite"]
     assert len(files) == 1
     b = files[0]
-    assert b.name.startswith("transcript-") and b.name.endswith("-before-v2.sqlite")
+    assert b.name.startswith("transcript-") and b.name.endswith("-before-v3.sqlite")
     assert _rows(b, "PRAGMA integrity_check")[0][0] == "ok"
     assert _rows(b, RV_SQL) == original_rv
     assert _rows(b, "SELECT COUNT(*) FROM speaker_verdicts")[0][0] == 1
@@ -1258,7 +1258,7 @@ def test_a_database_another_process_upgraded_meanwhile_is_left_to_it(tmp_path, m
 def _old_backups(dbpath, n: int) -> list[str]:
     bdir = dbpath.parent / db.BACKUPS_DIRNAME
     bdir.mkdir(exist_ok=True)
-    names = [f"{dbpath.stem}-2026010{i}T000000Z-before-v2.sqlite" for i in range(1, n + 1)]
+    names = [f"{dbpath.stem}-2026010{i}T000000Z-before-v3.sqlite" for i in range(1, n + 1)]
     for name in names:
         (bdir / name).write_bytes(b"old")
     (bdir / "notes.txt").write_text("the owner's")
