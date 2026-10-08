@@ -26,7 +26,7 @@ def test_doctor_reports_a_current_database_and_changes_nothing(tmp_path, capsys)
     assert board["ok"] and board["problems"] == []
     assert board["user_version"] == db.USER_VERSION
     assert board["integrity_check"] == "ok"
-    assert board["tables"]["videos"] == 0
+    assert board["tables"]["sources"] == 0
     assert path.read_bytes() == before
 
 

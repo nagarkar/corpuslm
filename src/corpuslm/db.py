@@ -7,7 +7,7 @@ Every catalog table carries the authorlm KnowledgeObject base: id, version,
 created_at, created_by, schema_version, metadata. Four kinds of history,
 one per kind of table (architecture.md, "History and identity"):
 
-- master data (videos, corpora, memberships and their lists) is mutable;
+- master data (sources, corpora, memberships and their lists) is mutable;
   every changed field is written to `change_log` by trigger;
 - decisions and evidence (review and speaker verdicts, the correction
   memory, fetch attempts, the change log itself) are append-only: a
@@ -40,7 +40,7 @@ from .identity import canonical_sha256  # noqa: F401  (re-exported: db.canonical
 
 # PRAGMA user_version of the schema below. 0 is a database made before the
 # version was tracked (the v1 schema, frozen in tests/fixtures/schema_v1.sql).
-USER_VERSION = 3
+USER_VERSION = 4
 
 BACKUPS_DIRNAME = "backups"
 # How many verified backups `<workspace>/backups/` keeps (owner ruling
@@ -58,9 +58,10 @@ KNOWLEDGE_OBJECT_COLUMNS = """
 """
 
 TABLES = f"""
-CREATE TABLE IF NOT EXISTS videos (
+CREATE TABLE IF NOT EXISTS sources (
     {KNOWLEDGE_OBJECT_COLUMNS},
-    url TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'youtube' CHECK (kind IN ('youtube', 'bee')),
+    locator TEXT NOT NULL,
     title TEXT NOT NULL DEFAULT '',
     channel_id TEXT NOT NULL DEFAULT '',
     channel_title TEXT NOT NULL DEFAULT '',
@@ -84,37 +85,37 @@ CREATE TABLE IF NOT EXISTS videos (
     perspective TEXT
 ) STRICT;
 
-CREATE TABLE IF NOT EXISTS video_tags (
+CREATE TABLE IF NOT EXISTS source_tags (
     {KNOWLEDGE_OBJECT_COLUMNS},
-    video_id TEXT NOT NULL REFERENCES videos(id),
+    source_id TEXT NOT NULL REFERENCES sources(id),
     position INTEGER NOT NULL CHECK (position >= 0),
     tag TEXT NOT NULL,
-    UNIQUE (video_id, position)
+    UNIQUE (source_id, position)
 ) STRICT;
 
-CREATE TABLE IF NOT EXISTS video_topics (
+CREATE TABLE IF NOT EXISTS source_topics (
     {KNOWLEDGE_OBJECT_COLUMNS},
-    video_id TEXT NOT NULL REFERENCES videos(id),
+    source_id TEXT NOT NULL REFERENCES sources(id),
     position INTEGER NOT NULL CHECK (position >= 0),
     topic TEXT NOT NULL,
-    UNIQUE (video_id, position)
+    UNIQUE (source_id, position)
 ) STRICT;
 
-CREATE TABLE IF NOT EXISTS video_people (
+CREATE TABLE IF NOT EXISTS source_people (
     {KNOWLEDGE_OBJECT_COLUMNS},
-    video_id TEXT NOT NULL REFERENCES videos(id),
+    source_id TEXT NOT NULL REFERENCES sources(id),
     position INTEGER NOT NULL CHECK (position >= 0),
     name TEXT NOT NULL,
     role TEXT NOT NULL DEFAULT '',
-    UNIQUE (video_id, position)
+    UNIQUE (source_id, position)
 ) STRICT;
 
-CREATE TABLE IF NOT EXISTS video_sources (
+CREATE TABLE IF NOT EXISTS source_feeds (
     {KNOWLEDGE_OBJECT_COLUMNS},
-    video_id TEXT NOT NULL REFERENCES videos(id),
+    source_id TEXT NOT NULL REFERENCES sources(id),
     position INTEGER NOT NULL CHECK (position >= 0),
-    source_id TEXT NOT NULL,
-    UNIQUE (video_id, position)
+    feed_id TEXT NOT NULL,
+    UNIQUE (source_id, position)
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS corpora (
@@ -142,25 +143,17 @@ CREATE TABLE IF NOT EXISTS corpus_perspectives (
     UNIQUE (corpus_id, position)
 ) STRICT;
 
-CREATE TABLE IF NOT EXISTS corpus_sources (
-    {KNOWLEDGE_OBJECT_COLUMNS},
-    corpus_id TEXT NOT NULL REFERENCES corpora(id),
-    position INTEGER NOT NULL CHECK (position >= 0),
-    source_id TEXT NOT NULL,
-    UNIQUE (corpus_id, position)
-) STRICT;
-
 CREATE TABLE IF NOT EXISTS corpus_members (
     {KNOWLEDGE_OBJECT_COLUMNS},
     corpus_id TEXT NOT NULL REFERENCES corpora(id),
-    video_id TEXT NOT NULL REFERENCES videos(id),
+    source_id TEXT NOT NULL REFERENCES sources(id),
     reason TEXT NOT NULL CHECK (reason IN ('author', 'discovered', 'consumer')),
-    UNIQUE (corpus_id, video_id)
+    UNIQUE (corpus_id, source_id)
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS fetch_attempts (
     {KNOWLEDGE_OBJECT_COLUMNS},
-    video_id TEXT NOT NULL REFERENCES videos(id),
+    source_id TEXT NOT NULL REFERENCES sources(id),
     fetcher TEXT NOT NULL,
     outcome TEXT NOT NULL CHECK (outcome IN ('ok', 'skipped', 'none', 'error')),
     detail TEXT NOT NULL DEFAULT ''
@@ -168,9 +161,9 @@ CREATE TABLE IF NOT EXISTS fetch_attempts (
 
 CREATE TABLE IF NOT EXISTS artifacts (
     {KNOWLEDGE_OBJECT_COLUMNS},
-    video_id TEXT REFERENCES videos(id),
+    source_id TEXT REFERENCES sources(id),
     corpus_id TEXT REFERENCES corpora(id),
-    owner TEXT GENERATED ALWAYS AS (coalesce(video_id, corpus_id)) VIRTUAL,
+    owner TEXT GENERATED ALWAYS AS (coalesce(source_id, corpus_id)) VIRTUAL,
     node TEXT NOT NULL,
     path TEXT NOT NULL DEFAULT '',
     sha256 TEXT NOT NULL DEFAULT '',
@@ -178,14 +171,14 @@ CREATE TABLE IF NOT EXISTS artifacts (
         CHECK (state IN ('built', 'stale', 'failed', 'skipped')),
     inputs TEXT NOT NULL DEFAULT '{{}}' CHECK (json_valid(inputs)),
     provenance TEXT NOT NULL DEFAULT '{{}}' CHECK (json_valid(provenance)),
-    CHECK ((video_id IS NULL) <> (corpus_id IS NULL)),
-    UNIQUE (video_id, node),
+    CHECK ((source_id IS NULL) <> (corpus_id IS NULL)),
+    UNIQUE (source_id, node),
     UNIQUE (corpus_id, node)
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS review_verdicts (
     {KNOWLEDGE_OBJECT_COLUMNS},
-    video_id TEXT NOT NULL REFERENCES videos(id),
+    source_id TEXT NOT NULL REFERENCES sources(id),
     key TEXT NOT NULL,
     kind TEXT NOT NULL CHECK (kind IN ('ambiguity', 'speaker')),
     verdict TEXT NOT NULL,
@@ -200,7 +193,7 @@ CREATE TABLE IF NOT EXISTS review_verdicts (
 
 CREATE TABLE IF NOT EXISTS speaker_verdicts (
     {KNOWLEDGE_OBJECT_COLUMNS},
-    video_id TEXT NOT NULL REFERENCES videos(id),
+    source_id TEXT NOT NULL REFERENCES sources(id),
     role TEXT NOT NULL,
     name TEXT NOT NULL
 ) STRICT;
@@ -210,7 +203,7 @@ CREATE TABLE IF NOT EXISTS corrections (
     span_norm TEXT NOT NULL CHECK (span_norm <> ''),
     verdict TEXT NOT NULL,
     kind TEXT NOT NULL CHECK (kind IN ('term', 'reading')),
-    origin_video TEXT NOT NULL REFERENCES videos(id),
+    origin_source TEXT NOT NULL REFERENCES sources(id),
     origin_key TEXT NOT NULL
 ) STRICT;
 
@@ -220,7 +213,7 @@ CREATE TABLE IF NOT EXISTS runs (
     status TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running', 'ok', 'error')),
     started_at TEXT NOT NULL,
     finished_at TEXT,
-    videos INTEGER CHECK (videos IS NULL OR videos >= 0),
+    sources INTEGER CHECK (sources IS NULL OR sources >= 0),
     failed_items INTEGER CHECK (failed_items IS NULL OR failed_items >= 0),
     detail TEXT NOT NULL DEFAULT '',
     CHECK ((status = 'running') = (finished_at IS NULL))
@@ -245,23 +238,23 @@ CREATE TABLE IF NOT EXISTS locks (
 
 CREATE TABLE IF NOT EXISTS segments (
     rowid INTEGER PRIMARY KEY,
-    video_id TEXT NOT NULL REFERENCES videos(id),
+    source_id TEXT NOT NULL REFERENCES sources(id),
     position INTEGER NOT NULL CHECK (position >= 0),
     start_seconds REAL NOT NULL CHECK (start_seconds >= 0),
     end_seconds REAL NOT NULL CHECK (end_seconds >= start_seconds),
     speaker TEXT NOT NULL DEFAULT '',
     text TEXT NOT NULL,
-    UNIQUE (video_id, position)
+    UNIQUE (source_id, position)
 ) STRICT;
 
-CREATE INDEX IF NOT EXISTS review_verdicts_slot ON review_verdicts (video_id, key);
-CREATE INDEX IF NOT EXISTS speaker_verdicts_slot ON speaker_verdicts (video_id, role);
+CREATE INDEX IF NOT EXISTS review_verdicts_slot ON review_verdicts (source_id, key);
+CREATE INDEX IF NOT EXISTS speaker_verdicts_slot ON speaker_verdicts (source_id, role);
 CREATE INDEX IF NOT EXISTS corrections_slot ON corrections (span_norm);
-CREATE INDEX IF NOT EXISTS corpus_members_video ON corpus_members (video_id);
+CREATE INDEX IF NOT EXISTS corpus_members_source ON corpus_members (source_id);
 CREATE INDEX IF NOT EXISTS change_log_row ON change_log (table_name, row_id);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS segments_fts USING fts5(
-    text, video_id UNINDEXED,
+    text, source_id UNINDEXED,
     content='segments', content_rowid='rowid',
     tokenize='unicode61'
 );
@@ -269,8 +262,9 @@ CREATE VIRTUAL TABLE IF NOT EXISTS segments_fts USING fts5(
 
 # Master data: every column whose change is written to change_log by trigger.
 MASTER_COLUMNS: dict[str, tuple[str, ...]] = {
-    "videos": (
-        "url", "title", "channel_id", "channel_title", "published_at", "duration_seconds",
+    "sources": (
+        "kind", "locator", "title", "channel_id", "channel_title", "published_at",
+        "duration_seconds",
         "description", "thumbnail_url", "language", "caption_language", "caption_kind",
         "metadata_source", "has_caption_track", "status", "fetcher", "transcript_state",
         "last_error", "perspective", "metadata",
@@ -282,13 +276,12 @@ MASTER_COLUMNS: dict[str, tuple[str, ...]] = {
 # Lists of a master row, one row per element: (table, parent column, the
 # list's name in change_log, the element column(s)).
 LIST_TABLES: tuple[tuple[str, str, str, str], ...] = (
-    ("video_tags", "video_id", "tags", "{r}.tag"),
-    ("video_topics", "video_id", "topics", "{r}.topic"),
-    ("video_people", "video_id", "people", "json_object('name', {r}.name, 'role', {r}.role)"),
-    ("video_sources", "video_id", "sources", "{r}.source_id"),
+    ("source_tags", "source_id", "tags", "{r}.tag"),
+    ("source_topics", "source_id", "topics", "{r}.topic"),
+    ("source_people", "source_id", "people", "json_object('name', {r}.name, 'role', {r}.role)"),
+    ("source_feeds", "source_id", "feeds", "{r}.feed_id"),
     ("corpus_topics", "corpus_id", "topic", "{r}.topic"),
     ("corpus_perspectives", "corpus_id", "perspective", "{r}.perspective"),
-    ("corpus_sources", "corpus_id", "sources", "{r}.source_id"),
 )
 
 APPEND_ONLY = ("review_verdicts", "speaker_verdicts", "corrections", "fetch_attempts", "change_log")
@@ -343,16 +336,16 @@ def _triggers() -> str:
             )
     out.append(
         """CREATE TRIGGER IF NOT EXISTS segments_ai AFTER INSERT ON segments BEGIN
-    INSERT INTO segments_fts(rowid, text, video_id) VALUES (new.rowid, new.text, new.video_id);
+    INSERT INTO segments_fts(rowid, text, source_id) VALUES (new.rowid, new.text, new.source_id);
 END;
 CREATE TRIGGER IF NOT EXISTS segments_ad AFTER DELETE ON segments BEGIN
-    INSERT INTO segments_fts(segments_fts, rowid, text, video_id)
-        VALUES ('delete', old.rowid, old.text, old.video_id);
+    INSERT INTO segments_fts(segments_fts, rowid, text, source_id)
+        VALUES ('delete', old.rowid, old.text, old.source_id);
 END;
 CREATE TRIGGER IF NOT EXISTS segments_au AFTER UPDATE ON segments BEGIN
-    INSERT INTO segments_fts(segments_fts, rowid, text, video_id)
-        VALUES ('delete', old.rowid, old.text, old.video_id);
-    INSERT INTO segments_fts(rowid, text, video_id) VALUES (new.rowid, new.text, new.video_id);
+    INSERT INTO segments_fts(segments_fts, rowid, text, source_id)
+        VALUES ('delete', old.rowid, old.text, old.source_id);
+    INSERT INTO segments_fts(rowid, text, source_id) VALUES (new.rowid, new.text, new.source_id);
 END;"""
     )
     return "\n".join(out)
@@ -360,23 +353,23 @@ END;"""
 
 VIEWS = """
 CREATE VIEW IF NOT EXISTS vw_corpus_members AS
-SELECT m.id, m.corpus_id, m.video_id, m.reason, m.created_at,
+SELECT m.id, m.corpus_id, m.source_id, m.reason, m.created_at,
        CASE v.status WHEN 'added' THEN 'queued' WHEN 'ingested' THEN 'ingested'
                      ELSE 'failed' END AS member_status
-FROM corpus_members m JOIN videos v ON v.id = m.video_id;
+FROM corpus_members m JOIN sources v ON v.id = m.source_id;
 
 CREATE VIEW IF NOT EXISTS vw_search_segments AS
-SELECT s.rowid AS segment_rowid, s.video_id, s.position, s.start_seconds, s.end_seconds,
+SELECT s.rowid AS segment_rowid, s.source_id, s.position, s.start_seconds, s.end_seconds,
        s.speaker, s.text, v.title
-FROM segments s JOIN videos v ON v.id = s.video_id;
+FROM segments s JOIN sources v ON v.id = s.source_id;
 
 CREATE VIEW IF NOT EXISTS vw_current_review_verdicts AS
 SELECT * FROM review_verdicts
-WHERE rowid IN (SELECT max(rowid) FROM review_verdicts GROUP BY video_id, key);
+WHERE rowid IN (SELECT max(rowid) FROM review_verdicts GROUP BY source_id, key);
 
 CREATE VIEW IF NOT EXISTS vw_current_speaker_verdicts AS
 SELECT * FROM speaker_verdicts
-WHERE rowid IN (SELECT max(rowid) FROM speaker_verdicts GROUP BY video_id, role);
+WHERE rowid IN (SELECT max(rowid) FROM speaker_verdicts GROUP BY source_id, role);
 
 CREATE VIEW IF NOT EXISTS vw_current_corrections AS
 SELECT * FROM corrections
@@ -472,28 +465,28 @@ KO = "id, version, created_at, created_by, schema_version, metadata"
 
 # v1 → v2: STRICT tables with CHECK and FOREIGN KEY constraints, JSON lists
 # into one row per element, segment columns renamed, membership status
-# derived from the video's, decision tables append-only with a content hash.
+# derived from the source's, decision tables append-only with a content hash.
 # The v1 tables are renamed to legacy_v1_* first, read, then dropped.
 V1_TO_V2_COPY = f"""
-INSERT INTO videos ({KO}, url, title, channel_id, channel_title, published_at,
+INSERT INTO sources ({KO}, kind, locator, title, channel_id, channel_title, published_at,
     duration_seconds, description, thumbnail_url, language, caption_language, caption_kind,
     metadata_source, has_caption_track, status, fetcher, transcript_state, last_error,
     perspective)
-SELECT {KO}, url, title, channel_id, channel_title, published_at,
+SELECT {KO}, 'youtube', url, title, channel_id, channel_title, published_at,
     duration_seconds, description, thumbnail_url, language, caption_language, caption_kind,
     metadata_source, has_caption_track, status, fetcher, transcript_state, last_error,
     nullif(perspective, '')
 FROM legacy_v1_videos ORDER BY rowid;
 
-INSERT INTO video_tags ({KO}, video_id, position, tag)
+INSERT INTO source_tags ({KO}, source_id, position, tag)
 SELECT {_ko_copy("vtg")}, p.id, CAST(j.key AS INTEGER), j.value
 FROM legacy_v1_videos p, json_each(p.tags) j ORDER BY p.rowid, j.key;
 
-INSERT INTO video_topics ({KO}, video_id, position, topic)
+INSERT INTO source_topics ({KO}, source_id, position, topic)
 SELECT {_ko_copy("vtp")}, p.id, CAST(j.key AS INTEGER), j.value
 FROM legacy_v1_videos p, json_each(p.topics) j ORDER BY p.rowid, j.key;
 
-INSERT INTO video_people ({KO}, video_id, position, name, role)
+INSERT INTO source_people ({KO}, source_id, position, name, role)
 SELECT {_ko_copy("vpp")}, p.id, CAST(j.key AS INTEGER),
        json_extract(j.value, '$.name'), coalesce(json_extract(j.value, '$.role'), '')
 FROM legacy_v1_videos p, json_each(p.people) j ORDER BY p.rowid, j.key;
@@ -510,43 +503,95 @@ INSERT INTO corpus_perspectives ({KO}, corpus_id, position, perspective)
 SELECT {_ko_copy("cps")}, p.id, CAST(j.key AS INTEGER), j.value
 FROM legacy_v1_corpora p, json_each(p.perspective) j ORDER BY p.rowid, j.key;
 
-INSERT INTO corpus_sources ({KO}, corpus_id, position, source_id)
-SELECT {_ko_copy("csr")}, p.id, CAST(j.key AS INTEGER), j.value
-FROM legacy_v1_corpora p, json_each(p.sources) j ORDER BY p.rowid, j.key;
-
-INSERT INTO corpus_members ({KO}, corpus_id, video_id, reason)
+INSERT INTO corpus_members ({KO}, corpus_id, source_id, reason)
 SELECT {KO}, corpus_id, video_id, reason FROM legacy_v1_corpus_members ORDER BY rowid;
 
-INSERT INTO fetch_attempts ({KO}, video_id, fetcher, outcome, detail)
+INSERT INTO fetch_attempts ({KO}, source_id, fetcher, outcome, detail)
 SELECT {KO}, video_id, fetcher, outcome, detail FROM legacy_v1_fetch_attempts ORDER BY rowid;
 
-INSERT INTO artifacts ({KO}, video_id, corpus_id, node, path, sha256, state, inputs, provenance)
+INSERT INTO artifacts ({KO}, source_id, corpus_id, node, path, sha256, state, inputs, provenance)
 SELECT {KO},
-       CASE WHEN owner IN (SELECT id FROM videos) THEN owner END,
+       CASE WHEN owner IN (SELECT id FROM sources) THEN owner END,
        CASE WHEN owner IN (SELECT id FROM corpora) THEN owner END,
        node, path, sha256, state, inputs, provenance
 FROM legacy_v1_artifacts ORDER BY rowid;
 
-INSERT INTO review_verdicts ({KO}, video_id, key, kind, verdict, span, role, source,
+INSERT INTO review_verdicts ({KO}, source_id, key, kind, verdict, span, role, source,
     applied_at, subject_sha256, previous_subject_sha256)
 SELECT {KO}, video_id, key, kind, verdict, span, role, source,
        CASE WHEN applied_at = '' THEN created_at ELSE applied_at END,
        corpuslm_subject_sha256(kind, video_id, span, role), NULL
 FROM legacy_v1_review_verdicts ORDER BY rowid;
 
-INSERT INTO speaker_verdicts ({KO}, video_id, role, name)
+INSERT INTO speaker_verdicts ({KO}, source_id, role, name)
 SELECT {KO}, video_id, role, name FROM legacy_v1_speaker_verdicts ORDER BY rowid;
 
-INSERT INTO corrections ({KO}, span_norm, verdict, kind, origin_video, origin_key)
+INSERT INTO corrections ({KO}, span_norm, verdict, kind, origin_source, origin_key)
 SELECT {KO}, span_norm, verdict, kind, origin_video, origin_key
 FROM legacy_v1_corrections ORDER BY rowid;
 
 INSERT INTO locks (owner, holder, acquired_at, expires_at)
 SELECT owner, holder, acquired_at, expires_at FROM legacy_v1_locks;
 
-INSERT INTO segments (rowid, video_id, position, start_seconds, end_seconds, speaker, text)
+INSERT INTO segments (rowid, source_id, position, start_seconds, end_seconds, speaker, text)
 SELECT rowid, video_id, idx, t0, t1, speaker, text FROM legacy_v1_segments ORDER BY rowid;
 """
+
+
+# v2 -> v3 added the playlist/channel list under its first names; v3 -> v4 renames it. A v2
+# database is brought to v3 first so one script handles both.
+V2_TO_V3_TABLE = """
+CREATE TABLE IF NOT EXISTS video_sources (
+    id TEXT PRIMARY KEY NOT NULL, version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL,
+    created_by TEXT NOT NULL, schema_version TEXT NOT NULL,
+    metadata TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(metadata)),
+    video_id TEXT NOT NULL REFERENCES videos(id),
+    position INTEGER NOT NULL CHECK (position >= 0),
+    source_id TEXT NOT NULL,
+    UNIQUE (video_id, position)
+) STRICT;
+"""
+
+# v3 -> v4: `videos` becomes `sources` (a YouTube video or a Bee conversation) with a `kind`;
+# `url` becomes `locator`; every `video_id` becomes `source_id`; the playlist/channel list
+# becomes `source_feeds`; the corpus-level list is dropped (a corpus records no feed). Triggers
+# and views are dropped and rebuilt from SCHEMA because their text names tables.
+V3_TO_V4_RENAMES = [
+    "ALTER TABLE video_sources RENAME COLUMN source_id TO feed_id;",
+    "ALTER TABLE videos RENAME TO sources;",
+    "ALTER TABLE sources RENAME COLUMN url TO locator;",
+    "ALTER TABLE sources ADD COLUMN kind TEXT NOT NULL DEFAULT 'youtube' "
+    "CHECK (kind IN ('youtube', 'bee'));",
+    "ALTER TABLE video_tags RENAME TO source_tags;",
+    "ALTER TABLE video_topics RENAME TO source_topics;",
+    "ALTER TABLE video_people RENAME TO source_people;",
+    "ALTER TABLE video_sources RENAME TO source_feeds;",
+    *(
+        f"ALTER TABLE {t} RENAME COLUMN video_id TO source_id;"
+        for t in (
+            "source_tags", "source_topics", "source_people", "source_feeds", "corpus_members",
+            "fetch_attempts", "artifacts", "review_verdicts", "speaker_verdicts", "segments",
+        )
+    ),
+    "ALTER TABLE corrections RENAME COLUMN origin_video TO origin_source;",
+    "ALTER TABLE runs RENAME COLUMN videos TO sources;",
+    "DROP INDEX IF EXISTS corpus_members_video;",
+]  # fmt: skip
+
+
+def _v3_to_v4_script(conn: sqlite3.Connection) -> list[str]:
+    drops = [
+        f"DROP TRIGGER IF EXISTS {name};"
+        for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type = 'trigger'")
+    ]
+    drops += [
+        f"DROP VIEW IF EXISTS {name};"
+        for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type = 'view'")
+    ]
+    drops += ["DROP TABLE IF EXISTS segments_fts;"]
+    tail = ["DROP TABLE IF EXISTS corpus_sources;"]
+    rebuild = ["INSERT INTO segments_fts(segments_fts) VALUES ('rebuild');"]
+    return [*drops, *V3_TO_V4_RENAMES, *tail, *_statements(SCHEMA), *rebuild]
 
 
 def _user_version(conn: sqlite3.Connection) -> int:
@@ -622,10 +667,10 @@ def prune_backups(db_path: Path, *, keep: int = BACKUPS_KEPT) -> list[str]:
     return [p.name for p in doomed]
 
 
-def _subject_sha256(kind: str, video_id: str, span: str, role: str) -> str:
+def _subject_sha256(kind: str, source_id: str, span: str, role: str) -> str:
     from .identity import subject_sha256
 
-    return subject_sha256(kind=kind, video_id=video_id, span=span, role=role)
+    return subject_sha256(kind=kind, source_id=source_id, span=span, role=role)
 
 
 def _run_in_transaction(
@@ -727,26 +772,45 @@ def migrate(conn: sqlite3.Connection, db_path: Path) -> dict:
         )
     if version == USER_VERSION:
         return {"from": version, "to": version, "backup": None}
-    if "videos" not in _tables(conn):
+    if not ({"videos", "sources"} & _tables(conn)):
         _run_in_transaction(
             conn, lambda c: _statements(SCHEMA), from_version=version, to_version=USER_VERSION
         )
         return {"from": version, "to": USER_VERSION, "backup": None, "created": True}
     saved = backup(conn, db_path, label=f"before-v{USER_VERSION}")
     deleted = prune_backups(db_path)  # only after the new one verified
-    if version == 2:
-        # v2 -> v3 adds tables, triggers and views, all written IF NOT EXISTS.
-        if not _run_in_transaction(
-            conn, lambda c: _statements(SCHEMA), from_version=2, to_version=USER_VERSION
-        ):
-            return {"from": 2, "to": USER_VERSION, "backup": str(saved), "by": "another process"}
+    if version in (2, 3):
+        dropped = (
+            [r[0] for r in conn.execute("SELECT source_id FROM corpus_sources ORDER BY rowid")]
+            if "corpus_sources" in _tables(conn)
+            else []
+        )
+        before = _counts(conn, AUTHOR_TABLES)
+
+        def to_v4(c: sqlite3.Connection) -> list[str]:
+            return [*(_statements(V2_TO_V3_TABLE) if version == 2 else []), *_v3_to_v4_script(c)]
+
+        if not _run_in_transaction(conn, to_v4, from_version=version, to_version=USER_VERSION):
+            return {
+                "from": version,
+                "to": USER_VERSION,
+                "backup": str(saved),
+                "by": "another process",
+            }
         check = conn.execute("PRAGMA integrity_check").fetchone()[0]
-        if check != "ok":
+        after = _counts(conn, AUTHOR_TABLES)
+        if check != "ok" or before != after:
             raise MigrationFailed(
-                f"{db_path} after migration: integrity_check {check}. "
-                f"The verified backup is {saved}."
+                f"{db_path} after migration: integrity_check {check}; author rows {before} -> "
+                f"{after}. The verified backup is {saved}."
             )
-        return {"from": 2, "to": USER_VERSION, "backup": str(saved), "backups_deleted": deleted}
+        return {
+            "from": version,
+            "to": USER_VERSION,
+            "backup": str(saved),
+            "backups_deleted": deleted,
+            "dropped_corpus_feeds": dropped,
+        }
     conn.create_function("corpuslm_subject_sha256", 4, _subject_sha256, deterministic=True)
     before = _counts(conn, AUTHOR_TABLES)
 

@@ -18,20 +18,20 @@ This document mirrors the code: the schema is defined in
 and `tests/test_db.py::test_the_schema_document_mirrors_the_code` fails
 when the two differ. Change the code first, this document with it.
 
-What hangs off a video:
+What hangs off a source:
 
 ```mermaid
 erDiagram
-  videos ||--o{ video_tags : "tags"
-  videos ||--o{ video_topics : "topics"
-  videos ||--o{ video_people : "people"
-  videos ||--o{ video_sources : "sources"
-  videos ||--o{ fetch_attempts : "attempts"
-  videos ||--o{ artifacts : "artifacts"
-  videos ||--o{ review_verdicts : "verdicts"
-  videos ||--o{ speaker_verdicts : "names"
-  videos ||--o{ corrections : "origin of"
-  videos ||--o{ segments : "indexed segments"
+  sources ||--o{ source_tags : "tags"
+  sources ||--o{ source_topics : "topics"
+  sources ||--o{ source_people : "people"
+  sources ||--o{ source_feeds : "feeds"
+  sources ||--o{ fetch_attempts : "attempts"
+  sources ||--o{ artifacts : "artifacts"
+  sources ||--o{ review_verdicts : "verdicts"
+  sources ||--o{ speaker_verdicts : "names"
+  sources ||--o{ corrections : "origin of"
+  sources ||--o{ segments : "indexed segments"
 ```
 
 What hangs off a corpus, and where the two meet:
@@ -40,11 +40,10 @@ What hangs off a corpus, and where the two meet:
 erDiagram
   corpora ||--o{ corpus_topics : "topic"
   corpora ||--o{ corpus_perspectives : "perspective"
-  corpora ||--o{ corpus_sources : "sources"
   corpora ||--o{ corpus_members : "members"
-  videos ||--o{ corpus_members : "member of"
+  sources ||--o{ corpus_members : "member of"
   corpora ||--o{ artifacts : "corpus note"
-  videos ||--o{ artifacts : "artifacts"
+  sources ||--o{ artifacts : "artifacts"
 ```
 
 ## One module owns the store (2026-10-03)
@@ -124,7 +123,7 @@ places. The stored copy could disagree (a metadata failure left members
 
 | Kind | Tables | Rule |
 |---|---|---|
-| master data | `videos`, `corpora`, `corpus_members` and the list tables | mutable; `version` bumps on every update; a trigger writes every changed column to `change_log` (old value, new value, row version); list tables are written position by position and log each element added or removed (an element that moves counts as removed and added) |
+| master data | `sources`, `corpora`, `corpus_members` and the list tables | mutable; `version` bumps on every update; a trigger writes every changed column to `change_log` (old value, new value, row version); list tables are written position by position and log each element added or removed (an element that moves counts as removed and added) |
 | decisions | `review_verdicts`, `speaker_verdicts`, `corrections` | append-only (a trigger aborts UPDATE and DELETE); an answer given again or changed is a new row; the newest row per slot is in force (`vw_current_*`) |
 | evidence | `fetch_attempts`, `change_log` | append-only |
 | runs | `runs` | one row per pipeline run (`ytlm run`), opened `running` and closed once as `ok` or `error` |
@@ -164,7 +163,7 @@ keep lineage.
 
 ## Migrations: user_version, a verified backup, one transaction (2026-10-03)
 
-The schema version is `PRAGMA user_version` (`db.USER_VERSION`, now 3; a
+The schema version is `PRAGMA user_version` (`db.USER_VERSION`, now 4; a
 database made before it was tracked reads 0 and has the v1 schema, frozen
 in `tests/fixtures/schema_v1.sql`). On open, `db.migrate`:
 
@@ -217,14 +216,15 @@ knowledge-object base, written `(base)` below: `id TEXT` primary key,
 `schema_version TEXT` (the row's schema, now `2`), `metadata TEXT` (a JSON
 object). Null is "no" unless marked.
 
-### `videos`
+### `sources`
 
 History: master.
 
 | column | type | null | meaning |
 |---|---|---|---|
 | (base) | | | |
-| url | TEXT | no | the watch URL |
+| kind | TEXT | no | `youtube` or `bee` |
+| locator | TEXT | no | where the source lives: the watch URL (youtube) or a workspace-relative file path (bee) |
 | title | TEXT | no | from the metadata provider |
 | channel_id | TEXT | no | |
 | channel_title | TEXT | no | |
@@ -243,43 +243,43 @@ History: master.
 | last_error | TEXT | no | the last failure, `''` after a success |
 | perspective | TEXT | yes | the video's perspective; NULL until the digest or the author sets it |
 
-### `video_tags`
+### `source_tags`
 
-History: list `tags` of `videos`.
+History: list `tags` of `sources`.
 
 | column | type | null | meaning |
 |---|---|---|---|
 | (base) | | | |
-| video_id | TEXT | no | the video |
+| source_id | TEXT | no | the video |
 | position | INTEGER | no | order in the list, from 0 |
 | tag | TEXT | no | one Data API tag |
 
-### `video_topics`
+### `source_topics`
 
-History: list `topics` of `videos`.
+History: list `topics` of `sources`.
 
 | column | type | null | meaning |
 |---|---|---|---|
 | (base) | | | |
-| video_id | TEXT | no | the video |
+| source_id | TEXT | no | the video |
 | position | INTEGER | no | order in the list, from 0 |
 | topic | TEXT | no | one topic (the digest's, or the author's) |
 
-### `video_people`
+### `source_people`
 
-History: list `people` of `videos`.
+History: list `people` of `sources`.
 
 | column | type | null | meaning |
 |---|---|---|---|
 | (base) | | | |
-| video_id | TEXT | no | the video |
+| source_id | TEXT | no | the video |
 | position | INTEGER | no | order in the list, from 0 |
 | name | TEXT | no | a person in the video |
 | role | TEXT | no | host, guest ... (`''` when none) |
 
-### `video_sources`
+### `source_feeds`
 
-History: list `sources` of `videos`.
+History: list `feeds` of `sources`.
 
 The row's `created_at` is the date the
 video was found through that source (nagarkar/ytlm#61).
@@ -287,9 +287,9 @@ video was found through that source (nagarkar/ytlm#61).
 | column | type | null | meaning |
 |---|---|---|---|
 | (base) | | | |
-| video_id | TEXT | no | the video |
+| source_id | TEXT | no | the video |
 | position | INTEGER | no | order in the list, from 0 |
-| source_id | TEXT | no | a playlist or channel id the video was found through |
+| feed_id | TEXT | no | a playlist or channel id the source was found through |
 
 ### `corpora`
 
@@ -326,20 +326,6 @@ History: list `perspective` of `corpora`.
 | position | INTEGER | no | order in the list, from 0 |
 | perspective | TEXT | no | one perspective |
 
-### `corpus_sources`
-
-History: list `sources` of `corpora`.
-
-Legacy since version 3: ytlm no longer writes
-or reads it; a video records its own sources (`video_sources`).
-
-| column | type | null | meaning |
-|---|---|---|---|
-| (base) | | | |
-| corpus_id | TEXT | no | the corpus |
-| position | INTEGER | no | order in the list, from 0 |
-| source_id | TEXT | no | a playlist or channel id the corpus was filled from |
-
 ### `corpus_members`
 
 History: master.
@@ -348,7 +334,7 @@ History: master.
 |---|---|---|---|
 | (base) | | | |
 | corpus_id | TEXT | no | the corpus |
-| video_id | TEXT | no | the video; unique with corpus_id |
+| source_id | TEXT | no | the video; unique with corpus_id |
 | reason | TEXT | no | one of `author`, `discovered`, `consumer` |
 
 A merge (`Store.merge_corpora`) moves a membership by changing its `corpus_id` and
@@ -364,7 +350,7 @@ History: append-only.
 | column | type | null | meaning |
 |---|---|---|---|
 | (base) | | | |
-| video_id | TEXT | no | the video |
+| source_id | TEXT | no | the video |
 | fetcher | TEXT | no | the fetcher or `metadata:<provider>` |
 | outcome | TEXT | no | one of `ok`, `skipped`, `none`, `error` |
 | detail | TEXT | no | the reason, at most 500 characters |
@@ -376,9 +362,9 @@ History: derived.
 | column | type | null | meaning |
 |---|---|---|---|
 | (base) | | | |
-| video_id | TEXT | yes | the owning video; exactly one of video_id and corpus_id is set |
+| source_id | TEXT | yes | the owning video; exactly one of source_id and corpus_id is set |
 | corpus_id | TEXT | yes | the owning corpus (its note) |
-| owner | TEXT | yes | generated: video_id or corpus_id, never stored |
+| owner | TEXT | yes | generated: source_id or corpus_id, never stored |
 | node | TEXT | no | the graph node; unique per owner |
 | path | TEXT | no | relative to the workspace root, `''` when the artifact is in the database |
 | sha256 | TEXT | no | hash of the artifact's bytes |
@@ -393,7 +379,7 @@ History: append-only.
 | column | type | null | meaning |
 |---|---|---|---|
 | (base) | | | |
-| video_id | TEXT | no | the video |
+| source_id | TEXT | no | the video |
 | key | TEXT | no | the review key (`amb-NNNN`, `spk-N`, `spk:ROLE`); names the slot |
 | kind | TEXT | no | one of `ambiguity`, `speaker` |
 | verdict | TEXT | no | the reading, the name, or `skip` |
@@ -411,7 +397,7 @@ History: append-only.
 | column | type | null | meaning |
 |---|---|---|---|
 | (base) | | | |
-| video_id | TEXT | no | the video |
+| source_id | TEXT | no | the video |
 | role | TEXT | no | the speaker role |
 | name | TEXT | no | the author's name for it |
 
@@ -425,7 +411,7 @@ History: append-only.
 | span_norm | TEXT | no | the correction memory key: the span lowercased, punctuation stripped |
 | verdict | TEXT | no | the author's reading |
 | kind | TEXT | no | one of `term`, `reading` |
-| origin_video | TEXT | no | the video the verdict was given on |
+| origin_source | TEXT | no | the video the verdict was given on |
 | origin_key | TEXT | no | its review key |
 
 ### `runs`
@@ -435,12 +421,12 @@ History: runs.
 | column | type | null | meaning |
 |---|---|---|---|
 | (base) | | | |
-| scope | TEXT | no | `workspace`, `corpus:<id>` or `videos:<n>` |
+| scope | TEXT | no | `workspace`, `corpus:<id>` or `sources:<n>` |
 | status | TEXT | no | one of `running`, `ok`, `error`; `error` when any item failed or the run itself stopped |
 | started_at | TEXT | no | |
 | finished_at | TEXT | yes | NULL exactly while `running` |
-| videos | INTEGER | yes | videos in scope |
-| failed_items | INTEGER | yes | videos with an error |
+| sources | INTEGER | yes | sources in scope |
+| failed_items | INTEGER | yes | sources with an error |
 | detail | TEXT | no | why the run itself stopped, else `''` |
 
 ### `change_log`
@@ -475,7 +461,7 @@ History: derived.
 | column | type | null | meaning |
 |---|---|---|---|
 | rowid | INTEGER | no | the FTS5 content rowid |
-| video_id | TEXT | no | the video |
+| source_id | TEXT | no | the video |
 | position | INTEGER | no | the segment's `idx` in transcript.json |
 | start_seconds | REAL | no | its `t0` |
 | end_seconds | REAL | no | its `t1`, never before start_seconds |
@@ -494,7 +480,7 @@ History: derived.
 |---|---|---|---|
 | id | TEXT | | the membership row |
 | corpus_id | TEXT | | |
-| video_id | TEXT | | |
+| source_id | TEXT | | |
 | reason | TEXT | | |
 | created_at | TEXT | | |
 | member_status | | | `queued`, `ingested` or `failed`, from the video's status |
@@ -507,7 +493,7 @@ joins `segments_fts` to it and filters a corpus with `EXISTS`.
 | column | type | null | meaning |
 |---|---|---|---|
 | segment_rowid | INTEGER | | joins `segments_fts.rowid` |
-| video_id | TEXT | | |
+| source_id | TEXT | | |
 | position | INTEGER | | |
 | start_seconds | REAL | | |
 | end_seconds | REAL | | |
@@ -517,11 +503,11 @@ joins `segments_fts` to it and filters a corpus with `EXISTS`.
 
 ### `vw_current_review_verdicts` (view)
 
-Every column of `review_verdicts`; the newest row per (video_id, key).
+Every column of `review_verdicts`; the newest row per (source_id, key).
 
 ### `vw_current_speaker_verdicts` (view)
 
-Every column of `speaker_verdicts`; the newest row per (video_id, role).
+Every column of `speaker_verdicts`; the newest row per (source_id, role).
 
 ### `vw_current_corrections` (view)
 
@@ -534,7 +520,7 @@ Invented values, in the shape the code writes (`db.ko_fields`,
 `version`, `schema_version` and `metadata` are left out; `metadata` is a
 JSON object such as `{"user": "author"}`.
 
-`videos` (one ingested video; `id` is the YouTube id):
+`sources` (one ingested video; `id` is the YouTube id):
 
 | id | created_at | created_by | url | title | published_at | duration_seconds | status | fetcher | caption_kind | transcript_state | last_error |
 |---|---|---|---|---|---|---|---|---|---|---|---|
@@ -544,7 +530,7 @@ JSON object such as `{"user": "author"}`.
 `review_verdicts` (the second row answers the same slot again after the
 segment changed, so it carries the previous hash):
 
-| id | created_by | video_id | key | kind | verdict | span | role | source | applied_at | subject_sha256 | previous_subject_sha256 |
+| id | created_by | source_id | key | kind | verdict | span | role | source | applied_at | subject_sha256 | previous_subject_sha256 |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | `ver-3f9a1c0d2b7e` | `cli` | `Xq3vT9bLk2A` | `amb-0007` | `ambiguity` | `Mitra` | `mithra` | `` | `phone page` | `2026-09-23T18:02:44Z` | `9c1e…` (64 hex) | NULL |
 | `ver-a04d5e6f7788` | `cli` | `Xq3vT9bLk2A` | `amb-0007` | `ambiguity` | `Mitra` | `mithra` | `` | `review file` | `2026-09-30T08:15:03Z` | `4b72…` (64 hex) | `9c1e…` |
@@ -552,11 +538,11 @@ segment changed, so it carries the previous hash):
 
 `runs`:
 
-| id | created_by | scope | status | started_at | finished_at | videos | failed_items | detail |
+| id | created_by | scope | status | started_at | finished_at | sources | failed_items | detail |
 |---|---|---|---|---|---|---|---|---|
 | `run-5b0e8a7c9d10` | `runner` | `workspace` | `ok` | `2026-09-30T03:30:00Z` | `2026-09-30T03:41:27Z` | 12 | 0 | `` |
 | `run-c7d6e5f4a3b2` | `runner` | `corpus:cor-8e21f04b6a93` | `error` | `2026-10-01T03:30:00Z` | `2026-10-01T03:33:05Z` | 4 | 1 | `` |
-| `run-0a1b2c3d4e5f` | `cli` | `videos:1` | `running` | `2026-10-02T09:12:40Z` | NULL | 1 | NULL | `` |
+| `run-0a1b2c3d4e5f` | `cli` | `sources:1` | `running` | `2026-10-02T09:12:40Z` | NULL | 1 | NULL | `` |
 
 ## Changes
 
@@ -571,3 +557,4 @@ segment changed, so it carries the previous hash):
 - 2026-10-03: Code links carry a line anchor; the entity diagram is split in two (video side, corpus side); example rows for `videos`, `review_verdicts` and `runs`, metalm conformance (#23)
 - 2026-10-03: Moved from ytlm to corpuslm with `db.py`, `store.py`, `model.py` and `clock.py`; the canonical hash and the verdict subject hash move to `identity.py`; the SQL function `ytlm_subject_sha256` is renamed `corpuslm_subject_sha256` (registered per connection, never stored); the error for a newer database names corpuslm; the JSON state files stay in ytlm's copy of this document (nagarkar/ytlm#50)
 - 2026-10-08: Version 3: `video_sources` (a video records the playlists and channels it was found through, dated by the row); `corpus_sources` kept, unused (nagarkar/ytlm#61)
+- 2026-10-08: Version 4 (nagarkar/ytlm#50, seam cut 1): `videos` is `sources` with a `kind` (`youtube`, `bee`), `url` is `locator`, every `video_id` is `source_id`, the playlist/channel list is `source_feeds`; `corpus_sources` is gone (a corpus records no feed). Rows in `change_log` written before keep the old table names.
