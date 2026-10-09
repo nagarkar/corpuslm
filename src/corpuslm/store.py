@@ -140,8 +140,13 @@ class Store:
     def has_source(self, source_id: str) -> bool:
         return self.db.one("SELECT 1 FROM sources WHERE id = ?", (source_id,)) is not None
 
-    def source_ids(self) -> list[str]:
-        return [r["id"] for r in self.db.all("SELECT id FROM sources ORDER BY created_at, rowid")]
+    def source_ids(self, kind: str | None = None) -> list[str]:
+        """Every source id, oldest first; only those of `kind` (`youtube`, `bee`) when given."""
+        where, args = ("WHERE kind = ? ", [kind]) if kind else ("", [])
+        return [
+            r["id"]
+            for r in self.db.all(f"SELECT id FROM sources {where}ORDER BY created_at, rowid", args)
+        ]
 
     def add_source(
         self, source_id: str, locator: str, *, created_by: str, kind: str = "youtube"
@@ -166,12 +171,15 @@ class Store:
                 table, columns = SOURCE_LISTS[name]
                 self._write_list(table, "source_id", source_id, columns, values, created_by)
 
-    def source_counts_by(self, column: str) -> dict[str, int]:
+    def source_counts_by(self, column: str, kind: str | None = None) -> dict[str, int]:
         if column not in ("status", "fetcher"):
             raise ValueError(f"no count by {column!r}")
+        where, args = ("WHERE kind = ? ", [kind]) if kind else ("", [])
         return {
             r["k"]: r["n"]
-            for r in self.db.all(f"SELECT {column} AS k, COUNT(*) AS n FROM sources GROUP BY 1")
+            for r in self.db.all(
+                f"SELECT {column} AS k, COUNT(*) AS n FROM sources {where}GROUP BY 1", args
+            )
         }
 
     # ---- corpora and membership -----------------------------------------------
@@ -508,16 +516,25 @@ class Store:
         FTS5 rows. Returns the segments removed."""
         return self.db.execute("DELETE FROM segments WHERE source_id = ?", (source_id,)).rowcount
 
-    def segment_count(self, source_id: str | None = None) -> int:
+    def segment_count(self, source_id: str | None = None, kind: str | None = None) -> int:
+        """Segments of one source, of every source of `kind`, or of all."""
+        if source_id is None and kind:
+            return self._row(
+                "SELECT COUNT(*) AS n FROM segments s JOIN sources o ON o.id = s.source_id "
+                "WHERE o.kind = ?",
+                (kind,),
+            )["n"]
         if source_id is None:
             return self._row("SELECT COUNT(*) AS n FROM segments")["n"]
         return self._row("SELECT COUNT(*) AS n FROM segments WHERE source_id = ?", (source_id,))[
             "n"
         ]
 
-    def search(self, match: str, *, corpus_id: str | None, limit: int) -> list[dict]:
-        """FTS5 hits, best first, through vw_search_segments. Raises
-        sqlite3.OperationalError when `match` is not valid FTS5 syntax."""
+    def search(
+        self, match: str, *, corpus_id: str | None, limit: int, kind: str | None = None
+    ) -> list[dict]:
+        """FTS5 hits, best first, through vw_search_segments; only sources of `kind` when given.
+        Raises sqlite3.OperationalError when `match` is not valid FTS5 syntax."""
         sql = (
             "SELECT h.source_id, h.position, h.start_seconds, h.end_seconds, h.title, "
             "snippet(segments_fts, 0, '[', ']', '…', 14) AS snippet, "
@@ -530,9 +547,14 @@ class Store:
                 if corpus_id
                 else ""
             )
+            + (
+                "AND EXISTS (SELECT 1 FROM sources o WHERE o.id = h.source_id AND o.kind = ?) "
+                if kind
+                else ""
+            )
             + "ORDER BY rank LIMIT ?"
         )
-        args = [match] + ([corpus_id] if corpus_id else []) + [limit]
+        args = [match] + ([corpus_id] if corpus_id else []) + ([kind] if kind else []) + [limit]
         return [dict(r) for r in self.db.all(sql, args)]
 
     # ---- locks (coordination) ---------------------------------------------------
