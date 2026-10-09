@@ -13,7 +13,7 @@ The plan that moves code here is nagarkar/ytlm#50 (ytlm
 ## Commands
 
 - Install: `python3.12 -m venv .venv && .venv/bin/pip install -e ".[dev]"`.
-- Test: `.venv/bin/pytest` (offline; never touches a real database).
+- Test: `.venv/bin/pytest` (offline; never touches a real database; the review-page script check needs Node and `npm ci --prefix tests/js` once).
 - Lint and format: `.venv/bin/ruff check src tests`, `.venv/bin/ruff format src tests`.
 - Types: `.venv/bin/pyright`.
 - Mutation, core paths only, on demand: `rm -rf mutants && mkdir mutants

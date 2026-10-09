@@ -223,3 +223,29 @@ def test_pages_are_written_atomically_one_file_per_part(
         json.loads(text.split('id="data">')[1].split("</script>")[0])["corpora"][0]["corpus"]
         == "Walks"
     )
+
+
+def test_the_page_script_has_a_local_backend_beside_the_artifact_one(
+    database, sources_directory, corpus
+):
+    html = review_page.render(build(database, sources_directory))
+    assert "async function localDatabase()" in html
+    assert "await claude.use('db')" in html  # the artifact path is still there
+    assert "Tell Claude to apply the review." in html
+
+
+def test_a_workspace_page_lists_only_the_corpora_of_its_kind(database, sources_directory, corpus):
+    from review_kinds import LINKED_KIND
+
+    store = Store(database)
+    store.add_source("yt:1", "https://example.test/1", created_by="test", kind="youtube")
+    other = store.add_corpus({"name": "Talks"}, created_by="test")
+    store.add_member(other, "yt:1", "author", created_by="test")
+    store.add_corpus({"name": "Empty"}, created_by="test")
+
+    def names(kind):
+        data = review_page.workspace_data(database, sources_directory, kind=kind)
+        return [c["corpus"] for c in data["corpora"]]
+
+    assert sorted(names(BEE_KIND)) == ["Empty", "Walks"]
+    assert sorted(names(LINKED_KIND)) == ["Empty", "Talks"]
