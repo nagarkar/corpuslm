@@ -1,0 +1,819 @@
+"""LLM: the model transport, reply cache, usage ledger lines and spend guard.
+
+LiteLLM runs in-process; the vendor is the model string's prefix and reads its own key from the
+environment. Needs the `llm` extra (`litellm`, `jsonschema`); importing this module does not
+import litellm until a real call is made.
+
+Every call: renders a prompt (`corpuslm.prompts`), consults the cache
+(`<root>/llm-cache/<sha256>.json`, keyed by model, temperature and messages), calls the vendor
+only on a miss, parses the reply strictly against the prompt's declared schema (two attempts,
+then BadReply with the raw reply in the invocation's log), writes one `usage.jsonl` line
+(`corpuslm.ledger`), and returns a Reply whose `provenance()` carries prompt id and sha, model,
+profile, payload sha, time, tokens, cost and whether it was cached. The spend guard sums cost
+across the run and raises BudgetExceeded BEFORE the call that would exceed
+`[llm].max_usd_per_run`, or `[llm].max_usd_per_day` counting today's (UTC) billed lines already
+in `<root>/logs/usage.jsonl`.
+
+`Client(root, config, ...)` keeps everything it writes under `root`: the cache, `logs/` and the
+invocation's log file. The caller passes the directory; the client knows no workspace. The
+caller also passes the `validator` for its prompts' output schemas (default:
+`corpuslm.schemas.validate`, which knows only corpuslm's own schemas).
+
+`MODEL_PROFILES` records, per verified model, what a request may carry; the request is shaped
+from it BEFORE sending and never changed after. A model with no row gets the plain request (no
+temperature, no JSON mode) and `unprofiled_models` names it. A `temperature` configured for a
+model that takes none is a config error (`check_temperatures`). A vendor that rejects a
+parameter anyway fails the call with a VendorError naming the row to add. Only a 429 or 529 is
+retried, at most MAX_ATTEMPTS times with a growing pause, and every retry says so on stderr; any
+other failure fails the step. An unknown model's cost is null, never an estimate.
+
+Every payload and reply is written, tagged with its stage, into the one log file of the
+invocation: the file `log_path` names, else this client's own
+`logs/runs/<UTC stamp>-<verb>-<short id>.log`, made at its first block and never overwritten.
+The scripted transport serves replies from `<dir>/<stage>/<tag>.json` so a pipeline runs offline.
+
+The cache key is `payload_sha256(model, temperature, messages)` and must never change: stored
+replies from earlier tools stay valid only while it is byte for byte what it was
+(`tests/test_llm.py::test_the_cache_key_is_byte_for_byte_what_it_always_was`).
+
+Never imports: db, store, clikit.
+
+Terms:
+- **payload**: the rendered messages of one model call; its sha256 with the model and
+  temperature is the cache key.
+- **provenance**: what an artifact records about how it was made: prompt, model, cost, time.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import sys
+import time
+from collections.abc import Iterable
+from dataclasses import dataclass, field
+from datetime import UTC
+from pathlib import Path
+from typing import Any, Protocol
+
+from . import clock as clock_mod
+from . import schemas
+from .files import write_atomic
+from .ledger import Ledger
+from .ledger import read as ledger_read
+from .prompts import Prompt
+
+CACHE_DIR = "llm-cache"
+LOGS_DIR = "logs"
+RUN_LOGS_DIR = "runs"  # <root>/logs/runs/: one log file per invocation, never overwritten
+REQUEST_TIMEOUT_S = 180  # a batch is a few thousand tokens; never wait forever
+RETRY_SLEEP_S = 5  # the first pause; attempt n waits n x this
+MAX_ATTEMPTS = 3  # one call plus two retries, and only for RETRY_STATUSES
+RETRY_STATUSES = (429, 529)  # rate limited, overloaded; nothing else is retried
+
+
+class BadReply(RuntimeError):
+    """The model's reply did not parse or did not match the schema, twice."""
+
+    def __init__(self, message: str, attempts: int, raw: str):
+        super().__init__(message)
+        self.attempts = attempts
+        self.raw = raw
+
+
+class VendorError(RuntimeError):
+    """The vendor or the network failed (timeout, 5xx, a rate limit that
+    outlasted the retries): the step fails, the stage records it, and the run
+    goes on to the next video."""
+
+
+class TruncatedReply(RuntimeError):
+    """The vendor cut the reply at the token limit; a failure, never a partial artifact."""
+
+
+RUN_CAP = "[llm].max_usd_per_run"
+DAY_CAP = "[llm].max_usd_per_day"
+
+
+class BudgetExceeded(RuntimeError):
+    """A spend cap was reached; no further calls. `cap` names which one
+    (RUN_CAP or DAY_CAP), so the board can say."""
+
+    def __init__(self, message: str, cap: str = RUN_CAP):
+        super().__init__(message)
+        self.cap = cap
+
+
+class CacheMiss(RuntimeError):
+    """A replay asked for a payload the cache no longer holds."""
+
+
+class NotConfigured(RuntimeError):
+    pass
+
+
+# ---- model profiles (authorlm's table pattern) ------------------------
+
+ANY = "any"
+VENDOR_DEFAULT_ONLY = "vendor-default-only"
+
+
+@dataclass(frozen=True, slots=True)
+class ModelProfile:
+    name: str
+    temperature: str  # ANY | VENDOR_DEFAULT_ONLY
+    json_mode: bool  # vendor honours response_format json_object
+
+
+# Rows only for contracts verified live or by litellm's own model map.
+# Longest matching prefix wins; a model with no row gets UNKNOWN_PROFILE.
+MODEL_PROFILES: tuple[tuple[str, ModelProfile], ...] = (
+    # One row per model actually used or verified (never a wildcard).
+    ("gemini/gemini-2.5-flash-lite", ModelProfile("gemini-2.5-flash-lite", ANY, True)),
+    ("gemini/gemini-2.5-flash", ModelProfile("gemini-2.5-flash", ANY, True)),
+    # Verified live 2026-09-21: Gemini 3 warns that temperature is slated for
+    # removal; the request omits it (config cannot force a parameter
+    # the vendor is retiring).
+    (
+        "gemini/gemini-3.1-flash-lite",
+        ModelProfile("gemini-3.1-flash-lite", VENDOR_DEFAULT_ONLY, True),
+    ),
+)
+# A model with no row gets the plain request (metalm coding.md, "LLM
+# calls"): no temperature and no JSON mode, nothing the vendor may reject.
+UNKNOWN_PROFILE = ModelProfile("unknown", VENDOR_DEFAULT_ONLY, False)
+
+
+def model_profile(model: str) -> ModelProfile:
+    for name, profile in MODEL_PROFILES:
+        if model == name:
+            return profile
+    return UNKNOWN_PROFILE
+
+
+def unprofiled_models(config: dict, sections: Iterable[str]) -> list[str]:
+    """One warning per configuration section in `sections` (the sections whose `model` is
+    called through this module; the consumer names them) whose model has no MODEL_PROFILES
+    row."""
+    out = []
+    for section in sections:
+        model = (config.get(section) or {}).get("model")
+        if model and model_profile(model) is UNKNOWN_PROFILE:
+            out.append(
+                f"[{section}].model {model} has no MODEL_PROFILES row (src/corpuslm/llm.py); "
+                "it gets the plain request (no temperature, no JSON mode)"
+            )
+    return out
+
+
+def check_temperatures(config: dict, sections: Iterable[str]) -> None:
+    """A `temperature` set for a model that takes none (its row says
+    VENDOR_DEFAULT_ONLY, or it has no row) is a config error naming the key:
+    the request would silently not carry it."""
+    for section in sections:
+        values = config.get(section) or {}
+        if "temperature" not in values or "model" not in values:
+            continue
+        model = values["model"]
+        profile = model_profile(model)
+        if profile.temperature == VENDOR_DEFAULT_ONLY:
+            why = (
+                "has no MODEL_PROFILES row, so it gets the plain request"
+                if profile is UNKNOWN_PROFILE
+                else "takes no temperature (its MODEL_PROFILES row says vendor-default-only)"
+            )
+            raise ValueError(
+                f"config.toml: [{section}].temperature is set, but {model} {why}; "
+                f"remove [{section}].temperature from config.toml"
+            )
+
+
+def rejected_params(error: BaseException, params: dict) -> list[str]:
+    """The shaped parameters a vendor error names (temperature, JSON mode)."""
+    text = str(error).lower()
+    return [k for k in ("temperature", "response_format") if k in params and k in text]
+
+
+def profile_row(model: str, params: dict, rejected: list[str]) -> str:
+    """The MODEL_PROFILES row that would have shaped this request right."""
+    temperature = (
+        "ANY"
+        if "temperature" in params and "temperature" not in rejected
+        else "VENDOR_DEFAULT_ONLY"
+    )
+    json_mode = "response_format" in params and "response_format" not in rejected
+    name = model.split("/", 1)[-1]
+    return f'("{model}", ModelProfile("{name}", {temperature}, {json_mode}))'
+
+
+def retry_status(error: BaseException) -> int | None:
+    """429 or 529 when `error` is a rate limit or an overload, else None.
+    Read from the exception's status code, then from its text (vendors
+    wrap these differently)."""
+    code = getattr(error, "status_code", None)
+    if code in RETRY_STATUSES:
+        return int(code)
+    text = str(error).lower()
+    if "429" in text or "rate limit" in text or "resource_exhausted" in text:
+        return 429
+    if "529" in text or "overloaded" in text:
+        return 529
+    return None
+
+
+def say_retry(service: str, status: int, tag: str, attempt: int, wait: float) -> None:
+    """Every retry says so on stderr (metalm operations.md)."""
+    print(
+        f"retry: {service} answered {status} for {tag}; attempt {attempt + 1} of "
+        f"{MAX_ATTEMPTS} in {wait:g}s",
+        file=sys.stderr,
+    )
+
+
+# ---- transports ------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class RawReply:
+    text: str
+    tokens_in: int
+    tokens_out: int
+    cost_usd: float | None
+
+
+class Transport(Protocol):
+    name: str
+
+    def send(self, model: str, messages: list[dict], params: dict, *, tag: str) -> RawReply: ...
+
+
+class LiteLLMTransport:
+    """The vendor adapter. `completion`, `cost` and `sleep` are injectable so
+    the retry rule is tested offline; by default they are litellm's."""
+
+    name = "litellm"
+
+    def __init__(self, *, completion=None, cost=None, sleep=time.sleep):
+        self._completion = completion
+        self._cost = cost
+        self._sleep = sleep
+
+    def send(self, model: str, messages: list[dict], params: dict, *, tag: str) -> RawReply:
+        completion, cost_of = self._completion, self._cost
+        if completion is None or cost_of is None:
+            import litellm
+
+            litellm.suppress_debug_info = True
+            completion = completion or litellm.completion
+            cost_of = cost_of or (lambda r: litellm.completion_cost(completion_response=r))
+        params = {"timeout": REQUEST_TIMEOUT_S, **params}
+        resp: Any = None
+        attempt = 1
+        while attempt <= MAX_ATTEMPTS:
+            try:
+                resp = completion(model=model, messages=messages, **params)
+                break
+            except Exception as e:  # noqa: BLE001 - vendor errors are many; classify by status
+                text = str(e).splitlines()[0][:200] if str(e) else type(e).__name__
+                status = retry_status(e)
+                if status is not None and attempt < MAX_ATTEMPTS:
+                    wait = RETRY_SLEEP_S * attempt
+                    say_retry(model, status, tag, attempt, wait)
+                    self._sleep(wait)
+                    attempt += 1
+                    continue
+                rejected = rejected_params(e, params)
+                if rejected:
+                    # The request is never re-shaped after the vendor answers; the row is wrong.
+                    raise VendorError(
+                        f"{model} rejected {', '.join(rejected)} ({text}); the request "
+                        f"was shaped from a wrong MODEL_PROFILES row. Add or correct the "
+                        f"row in src/corpuslm/llm.py: {profile_row(model, params, rejected)}"
+                    ) from e
+                raise VendorError(f"{model}: {text}") from e
+        if resp is None:
+            raise VendorError(f"{model}: no reply after {MAX_ATTEMPTS} attempts")
+        usage = getattr(resp, "usage", None)
+        finish = getattr(resp.choices[0], "finish_reason", None)
+        if finish == "length":
+            # A reply cut off by the token limit is a failure, never a partial artifact.
+            raise TruncatedReply("reply cut off by the token limit (finish_reason=length)")
+        try:
+            cost = float(cost_of(resp))
+        except Exception:  # noqa: BLE001 - unknown price table → null, never an estimate
+            cost = None
+        return RawReply(
+            text=resp.choices[0].message.content or "",
+            tokens_in=int(getattr(usage, "prompt_tokens", 0) or 0),
+            tokens_out=int(getattr(usage, "completion_tokens", 0) or 0),
+            cost_usd=cost,
+        )
+
+
+class ScriptedTransport:
+    """Scripted tier (docs/design/testing.md): `<dir>/<stage>/<tag>.json` =
+    {"reply": str, "tokens_in", "tokens_out"}.
+    Cost is computed from the price table so the spend guard is exercised."""
+
+    name = "scripted"
+
+    def __init__(self, directory: Path):
+        self.directory = Path(directory)
+
+    def send(self, model: str, messages: list[dict], params: dict, *, tag: str) -> RawReply:
+        stage = params.get("_stage", "")
+        path = self.directory / stage / f"{tag}.json"
+        if not path.exists():
+            raise NotConfigured(f"scripted transport: no reply at {path}")
+        body = json.loads(path.read_text(encoding="utf-8"))
+        tokens_in = int(body.get("tokens_in", 0))
+        tokens_out = int(body.get("tokens_out", 0))
+        return RawReply(
+            text=body["reply"],
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            cost_usd=price_usd(model, tokens_in, tokens_out),
+        )
+
+
+VENDOR_KEY_ENV = {
+    "gemini": "GEMINI_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+}
+
+
+def vendor_key_env(model: str) -> str:
+    return VENDOR_KEY_ENV.get(model.split("/", 1)[0] if "/" in model else "", "")
+
+
+# The directory of scripted replies (docs/design/testing.md). Set only by the test
+# suite, in-process (monkeypatch), to a directory its test wrote; a real run
+# leaves it None and reads no environment switch for it (#52).
+SCRIPTS: Path | None = None
+
+
+def default_transport() -> Transport:
+    return ScriptedTransport(SCRIPTS) if SCRIPTS is not None else LiteLLMTransport()
+
+
+# Published per-million-token prices used only when the transport cannot
+# price a reply itself (scripted runs). Verified 2026-09-21 at
+# ai.google.dev/gemini-api/docs/pricing.
+_PRICES_PER_M = {
+    "gemini/gemini-2.5-flash-lite": (0.10, 0.40),  # retired for new users 2026-09
+    "gemini/gemini-2.5-flash": (0.30, 2.50),
+    "gemini/gemini-3.1-flash-lite": (0.25, 1.50),
+    # The arbiter (ytlm's TypeSafe adapter). TypeSafe bills input tokens only; verified
+    # 2026-09-29 at docs.typesafe.ai/models. Keyed on the alias the author
+    # chose to follow.
+    "jev-latest": (0.042, 0.0),
+}
+
+
+def price_usd(model: str, tokens_in: int, tokens_out: int) -> float | None:
+    if model not in _PRICES_PER_M:
+        return None
+    pi, po = _PRICES_PER_M[model]
+    return round(tokens_in / 1e6 * pi + tokens_out / 1e6 * po, 6)
+
+
+# ---- the client ------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class Reply:
+    parsed: Any
+    raw: str
+    prompt: Prompt
+    model: str
+    profile: str
+    payload_sha256: str
+    requested_at: str
+    tokens_in: int
+    tokens_out: int
+    cost_usd: float | None
+    cached: bool
+    attempts: int = 1
+    extra: dict = field(default_factory=dict)
+
+    def provenance(self) -> dict:
+        return {
+            "prompt_id": self.prompt.id,
+            "prompt_version": self.prompt.version,
+            "prompt_sha256": self.prompt.sha256,
+            "model": self.model,
+            "profile": self.profile,
+            "payload_sha256": self.payload_sha256,
+            "requested_at": self.requested_at,
+            "tokens_in": self.tokens_in,
+            "tokens_out": self.tokens_out,
+            "cost_usd": self.cost_usd,
+            "cached": self.cached,
+            "attempts": self.attempts,
+        }
+
+
+def payload_sha256(model: str, temperature: float | None, messages: list[dict]) -> str:
+    key = json.dumps(
+        {"model": model, "temperature": temperature, "messages": messages},
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+
+def parse_json_object(text: str) -> Any:
+    """Strict: the reply is one JSON object, optionally fenced."""
+    s = text.strip()
+    if s.startswith("```"):
+        s = s.split("\n", 1)[1] if "\n" in s else ""
+        if s.rstrip().endswith("```"):
+            s = s.rstrip()[:-3]
+    obj = json.loads(s)
+    if not isinstance(obj, dict):
+        raise ValueError("reply is not a JSON object")
+    return obj
+
+
+class Client:
+    def __init__(
+        self,
+        root: Path,
+        config: dict,
+        *,
+        transport: Transport | None = None,
+        validator=None,
+        cache_dir: Path | None = None,
+        clock: clock_mod.Clock = clock_mod.utc_now,
+        verb: str = "call",
+    ):
+        self.root = Path(root)
+        self.clock = clock
+        # The invocation's log : a run sets it to
+        # its RunLog file; otherwise the first block makes this client's own.
+        self.verb = verb
+        self.log_path: Path | None = None
+        self.config = config
+        self.cache_dir = Path(cache_dir) if cache_dir else self.root / CACHE_DIR
+        self.transport = transport or default_transport()
+        # callable(schema_name, obj) → raises ValueError on mismatch (the strict parse)
+        self.validator = validator if validator is not None else schemas.validate
+        self.ledger = Ledger(self.root / LOGS_DIR, config.get("logs") or {}, clock=clock)
+        self.max_usd = (config.get("llm") or {}).get("max_usd_per_run")
+        self.max_usd_day = (config.get("llm") or {}).get("max_usd_per_day")
+        self.spent_usd = 0.0
+        self.calls = 0
+        self._spent_before_today: float | None = None  # read once, at the first billed call
+
+    # -- the spend caps --
+    def spent_today(self) -> float:
+        """Today's (UTC) billed spend: the usage ledger's lines from before
+        this client's first billed call, plus what this client has spent."""
+        if self._spent_before_today is None:
+            today = clock_mod.iso(self.clock())[:10]
+            path = self.root / LOGS_DIR / "usage.jsonl"
+            total = 0.0
+            for p in [path.with_name(f"{path.name}.{n}") for n in (2, 1)] + [path]:
+                for e in ledger_read(p):
+                    if (
+                        str(e.get("at", "")).startswith(today)
+                        and e.get("kind") == "api"
+                        and not e.get("cached")
+                    ):
+                        total += float(e.get("cost_usd") or 0.0)
+            self._spent_before_today = total
+        return self._spent_before_today + self.spent_usd
+
+    def check_budget(self, stage: str, tag: str) -> None:
+        """Raise BudgetExceeded, naming the cap, before a billed call that a
+        cap no longer allows."""
+        if self.max_usd is not None and self.spent_usd >= float(self.max_usd):
+            raise BudgetExceeded(
+                f"spent ${self.spent_usd:.4f} of the ${float(self.max_usd):.2f} "
+                f"per-run cap ({RUN_CAP}); {stage} for {tag} not attempted",
+                RUN_CAP,
+            )
+        if self.max_usd_day is None:
+            return
+        if not self.ledger.enabled.get("usage", False):
+            raise BudgetExceeded(
+                f"the per-day cap ({DAY_CAP}) is counted from logs/usage.jsonl, and "
+                f"[logs].usage is false in config.toml; {stage} for {tag} not attempted",
+                DAY_CAP,
+            )
+        today = self.spent_today()
+        if today >= float(self.max_usd_day):
+            raise BudgetExceeded(
+                f"spent ${today:.4f} today (UTC) of the ${float(self.max_usd_day):.2f} "
+                f"per-day cap ({DAY_CAP}); {stage} for {tag} not attempted",
+                DAY_CAP,
+            )
+
+    @property
+    def capped(self) -> bool:
+        return self.max_usd is not None or self.max_usd_day is not None
+
+    # -- config helpers --
+    def stage_config(self, prompt: Prompt) -> dict:
+        section = self.config.get(prompt.config_section)
+        if not section:
+            raise NotConfigured(
+                f"[{prompt.config_section}] is absent from config.toml; "
+                f"the {prompt.stage} stage is off"
+            )
+        if "model" not in section:
+            raise NotConfigured(f"[{prompt.config_section}].model is not set")
+        return section
+
+    # -- the call --
+    def complete(
+        self,
+        stage: str,
+        prompt: Prompt,
+        variables: dict[str, str],
+        *,
+        tag: str,
+        model: str | None = None,
+        check=None,
+    ) -> Reply:
+        """`check(parsed)` raises ValueError for a reply that parses and
+        matches the schema but is wrong for this call (an index outside the
+        batch); it runs BEFORE the reply is cached, so a bad reply is never
+        served from cache."""
+        section = self.stage_config(prompt)
+        model = model or section["model"]
+        profile = model_profile(model)
+        temperature = section.get("temperature", 0.2)
+        if profile.temperature == VENDOR_DEFAULT_ONLY:
+            temperature = None
+        messages = [{"role": "user", "content": prompt.render(variables)}]
+        payload_hash = payload_sha256(model, temperature, messages)
+        requested_at = clock_mod.iso(self.clock())
+        cache_path = self.cache_dir / f"{payload_hash}.json"
+        if cache_path.exists():
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            parsed = self._parse(
+                prompt, cached["reply"], stage, payload_hash, attempts=1, check=check
+            )
+            reply = Reply(
+                parsed=parsed,
+                raw=cached["reply"],
+                prompt=prompt,
+                model=model,
+                profile=profile.name,
+                payload_sha256=payload_hash,
+                requested_at=requested_at,
+                tokens_in=int(cached.get("tokens_in", 0)),
+                tokens_out=int(cached.get("tokens_out", 0)),
+                cost_usd=0.0,
+                cached=True,
+            )
+            self._ledger(stage, prompt, reply, tag)
+            return reply
+        key_env = vendor_key_env(model)
+        if self.transport.name == "litellm" and key_env and not os.environ.get(key_env):
+            # docs/design/testing.md: offline is asserted. A cache hit above needs no key; a
+            # miss with no key means the stage is skipped, recorded as such,
+            # never attempted against the vendor.
+            raise NotConfigured(f"{key_env} is not set; {stage} is off")
+        self.check_budget(stage, tag)
+        params: dict = {"_stage": stage}
+        if temperature is not None:
+            params["temperature"] = temperature
+        if profile.json_mode:
+            params["response_format"] = {"type": "json_object"}
+        raw: RawReply | None = None
+        attempts = 0
+        last_error = ""
+        parsed = None
+        while attempts < 2:
+            attempts += 1
+            started = time.monotonic()
+            raw = self.transport.send(
+                model,
+                messages,
+                {
+                    k: v
+                    for k, v in params.items()
+                    if k != "_stage" or self.transport.name == "scripted"
+                },
+                tag=tag,
+            )
+            elapsed = time.monotonic() - started
+            self.calls += 1
+            self.spent_usd += raw.cost_usd or 0.0
+            self._log(stage, tag, payload_hash, messages, raw, elapsed, attempts)
+            if self.capped and raw.cost_usd is None:
+                # A run must not be able to outspend its cap and a cost is never estimated, so
+                # an unpriced model under a cap stops here.
+                self._ledger_raw(stage, prompt, model, raw, tag, "bad_reply")
+                cap = RUN_CAP if self.max_usd is not None else DAY_CAP
+                raise BudgetExceeded(
+                    f"{model} has no price in the table, so the spend caps cannot "
+                    f"be enforced; add a row to _PRICES_PER_M or remove {cap}",
+                    cap,
+                )
+            try:
+                parsed = self._parse(
+                    prompt, raw.text, stage, payload_hash, attempts=attempts, check=check
+                )
+                break
+            except BadReply as e:
+                last_error = str(e)
+                parsed = None
+                # every attempt reaches the ledger , the failed ones as bad_reply
+                self._ledger_raw(stage, prompt, model, raw, tag, "bad_reply")
+                if attempts >= 2:
+                    raise BadReply(f"{stage} for {tag}: {last_error}", attempts, raw.text) from e
+        assert raw is not None
+        write_atomic(
+            cache_path,
+            json.dumps(
+                {
+                    "model": model,
+                    "temperature": temperature,
+                    "messages": messages,
+                    "reply": raw.text,
+                    "tokens_in": raw.tokens_in,
+                    "tokens_out": raw.tokens_out,
+                    "cost_usd": raw.cost_usd,
+                    "requested_at": requested_at,
+                },
+                ensure_ascii=False,
+                indent=1,
+            ),
+        )
+        reply = Reply(
+            parsed=parsed,
+            raw=raw.text,
+            prompt=prompt,
+            model=model,
+            profile=profile.name,
+            payload_sha256=payload_hash,
+            requested_at=requested_at,
+            tokens_in=raw.tokens_in,
+            tokens_out=raw.tokens_out,
+            cost_usd=raw.cost_usd,
+            cached=False,
+            attempts=attempts,
+        )
+        self._ledger(stage, prompt, reply, tag)
+        return reply
+
+    def replay(
+        self, stage: str, prompt: Prompt, payload_hash: str, *, tag: str, check=None
+    ) -> Reply:
+        """Serve the reply behind a recorded payload hash from the cache without
+        rebuilding the payload: the road a held (stale-on-config) pass 3 takes
+        when a verdict or a memory rule lands on it (a held pass). The model is
+        never asked; `check` runs as it does on any cached reply. CacheMiss
+        when the entry is gone."""
+        cache_path = self.cache_dir / f"{payload_hash}.json" if payload_hash else None
+        if cache_path is None or not cache_path.exists():
+            raise CacheMiss(
+                f"{stage} for {tag}: no cached reply for payload {payload_hash[:12] or '?'}"
+            )
+        cached = json.loads(cache_path.read_text(encoding="utf-8"))
+        parsed = self._parse(prompt, cached["reply"], stage, payload_hash, attempts=1, check=check)
+        reply = Reply(
+            parsed=parsed,
+            raw=cached["reply"],
+            prompt=prompt,
+            model=str(cached.get("model", "")),
+            profile="replay",
+            payload_sha256=payload_hash,
+            requested_at=clock_mod.iso(self.clock()),
+            tokens_in=int(cached.get("tokens_in", 0)),
+            tokens_out=int(cached.get("tokens_out", 0)),
+            cost_usd=0.0,
+            cached=True,
+        )
+        self._ledger(stage, prompt, reply, tag)
+        return reply
+
+    def _parse(
+        self, prompt: Prompt, text: str, stage: str, payload_hash: str, *, attempts: int, check=None
+    ):
+        try:
+            obj = parse_json_object(text)
+        except ValueError as e:
+            raise BadReply(f"reply is not a JSON object ({e})", attempts, text) from e
+        if self.validator is not None:
+            try:
+                self.validator(prompt.output_schema, obj)
+            except ValueError as e:
+                raise BadReply(
+                    f"reply does not match {prompt.output_schema}: {e}", attempts, text
+                ) from e
+        if check is not None:
+            try:
+                check(obj)
+            except ValueError as e:
+                raise BadReply(str(e), attempts, text) from e
+        return obj
+
+    def _ledger_raw(
+        self, stage: str, prompt: Prompt, model: str, raw: RawReply, tag: str, outcome: str
+    ) -> None:
+        self.ledger.usage(
+            {
+                "stage": stage,
+                "prompt_id": prompt.id,
+                "model": model,
+                "tokens_in": raw.tokens_in,
+                "tokens_out": raw.tokens_out,
+                "cost_usd": raw.cost_usd,
+                "kind": "api",
+                "cached": False,
+                "tag": tag,
+                "outcome": outcome,
+            }
+        )
+
+    def _ledger(self, stage: str, prompt: Prompt, reply: Reply, tag: str) -> None:
+        self.ledger.usage(
+            {
+                "stage": stage,
+                "prompt_id": prompt.id,
+                "model": reply.model,
+                "tokens_in": reply.tokens_in,
+                "tokens_out": reply.tokens_out,
+                "cost_usd": reply.cost_usd,
+                "kind": "api",
+                "cached": reply.cached,
+                "tag": tag,
+                "outcome": "ok",
+            }
+        )
+
+    def log_block(self, stage: str, header: str, payload: str, reply: str) -> None:
+        """One payload and reply, tagged with its stage, into the invocation's
+        log (there are no per-stage logs)."""
+        path = self.log_path or self._own_log()
+        with path.open("a", encoding="utf-8") as f:
+            f.write(
+                f"\n===== [{stage}] {clock_mod.iso(self.clock())} {header}\n"
+                f"----- [{stage}] payload\n{payload.rstrip(chr(10))}\n"
+                f"----- [{stage}] reply\n{reply.rstrip(chr(10))}\n"
+                f"===== [{stage}] end\n"
+            )
+
+    def _own_log(self) -> Path:
+        """`logs/runs/<UTC stamp>-<verb>-<short id>.log`, made once (never an
+        existing file) for a verb that calls a model outside a run."""
+        import secrets
+
+        directory = self.root / LOGS_DIR / RUN_LOGS_DIR
+        directory.mkdir(parents=True, exist_ok=True)
+        stamp = self.clock().astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
+        while True:
+            path = directory / f"{stamp}-{self.verb}-{secrets.token_hex(3)}.log"
+            try:
+                path.open("x", encoding="utf-8").close()
+                break
+            except FileExistsError:
+                continue
+        self.log_path = path
+        return path
+
+    def _log(
+        self,
+        stage: str,
+        tag: str,
+        payload_hash: str,
+        messages: list[dict],
+        raw: RawReply,
+        elapsed: float,
+        attempt: int,
+    ) -> None:
+        self.log_block(
+            stage,
+            f"{tag} attempt={attempt} payload={payload_hash[:12]} {elapsed:.1f}s "
+            f"in={raw.tokens_in} out={raw.tokens_out} cost={raw.cost_usd}",
+            "\n".join(m["content"] for m in messages),
+            raw.text,
+        )
+
+
+__all__ = [
+    "Client",
+    "Reply",
+    "BadReply",
+    "BudgetExceeded",
+    "CacheMiss",
+    "TruncatedReply",
+    "VendorError",
+    "NotConfigured",
+    "RawReply",
+    "Transport",
+    "ScriptedTransport",
+    "LiteLLMTransport",
+    "default_transport",
+    "model_profile",
+    "MODEL_PROFILES",
+    "price_usd",
+    "payload_sha256",
+]
