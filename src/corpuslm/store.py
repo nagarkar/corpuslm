@@ -511,6 +511,24 @@ class Store:
                     ),
                 )
 
+    def segments(self, source_id: str) -> list[dict]:
+        """One source's segments in order, with the JSON names `replace_segments`
+        takes (idx, t0, t1, speaker, text)."""
+        return [
+            {
+                "idx": r["position"],
+                "t0": r["start_seconds"],
+                "t1": r["end_seconds"],
+                "speaker": r["speaker"],
+                "text": r["text"],
+            }
+            for r in self.db.execute(
+                "SELECT position, start_seconds, end_seconds, speaker, text FROM segments "
+                "WHERE source_id = ? ORDER BY position",
+                (source_id,),
+            ).fetchall()
+        ]
+
     def delete_segments(self, source_id: str) -> int:
         """Remove one source's segments; the segments_ad trigger removes their
         FTS5 rows. Returns the segments removed."""

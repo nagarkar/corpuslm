@@ -647,6 +647,18 @@ def test_replace_segments_rebuilds_whole(store):
     assert len(store.search("mindfulness", corpus_id=None, limit=10)) == 1
 
 
+def test_segments_reads_back_what_replace_segments_wrote_in_order(store):
+    _video(store)
+    _video(store, VID2)
+    store.replace_segments(VID, list(reversed(_segments())))
+    store.replace_segments(VID2, [{"idx": 0, "t0": 0.0, "t1": 1.0, "text": "other"}])
+    assert store.segments(VID) == _segments()
+    assert store.segments(VID2) == [
+        {"idx": 0, "t0": 0.0, "t1": 1.0, "speaker": "", "text": "other"}
+    ]
+    assert store.segments("nobody") == []
+
+
 def test_search_corpus_filter_excludes_non_members(store):
     _video(store, VID)
     _video(store, VID2)
