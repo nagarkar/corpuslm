@@ -1,0 +1,288 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "corpuslm.transcript/1",
+ "title": "transcript.json",
+ "description": "One source's transcript: segments with timestamps, the clean-up state, review items.",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "video_id",
+  "schema",
+  "state",
+  "caption",
+  "speaker_source",
+  "segments",
+  "words"
+ ],
+ "properties": {
+  "video_id": {
+   "type": "string",
+   "description": "The source id. The name is a legacy of the YouTube tool: the key stays `video_id` in every stored file, because renaming it would change stored bytes and force a model rebuild.",
+   "minLength": 1
+  },
+  "schema": {
+   "type": "string",
+   "description": "Schema id and version, `<tool>.transcript/<n>`; the tool that writes the file names it and checks it.",
+   "pattern": "^[a-z][a-z0-9]*\\.transcript/[0-9]+$"
+  },
+  "state": {
+   "type": "string",
+   "description": "How far clean-up has run (corpuslm.transcript).",
+   "enum": [
+    "RAW",
+    "DETERMINISTIC-ONLY",
+    "LLM-CLEANED"
+   ]
+  },
+  "caption": {
+   "type": "object",
+   "description": "Provenance of the text: where the segments came from.",
+   "required": [
+    "language",
+    "generated",
+    "fetcher"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "language": {
+     "type": "string",
+     "description": "ISO 639-1 of the text."
+    },
+    "generated": {
+     "type": [
+      "boolean",
+      "null"
+     ],
+     "description": "Auto-generated (true), creator-made (false), or unknown (null)."
+    },
+    "fetcher": {
+     "type": "string",
+     "description": "Which fetcher or device produced the text."
+    }
+   }
+  },
+  "speaker_source": {
+   "type": "string",
+   "description": "How speaker fields were filled: '' | inferred | diarized.",
+   "enum": [
+    "",
+    "inferred",
+    "diarized"
+   ]
+  },
+  "segments": {
+   "type": "array",
+   "description": "Cues in time order.",
+   "items": {
+    "type": "object",
+    "description": "One timed unit of text with its clean-up state.",
+    "required": [
+     "idx",
+     "t0",
+     "t1",
+     "speaker",
+     "text"
+    ],
+    "additionalProperties": false,
+    "properties": {
+     "idx": {
+      "type": "integer",
+      "description": "Position in the transcript, 0-based; equals the list index.",
+      "minimum": 0
+     },
+     "t0": {
+      "type": "number",
+      "description": "Start in seconds.",
+      "minimum": 0
+     },
+     "t1": {
+      "type": "number",
+      "description": "End in seconds; never before t0.",
+      "minimum": 0
+     },
+     "speaker": {
+      "type": "string",
+      "description": "Display name or role label for the speaker; '' when unknown."
+     },
+     "text": {
+      "type": "string",
+      "description": "The cue text after the passes that have run."
+     },
+     "role": {
+      "type": "string",
+      "description": "Model-assigned speaker role label.",
+      "enum": [
+       "",
+       "HOST",
+       "GUEST_1",
+       "GUEST_2",
+       "GUEST_3",
+       "GUEST_4",
+       "GUEST_5",
+       "GUEST_6",
+       "UNKNOWN"
+      ]
+     },
+     "role_confidence": {
+      "type": "number",
+      "description": "Confidence in the role label, 0-1.",
+      "minimum": 0,
+      "maximum": 1
+     },
+     "protected": {
+      "type": "array",
+      "description": "Spans protected-vocabulary clean-up marked; later clean-up leaves them alone.",
+      "items": {
+       "type": "string",
+       "description": "A protected span as it appears in text."
+      }
+     },
+     "raw": {
+      "type": "string",
+      "description": "The text as normalized from captions, kept once a pass changed it."
+     }
+    }
+   }
+  },
+  "words": {
+   "type": "array",
+   "description": "Word-level timings; empty until an audio pass exists.",
+   "items": {
+    "type": "object",
+    "description": "One word with timing."
+   }
+  },
+  "ambiguities": {
+   "type": "array",
+   "description": "Review items from model clean-up.",
+   "items": {
+    "type": "object",
+    "description": "A consequential reading the clean-up model was unsure of.",
+    "required": [
+     "key",
+     "idx",
+     "span",
+     "candidates",
+     "pick",
+     "confidence",
+     "status"
+    ],
+    "additionalProperties": false,
+    "properties": {
+     "key": {
+      "type": "string",
+      "description": "Stable review key, amb-NNNN, unique within the video.",
+      "pattern": "^amb-[0-9]{4,}$"
+     },
+     "idx": {
+      "type": "integer",
+      "description": "Segment the ambiguity sits in.",
+      "minimum": 0
+     },
+     "span": {
+      "type": "string",
+      "description": "The words as heard, before the pick was applied."
+     },
+     "candidates": {
+      "type": "array",
+      "description": "Two or more candidate readings.",
+      "items": {
+       "type": "string",
+       "description": "One candidate reading."
+      },
+      "minItems": 1
+     },
+     "pick": {
+      "type": "string",
+      "description": "The reading applied in the segment text."
+     },
+     "confidence": {
+      "type": "number",
+      "description": "The model's confidence in its pick, 0-1: the pick's probability when probabilities are present.",
+      "minimum": 0,
+      "maximum": 1
+     },
+     "status": {
+      "type": "string",
+      "description": "Review state.",
+      "enum": [
+       "pending",
+       "resolved",
+       "auto_resolved",
+       "expired",
+       "capped"
+      ]
+     },
+     "resolution": {
+      "type": "string",
+      "description": "The author's verdict text when resolved or auto-resolved."
+     },
+     "origin": {
+      "type": "string",
+      "description": "For auto_resolved: the video id and date of the verdict reused."
+     },
+     "resolved_at": {
+      "type": "string",
+      "description": "ISO timestamp of the verdict."
+     },
+     "probabilities": {
+      "type": "array",
+      "description": "One probability per candidate, in the same order: the chance that candidate is what the speaker said. Sums to 1.",
+      "items": {
+       "type": "number",
+       "description": "One candidate's probability.",
+       "minimum": 0,
+       "maximum": 1
+      },
+      "minItems": 1
+     },
+     "arbiter": {
+      "type": "object",
+      "description": "Jev's pick when the arbiter applied it (ytlm.arbiter).",
+      "additionalProperties": false,
+      "required": [
+       "model",
+       "probabilities",
+       "p_combined",
+       "overrode"
+      ],
+      "properties": {
+       "model": {
+        "type": "string",
+        "description": "The versioned model that answered."
+       },
+       "probabilities": {
+        "type": "object",
+        "description": "Jev's probability per option.",
+        "additionalProperties": {
+         "type": "number",
+         "description": "One option's probability.",
+         "minimum": 0,
+         "maximum": 1
+        }
+       },
+       "p_combined": {
+        "type": "number",
+        "description": "The picked option's probability after combining with the clean-up model's.",
+        "minimum": 0,
+        "maximum": 1
+       },
+       "overrode": {
+        "type": "boolean",
+        "description": "Jev's option differed from the clean-up model's pick."
+       }
+      }
+     }
+    }
+   }
+  },
+  "passes": {
+   "type": "object",
+   "description": "Per-step provenance: what ran, what it changed, the prompt and model for model clean-up.",
+   "additionalProperties": {
+    "type": "object",
+    "description": "Provenance for one clean-up step."
+   }
+  }
+ }
+}

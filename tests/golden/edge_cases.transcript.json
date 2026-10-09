@@ -1,0 +1,42 @@
+{
+ "caption": {
+  "fetcher": "supadata",
+  "generated": null,
+  "language": "en"
+ },
+ "schema": "ytlm.transcript/1",
+ "segments": [
+  {
+   "idx": 0,
+   "speaker": "",
+   "t0": 0.0,
+   "t1": 2.0,
+   "text": "hello there 'q' é"
+  },
+  {
+   "idx": 1,
+   "speaker": "",
+   "t0": 2.0,
+   "t1": 3.0,
+   "text": "second cue"
+  },
+  {
+   "idx": 2,
+   "speaker": "",
+   "t0": 3.0,
+   "t1": 3.0,
+   "text": "backwards"
+  },
+  {
+   "idx": 3,
+   "speaker": "",
+   "t0": 5.0,
+   "t1": 5.0,
+   "text": "later & <b>x</b>"
+  }
+ ],
+ "speaker_source": "",
+ "state": "RAW",
+ "video_id": "edgeCase_-1",
+ "words": []
+}
