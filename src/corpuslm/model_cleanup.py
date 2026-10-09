@@ -17,8 +17,8 @@ before the reply is cached); it may still propose name bindings and edits.
 The stored keys of a document keep their legacy names (`role`, `role_confidence`, `raw`,
 `amb-NNNN`, `passes.pass3`): renaming them would change stored bytes and force a paid rebuild.
 
-`prompt_file` finds a prompt file across a list of directories; corpuslm ships
-`cleanup_bee_v1.md` for the Bee scheme under `PROMPTS_DIR`.
+corpuslm ships `cleanup_bee_v1.md` for the Bee scheme among its built-in prompts
+(corpuslm.prompts); a scheme's `prompt_id` names the prompt a source's clean-up uses.
 
 Never imports: db, store, clikit, any model transport.
 
@@ -51,20 +51,12 @@ Terms:
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import dataclass
-from pathlib import Path
 
 from .speaker_map import SpeakerScheme
 
-PROMPTS_DIR = Path(__file__).parent / "prompts"
-
 
 class BatchError(ValueError):
-    pass
-
-
-class PromptNotFound(ValueError):
     pass
 
 
@@ -78,19 +70,6 @@ class Batch:
     @property
     def tag_suffix(self) -> str:
         return f"b{self.n}"
-
-
-def prompt_file(prompt_id: str, *, search_dirs: Sequence[Path] = (PROMPTS_DIR,)) -> Path:
-    """The newest version of `prompt_id` (`<id>_v<N>.md`) in the first directory that has one."""
-    for directory in search_dirs:
-        found: dict[int, Path] = {}
-        for path in Path(directory).glob(f"{prompt_id}_v*.md"):
-            tail = path.stem.removeprefix(f"{prompt_id}_v")
-            if tail.isdigit():
-                found[int(tail)] = path
-        if found:
-            return found[max(found)]
-    raise PromptNotFound(f"no prompt named {prompt_id!r} in {[str(d) for d in search_dirs]}")
 
 
 def estimate_tokens(text: str) -> int:

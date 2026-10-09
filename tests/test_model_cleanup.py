@@ -3,16 +3,12 @@ reply bounds, edits-only replies, ambiguities with probabilities, bindings with 
 fixed labels no reply may change. Run over a YouTube-shaped scheme and Bee's. Synthetic text
 only, no model."""
 
-import json
-import string
-import tomllib
-from pathlib import Path
 
 import pytest
 from schemes import LABELS, SCHEMES
 
 from corpuslm import model_cleanup as mc
-from corpuslm import schemas
+from corpuslm import prompts, schemas
 from corpuslm.speaker_map import bee_scheme
 
 
@@ -311,32 +307,18 @@ def test_cap_ambiguities_keeps_the_least_confident_pending():
     assert mc.cap_ambiguities(t, max_new=0) == 0
 
 
-def test_prompt_file_takes_the_newest_version_from_the_first_directory_that_has_one(tmp_path):
-    first, second = tmp_path / "a", tmp_path / "b"
-    first.mkdir()
-    second.mkdir()
-    (second / "demo_v1.md").write_text("one")
-    (second / "demo_v2.md").write_text("two")
-    (second / "demo_v10.md").write_text("ten")
-    assert mc.prompt_file("demo", search_dirs=[first, second]).name == "demo_v10.md"
-    (first / "demo_v1.md").write_text("mine")
-    assert mc.prompt_file("demo", search_dirs=[first, second]).parent == first
-    with pytest.raises(mc.PromptNotFound):
-        mc.prompt_file("absent", search_dirs=[first, second])
-
-
 def test_the_bee_prompt_is_shipped_and_takes_exactly_its_four_variables():
-    path = mc.prompt_file(bee_scheme("Quill").prompt_id)
-    assert path.name == "cleanup_bee_v1.md" and path.parent == mc.PROMPTS_DIR
-    _, front, body = path.read_text(encoding="utf-8").split("---\n", 2)
-    meta = tomllib.loads(front)
-    assert meta["id"] == "cleanup_bee" and meta["version"] == 1
-    assert meta["output_schema"] == "model_cleanup_bee_reply"
-    fields = {f for _, f, _, _ in string.Formatter().parse(body) if f}
-    assert fields == {"source_label", "protected", "roles", "batch"}
+    prompt = prompts.load(bee_scheme("Quill").prompt_id)
+    assert prompt.path.name == "cleanup_bee_v1.md" and prompt.path.parent == (
+        prompts.BUILT_IN_DIRECTORY
+    )
+    assert prompt.id == "cleanup_bee" and prompt.version == 1
+    assert prompt.output_schema == "model_cleanup_bee_reply"
+    body = prompt.body
+    assert set(prompt.placeholders()) == {"source_label", "protected", "roles", "batch"}
     for banned in ("HOST", "GUEST"):
         assert banned not in body  # no assumption about who asks and who answers
-    body.format(source_label="a", protected="b", roles="c", batch="d")
+    prompt.render({"source_label": "a", "protected": "b", "roles": "c", "batch": "d"})
 
 
 def test_the_bee_reply_schema_accepts_a_reply_without_roles_and_names_bad_properties():
@@ -367,6 +349,5 @@ def test_the_bee_reply_schema_accepts_a_reply_without_roles_and_names_bad_proper
             schemas.schema("model_cleanup_bee_reply"),
             reply | {"extra": 1},
         )
-    assert json.loads(
-        Path(mc.PROMPTS_DIR / ".." / "schemas" / "model_cleanup_bee_reply.json").read_text()
-    )["required"] == ["edits", "ambiguities", "bindings"]
+    required = schemas.schema("model_cleanup_bee_reply")["required"]
+    assert required == ["edits", "ambiguities", "bindings"]
