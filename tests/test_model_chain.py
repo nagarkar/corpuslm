@@ -70,7 +70,7 @@ class FakeKind:
 
 class Report:
     def __init__(self):
-        self.counts, self.errors, self.notes, self.stopped_by = {}, {}, {}, None
+        self.counts, self.errors, self.notes, self.stopped_by = {}, {}, {}, ""
 
     def count(self, node, n=1):
         self.counts[node] = self.counts.get(node, 0) + n

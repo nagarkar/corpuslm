@@ -210,7 +210,7 @@ def test_is_current_needs_a_built_row_with_equal_inputs(store, tmp_path):
 
 class CountingReport:
     def __init__(self):
-        self.counts, self.errors, self.notes, self.stopped_by = {}, {}, {}, None
+        self.counts, self.errors, self.notes, self.stopped_by = {}, {}, {}, ""
 
     def count(self, node, n=1):
         self.counts[node] = self.counts.get(node, 0) + n

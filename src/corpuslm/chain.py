@@ -170,11 +170,11 @@ class SourceKind(Protocol):
 class Report(Protocol):
     """What a run keeps while it builds. `count` adds to a counter named for a node;
     `errors` and `notes` are keyed by source or by a short name; `stopped_by` names the spend
-    cap that stopped the run, if one did."""
+    cap that stopped the run, empty if none did."""
 
     errors: dict[str, str]
     notes: dict[str, str]
-    stopped_by: str | None
+    stopped_by: str
 
     def count(self, node: str, n: int = 1) -> None: ...
 
