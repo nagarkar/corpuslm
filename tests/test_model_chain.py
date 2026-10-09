@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from corpuslm import chain, cleanup, db, llm, model_chain, transcript
+from corpuslm import chain, cleanup, db, llm, model_chain, review, transcript
 from corpuslm.speaker_map import bee_scheme
 from corpuslm.store import Store
 
@@ -281,3 +281,27 @@ def test_the_estimate_calls_no_model_and_counts_what_would_be_billed(world):
     world.build()
     done = model_chain.estimate(world.context(), {SOURCE: world.spell_fix})
     assert done.sources == 0 and done.batches == 0 and done.usd == 0
+
+
+def test_a_recorded_verdict_changes_the_inputs_and_a_term_rule_is_applied(world):
+    script_all(world)
+    reviewing = model_chain.DatabaseReview(world.store)
+    assert reviewing.memory_vocabulary().terms == []
+    world.build(review=reviewing)
+    before = json.loads(world.row()["inputs"])
+    asked = sum(client.calls for client in world.clients)
+    review.record_verdict(
+        world.database,
+        source_id=SOURCE,
+        key="amb-0001",
+        kind="ambiguity",
+        verdict="Quillfeather",
+        span="quill feather",
+        created_by="test",
+    )
+    assert reviewing.memory_vocabulary().terms == ["Quillfeather"]
+    world.build(review=reviewing)
+    after = json.loads(world.row()["inputs"])
+    assert after["verdicts"] != before["verdicts"] and after["memory"] != before["memory"]
+    assert after["prompt"] == before["prompt"]
+    assert sum(client.calls for client in world.clients) == asked  # served from the cache

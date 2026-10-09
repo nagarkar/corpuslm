@@ -14,8 +14,9 @@ Every request is cached by payload in the client's cache, so a rebuild never re-
 counts toward the client's caps through its guard and price table.
 
 What a tool injects: the transport that reaches the judge (a `Transport`; ytlm's wraps its
-TypeSafe adapter and keeps the key), the review rules (`Rules`: how a span is normalized and how
-a resolution is written into a segment), the prompt, and the validator of the judge's reply.
+TypeSafe adapter and keeps the key), the prompt, and the validator of the judge's reply. The
+card's options, the span key and the writing of a resolution are `corpuslm.review`'s, the same
+ones the review page uses.
 
 Never imports: db, store, cli, clikit, any outside service.
 
@@ -42,7 +43,6 @@ Decisions:
 Terms:
 - **arbiter**: the step inside the model clean-up that asks the judge about each still-pending
   ambiguity and applies an option whose combined probability reaches the threshold.
-- **rules**: the tool's review layer as the arbiter sees it (`Rules`).
 """
 
 from __future__ import annotations
@@ -56,7 +56,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from . import clock, files, llm
+from . import clock, files, llm, review
+from .identity import normalize_span
 from .prompts import Prompt
 
 STAGE = "arbiter"
@@ -67,18 +68,6 @@ MAX_PRECEDENT = 10  # a bounded state; rules sorted by span
 class ArbiterError(RuntimeError):
     """The judge's reply was unusable, or the service failed: the items stay pending and the
     next run asks again."""
-
-
-class Rules(Protocol):
-    """The tool's review layer as the arbiter sees it."""
-
-    def normalize_span(self, text: str) -> str:
-        """The key under which two readings of a span are one (case, punctuation, spacing)."""
-        ...
-
-    def apply_resolution(self, t: dict, a: dict, resolution: str) -> None:
-        """Write a resolution into the segment the ambiguity `a` is in."""
-        ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,32 +92,21 @@ def settings(config: dict) -> Settings | None:
 # ---- the rule ---------------------------------------------------------------
 
 
-def _key(rules: Rules, text: str) -> str:
-    return rules.normalize_span(text) or text
+def _key(text: str) -> str:
+    return normalize_span(text) or text
 
 
-def options(a: dict, rules: Rules) -> list[str]:
-    """The card's choices: the clean-up model's pick, the candidates and the
-    words as heard. Readings that differ only in case or punctuation are one
-    option, spelled as the first of them (the pick's spelling when it is
-    one): a pick with a comma once matched no option at all (2026-09-29)."""
-    out: dict[str, str] = {}
-    for o in (a["pick"], *a["candidates"], a["span"]):
-        out.setdefault(_key(rules, o), o)
-    return list(out.values())
-
-
-def clean_up_probabilities(a: dict, opts: list[str], rules: Rules) -> dict[str, float]:
+def clean_up_probabilities(a: dict, opts: list[str]) -> dict[str, float]:
     """The clean-up model's probability per option. Prompt v2 gives one per
     candidate; an older item's single confidence goes to its pick and the
     rest is spread evenly over the other options."""
-    by_key = {_key(rules, o): o for o in opts}
+    by_key = {_key(o): o for o in opts}
     if a.get("probabilities") is not None:
         out = dict.fromkeys(opts, 0.0)
         for c, p in zip(a["candidates"], a["probabilities"], strict=True):
-            out[by_key[_key(rules, c)]] += float(p)
+            out[by_key[_key(c)]] += float(p)
         return out
-    pick = by_key[_key(rules, a["pick"])]
+    pick = by_key[_key(a["pick"])]
     others = [o for o in opts if o != pick]
     conf = float(a["confidence"])
     out = {o: (1 - conf) / len(others) for o in others} if others else {}
@@ -166,9 +144,8 @@ def request(
     protected: list[str],
     memory: dict[str, dict],
     instructions: str,
-    rules: Rules,
 ) -> dict:
-    opts = options(a, rules)
+    opts = review.reading_options(a)
     # The sentence as the recognizer produced it: the clean-up's pick is put
     # back to the words heard, bracketed. No separate "heard" field: given a
     # blank and the heard words, Jev copied the mis-hearing (2026-09-29).
@@ -244,7 +221,6 @@ class Arbiter:
         settings: Settings,
         transport: Transport,
         prompt: Prompt,
-        rules: Rules,
         validate_reply: Callable[[dict], None],
         judge: str = "the judge",
     ):
@@ -252,7 +228,6 @@ class Arbiter:
         self.settings = settings
         self.transport = transport
         self.prompt = prompt
-        self.rules = rules
         self.validate_reply = validate_reply
         self.judge = judge
         self.instructions = prompt.render({}).strip()
@@ -312,7 +287,7 @@ class Arbiter:
         memory: dict[str, dict],
         stats: dict,
     ) -> None:
-        opts = options(a, self.rules)
+        opts = review.reading_options(a)
         body = request(
             a,
             t["segments"][a["idx"]]["text"],
@@ -320,7 +295,6 @@ class Arbiter:
             protected=protected,
             memory=memory,
             instructions=self.instructions,
-            rules=self.rules,
         )
         tag = f"{source}-{a['key']}"
         reply, call = self._ask(
@@ -332,7 +306,7 @@ class Arbiter:
         stats["calls"].append(call)
         answer = reply["answers"][QUESTION]
         choice, p_judge = answer["choice"], answer["probabilities"]
-        p = combine(clean_up_probabilities(a, opts, self.rules), p_judge)[choice]
+        p = combine(clean_up_probabilities(a, opts), p_judge)[choice]
         if p < self.settings.min_probability:
             stats["deferred"] += 1
             return
@@ -347,7 +321,7 @@ class Arbiter:
             "p_combined": round(p, 3),
             "overrode": choice != a["pick"],
         }
-        self.rules.apply_resolution(t, a, choice)
+        review.apply_resolution(t, a, choice)
         stats["applied"] += 1
         stats["overrode"] += choice != a["pick"]
 

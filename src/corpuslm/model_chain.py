@@ -35,6 +35,9 @@ Decisions:
 - The stored names (the node, the inputs keys, the provenance keys) are the tool's and the
   first tool's; the builder never renames them. Enforced by:
   tests/test_model_chain.py::test_the_shape_names_the_node_the_stage_and_the_inputs.
+- The author's verdicts and the correction memory are read from the shared database
+  (`DatabaseReview`, corpuslm.review) for every source kind. Enforced by:
+  tests/test_model_chain.py::test_a_recorded_verdict_changes_the_inputs_and_a_term_rule_is_applied.
 - With fixed labels the transcript's speaker source stays what the source said (a diarization
   is not "inferred"). Enforced by:
   tests/test_model_chain.py::test_fixed_labels_keep_the_sources_speaker_source.
@@ -56,15 +59,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
-from . import cleanup, llm, model_cleanup
+from . import cleanup, llm, model_cleanup, review
 from . import clock as clock_module
 from . import prompts as prompts_module
 from .chain import Chain, Report, canonical_sha256, is_current, record, write_if_changed
 from .db import loads
 from .speaker_map import SpeakerScheme
+from .store import Store
 
 __all__ = [
     "ArbiterLike",
+    "DatabaseReview",
     "Estimate",
     "ModelCleanup",
     "NoReview",
@@ -129,6 +134,33 @@ class NoReview:
             "unplaced_items": [],
             "already_applied": 0,
         }
+
+
+class DatabaseReview:
+    """The review layer over the shared database (corpuslm.review): the author's verdicts and
+    the correction memory as they stand, applied to a fresh build. ytlm and beelm both use it."""
+
+    def __init__(self, store: Store):
+        self.store = store
+
+    def verdicts(self, source: str) -> dict[str, dict]:
+        return review.verdicts_for(self.store.db, source)
+
+    def corrections(self) -> dict[str, dict]:
+        return review.corrections(self.store.db)
+
+    def memory_vocabulary(self) -> cleanup.Vocabulary:
+        terms = review.term_vocabulary(self.store.db)
+        return cleanup.Vocabulary(
+            terms=list(dict.fromkeys(terms.values())),
+            substitutions=dict(terms),
+            sources={v: "correction memory" for v in terms.values()},
+        )
+
+    def reconcile(
+        self, document: dict, verdicts: dict[str, dict], memory: dict[str, dict], *, now: datetime
+    ) -> dict:
+        return review.reconcile(document, verdicts, memory, now=now)
 
 
 class ArbiterLike(Protocol):

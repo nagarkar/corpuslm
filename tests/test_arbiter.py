@@ -7,19 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from corpuslm import arbiter, llm
+from corpuslm import arbiter, llm, review
 from corpuslm.prompts import Prompt
 
 JUDGE_MODEL = "jev-latest"
-
-
-class Rules:
-    def normalize_span(self, text):
-        return "".join(c for c in text.lower() if c.isalnum() or c == " ").strip()
-
-    def apply_resolution(self, t, a, resolution):
-        seg = t["segments"][a["idx"]]
-        seg["text"] = seg["text"].replace(a["span"], resolution, 1)
 
 
 class RecordingTransport:
@@ -87,7 +78,6 @@ def make(tmp_path, transport, *, min_probability=0.8, config=None):
         arbiter.Settings(True, JUDGE_MODEL, min_probability),
         transport,
         prompt(tmp_path),
-        Rules(),
         validate,
     )
 
@@ -107,9 +97,9 @@ def test_the_arbiter_asks_through_the_transport_it_is_given(tmp_path):
 
 def test_an_older_item_with_one_confidence_spreads_the_rest_evenly():
     a = {"span": "heard it", "candidates": ["A", "B"], "pick": "A", "confidence": 0.7}
-    opts = arbiter.options(a, Rules())
+    opts = review.reading_options(a)
     assert opts == ["A", "B", "heard it"]
-    assert arbiter.clean_up_probabilities(a, opts, Rules()) == pytest.approx(
+    assert arbiter.clean_up_probabilities(a, opts) == pytest.approx(
         {"A": 0.7, "B": 0.15, "heard it": 0.15}
     )
 
