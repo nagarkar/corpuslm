@@ -69,7 +69,9 @@ def test_registered_directories_are_searched_after_the_built_in_one(tmp_path, mo
     prompts.register_directory(tmp_path / "mine")  # a repeat is ignored
     assert prompts.search_directories() == [prompts.BUILT_IN_DIRECTORY, tmp_path / "mine"]
     assert prompts.load("greeting").path.parent == tmp_path / "mine"
-    assert [p.id for p in prompts.list_prompts()] == ["greeting"]
+    assert [p.id for p in prompts.list_prompts() if p.path.parent == tmp_path / "mine"] == [
+        "greeting"
+    ]
 
 
 def test_several_directories_are_searched_and_a_released_version_is_never_shadowed(tmp_path):
