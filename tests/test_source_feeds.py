@@ -152,3 +152,15 @@ def test_every_reader_can_ask_for_one_kind_of_source(store):
     hits = store.search("shared", corpus_id=None, limit=10, kind="youtube")
     assert [h["source_id"] for h in hits] == [SOURCE]
     assert len(store.search("shared", corpus_id=None, limit=10)) == 2
+
+
+def test_corpus_count_can_ask_for_the_corpora_one_kind_reads(store):
+    """A corpus made only of Bee sources is not a corpus ytlm reads (corpus_count(kind))."""
+    bee = "bee:1"
+    store.add_source(bee, "beelm/conversations/d/1.json", created_by="cli", kind="bee")
+    only_bee = store.add_corpus({"name": "Bee conversations"}, created_by="cli")
+    mixed = store.add_corpus({"name": "Mixed"}, created_by="cli")
+    store.add_member(only_bee, bee, "discovered", created_by="cli")
+    store.add_member(mixed, SOURCE, "author", created_by="cli")
+    assert store.corpus_count() == 2 and store.corpus_count("youtube") == 1
+    assert store.corpus_count("bee") == 1
