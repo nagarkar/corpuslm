@@ -249,3 +249,20 @@ def test_a_workspace_page_lists_only_the_corpora_of_its_kind(database, sources_d
 
     assert sorted(names(BEE_KIND)) == ["Empty", "Walks"]
     assert sorted(names(LINKED_KIND)) == ["Empty", "Talks"]
+
+
+def test_a_kind_with_its_own_schema_reads_documents_the_shared_one_rejects(
+    database, sources_directory, corpus
+):
+    from dataclasses import replace
+
+    from corpuslm import schemas, transcript
+
+    document = bee_transcript()
+    for seg in document["segments"]:
+        seg["role"] = seg["speaker"]  # a label the shared schema does not list
+    (sources_directory / BEE_SOURCE / "transcript.json").write_text(json.dumps(document))
+    with pytest.raises(schemas.SchemaError):
+        build(database, sources_directory)
+    kind = replace(BEE_KIND, refined_schema=transcript.with_free_labels())
+    assert any(c["kind"] == "ambiguity" for c in build(database, sources_directory, kind)["cards"])
