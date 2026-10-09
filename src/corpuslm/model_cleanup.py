@@ -33,6 +33,8 @@ Decisions:
 - A stray edit index is dropped and counted, never a failed transcript; a stray label,
   ambiguity or binding index is an error. Enforced by:
   tests/test_model_cleanup.py::test_apply_rejects_an_index_outside_the_batch_and_protects_spans.
+- With fixed labels a segment's `role` is the source's own speaker label. Enforced by:
+  tests/test_model_cleanup.py::test_fixed_labels_are_adopted_from_the_speakers.
 - A fixed-label scheme rejects any reply that assigns or changes a label. Enforced by:
   tests/test_model_cleanup.py::test_fixed_labels_reject_a_reply_that_relabels_a_speaker.
 - New ambiguities are capped per source; past the cap the model's pick stands. Enforced by:
@@ -70,6 +72,15 @@ class Batch:
     @property
     def tag_suffix(self) -> str:
         return f"b{self.n}"
+
+
+def adopt_fixed_labels(t: dict) -> None:
+    """With fixed labels the segment's `role` is the source's own speaker label: set it, where
+    the segment has a speaker and no role yet, so the batches show it and the speaker map
+    lists it. Segments with no speaker stay unlabelled."""
+    for seg in t["segments"]:
+        if seg.get("speaker") and not seg.get("role"):
+            seg["role"] = seg["speaker"]
 
 
 def estimate_tokens(text: str) -> int:

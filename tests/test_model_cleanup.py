@@ -3,7 +3,6 @@ reply bounds, edits-only replies, ambiguities with probabilities, bindings with 
 fixed labels no reply may change. Run over a YouTube-shaped scheme and Bee's. Synthetic text
 only, no model."""
 
-
 import pytest
 from schemes import LABELS, SCHEMES
 
@@ -351,3 +350,15 @@ def test_the_bee_reply_schema_accepts_a_reply_without_roles_and_names_bad_proper
         )
     required = schemas.schema("model_cleanup_bee_reply")["required"]
     assert required == ["edits", "ambiguities", "bindings"]
+
+
+def test_fixed_labels_are_adopted_from_the_speakers():
+    t = {
+        "segments": [
+            {"idx": 0, "speaker": "Quill", "text": "a"},
+            {"idx": 1, "speaker": "", "text": "b"},
+            {"idx": 2, "speaker": "Speaker 2", "role": "Speaker 2", "text": "c"},
+        ]
+    }
+    mc.adopt_fixed_labels(t)
+    assert [seg.get("role") for seg in t["segments"]] == ["Quill", None, "Speaker 2"]

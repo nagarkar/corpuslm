@@ -1,5 +1,5 @@
-"""Chain: the generic clean-up builders, the same normalize -> protected vocabulary -> spell fix
-chain for every source kind.
+"""Chain: the generic builders, the same normalize -> protected vocabulary -> spell fix ->
+model clean-up -> speaker map -> subtitle file -> search index chain for every source kind.
 
 A tool describes its source with a `SourceKind` (where the raw segments come from, the
 protected vocabulary, the language, where the files go) and builds a `Chain` over a `Store`.
@@ -8,7 +8,10 @@ thing: compute the hashes of the step's inputs, return the recorded artifact whe
 and the file are unchanged, otherwise build the document, write it only if its bytes differ and
 record the artifact (`Store.record_artifact`). `canonical_sha256`, `write_if_changed`,
 `is_current` and `record` are the bookkeeping those builders share, usable by a tool's own
-builders too.
+builders too. After the model clean-up (`corpuslm.model_chain`, which calls a model) the
+deterministic builders here finish the chain: `build_speaker_map` (who each label is),
+`publish_best` (the best transcript with the speaker map applied), `build_subtitles` (the
+subtitle file) and `build_search_index` (the source's rows in the full-text index).
 
 What a tool keeps: the segments' origin (a YouTube caption file, Bee's stored segments), the
 vocabulary's origin (video metadata, a conversation's title), the names it stores
@@ -30,11 +33,20 @@ Decisions:
   and beelm stores `protected_vocabulary` and `spell_fix`; renaming either would make every
   stored artifact stale. Enforced by:
   tests/test_chain.py::test_the_shape_names_the_nodes_and_the_step_in_the_inputs.
+- The speaker map, the subtitle file and the search index follow the same rule: their inputs
+  hash names the transcript they were built from, an unchanged input builds nothing, and the
+  stored names are the tool's. Enforced by:
+  tests/test_chain.py::test_the_export_builders_build_once_and_then_nothing.
+- `publish_best` writes the best transcript available (the first node of the preference that
+  is built, with the speaker map applied) only when its bytes change. Enforced by:
+  tests/test_chain.py::test_publish_best_takes_the_first_built_node_and_applies_the_speaker_map.
 
 Terms:
 - **source kind**: the origin-specific half of the chain: YouTube video or Bee conversation
   (`SourceKind`).
 - **chain shape**: the names a source kind stores its chain under (`ChainShape`).
+- **report**: what a run keeps while it builds: counts per node, errors and notes per source
+  (`Report`); a tool's run board is made from it.
 - **built**: a builder's result says whether this call built the artifact (`Built.built`) or
   found it current.
 """
@@ -42,14 +54,17 @@ Terms:
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from . import cleanup, files, transcript
+from . import cleanup, files, schemas, transcript
+from . import speaker_map as speaker_map_module
 from .db import loads
 from .identity import canonical_sha256
+from .speaker_map import SpeakerScheme
 from .store import Store
 
 __all__ = [
@@ -57,12 +72,17 @@ __all__ = [
     "Chain",
     "ChainShape",
     "RawTranscript",
+    "Report",
     "SourceKind",
     "build_normalize",
     "build_protected_vocabulary",
+    "build_search_index",
+    "build_speaker_map",
     "build_spell_fix",
+    "build_subtitles",
     "canonical_sha256",
     "is_current",
+    "publish_best",
     "record",
     "write_if_changed",
 ]
@@ -81,6 +101,16 @@ class ChainShape:
     spell_fix_step: str = "corpuslm.cleanup.spell_fix/1"
     # Whether the protected-vocabulary artifact's provenance lists where each term came from.
     vocabulary_sources_in_provenance: bool = False
+    # The steps after spell fix: their node names, and the text that names the step in `inputs`.
+    # The node names are also the counters a report keeps and the stage the ledger records.
+    model_cleanup: str = "model_cleanup"
+    speaker_map: str = "speaker_map"
+    subtitles: str = "subtitles"
+    search_index: str = "search_index"
+    model_cleanup_step: str = "corpuslm.model_cleanup/1"
+    speaker_map_step: str = "corpuslm.speaker_map/1"
+    # The words the model prompt calls one source of this kind ("a Bee conversation").
+    source_label: str = "a recording"
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +151,32 @@ class SourceKind(Protocol):
     def refined_schema(self) -> dict | None:
         """The tool's refinement of the transcript schema, or None for the shared one."""
         ...
+
+    def row(self, source: str) -> dict:
+        """The source's database row (what a speaker scheme resolves default names from)."""
+        ...
+
+    def export_file_name(self, source: str, node: str) -> str:
+        """The file name inside `workspace_dir` of a node that is not a transcript document:
+        the speaker map, the published transcript (`transcript`), the subtitle file."""
+        ...
+
+    def validate(self, name: str, document: dict) -> None:
+        """Raise `corpuslm.schemas.SchemaError` when a document the builders write (the
+        `speaker_map`) does not match the tool's schema for it."""
+        ...
+
+
+class Report(Protocol):
+    """What a run keeps while it builds. `count` adds to a counter named for a node;
+    `errors` and `notes` are keyed by source or by a short name; `stopped_by` names the spend
+    cap that stopped the run, if one did."""
+
+    errors: dict[str, str]
+    notes: dict[str, str]
+    stopped_by: str | None
+
+    def count(self, node: str, n: int = 1) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -271,3 +327,164 @@ def build_spell_fix(chain: Chain, source: str, protected_vocabulary_sha: str) ->
         chain.load(source, shape.protected_vocabulary), language=language
     )
     return _finish(chain, source, shape.spell_fix, inputs, document, report)
+
+
+# ---- the steps after the model clean-up -----------------------------------------------------
+
+
+def build_speaker_map(
+    chain: Chain,
+    source: str,
+    model_cleanup_sha: str,
+    *,
+    scheme: SpeakerScheme,
+    extra_inputs: dict | None = None,
+    report: Report | None = None,
+) -> dict:
+    """The speaker map of the source (corpuslm.speaker_map.build_map) over the model clean-up
+    artifact (the transcript the model step wrote, whose label-to-name bindings it reads).
+
+    `extra_inputs` are the hashes of whatever else the tool's map depends on (ytlm: the video's
+    metadata). The author's verdicts (`Store.current_speaker_names`) are an input: a rename
+    rebuilds the map."""
+    shape = chain.kind.shape
+    author = chain.store.current_speaker_names(source)
+    inputs = {
+        shape.model_cleanup: model_cleanup_sha,
+        **(extra_inputs or {}),
+        "verdicts": canonical_sha256(author),
+        shape.step_key: shape.speaker_map_step,
+    }
+    path = chain.kind.workspace_dir(source) / chain.kind.export_file_name(source, shape.speaker_map)
+    if is_current(chain.store, source, shape.speaker_map, inputs) and path.exists():
+        existing = json.loads(path.read_text("utf-8"))
+        chain.kind.validate("speaker_map", existing)
+        return existing
+    document = chain.load(source, shape.model_cleanup)
+    bindings = (document.get("passes", {}).get("pass3", {}) or {}).get("bindings", [])
+    built = speaker_map_module.build_map(
+        chain.kind.row(source),
+        document,
+        bindings,
+        candidates=chain.kind.vocabulary(source).terms,
+        scheme=scheme,
+        author=author,
+    )
+    chain.kind.validate("speaker_map", built)
+    sha = write_if_changed(
+        path,
+        (json.dumps(built, indent=1, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8"),
+    )
+    record(
+        chain.store,
+        source,
+        shape.speaker_map,
+        root=chain.root,
+        path=path,
+        sha=sha,
+        inputs=inputs,
+        provenance={
+            "roles": {r: e["status"] for r, e in built["roles"].items()},
+            "needs_author": speaker_map_module.review_items(built),
+        },
+        created_by=chain.created_by,
+    )
+    if report is not None:
+        report.count(shape.speaker_map)
+    return built
+
+
+def publish_best(
+    chain: Chain,
+    source: str,
+    speaker_map: dict | None,
+    *,
+    preference: tuple[str, ...],
+    scheme: SpeakerScheme,
+) -> tuple[dict, str]:
+    """The best transcript available: the first node of `preference` whose artifact is built (or
+    stale) and whose file exists, with the speaker map applied. Written as the source's
+    `transcript` file only when its bytes change; the sha of those bytes is what the subtitle
+    file, the search index and a note depend on, so a rename re-fires exactly them."""
+    for node in preference:
+        row = chain.store.artifact(source, node)
+        if row and row["state"] in ("built", "stale") and chain.path(source, node).exists():
+            document = chain.load(source, node)
+            if speaker_map:
+                document = speaker_map_module.apply_map(document, speaker_map, scheme=scheme)
+            path = chain.kind.workspace_dir(source) / chain.kind.export_file_name(
+                source, "transcript"
+            )
+            return document, write_if_changed(path, chain.dumps(document))
+    raise schemas.SchemaError("no transcript artifact is built for this video")
+
+
+def build_subtitles(
+    chain: Chain,
+    source: str,
+    document: dict,
+    transcript_sha: str,
+    *,
+    max_line_chars: int,
+    report: Report | None = None,
+) -> bool:
+    """The subtitle (SRT) file of the published transcript. True when this call built it."""
+    shape = chain.kind.shape
+    inputs = {"transcript": transcript_sha, "max_line_chars": max_line_chars}
+    path = chain.kind.workspace_dir(source) / chain.kind.export_file_name(source, shape.subtitles)
+    if is_current(chain.store, source, shape.subtitles, inputs) and path.exists():
+        return False
+    text = transcript.to_srt(document, max_line_chars=max_line_chars)
+    sha = write_if_changed(path, text.encode("utf-8"))
+    record(
+        chain.store,
+        source,
+        shape.subtitles,
+        root=chain.root,
+        path=path,
+        sha=sha,
+        inputs=inputs,
+        provenance={"transcript_state": document["state"]},
+        created_by=chain.created_by,
+    )
+    if report is not None:
+        report.count(shape.subtitles)
+    return True
+
+
+def build_search_index(
+    chain: Chain,
+    source: str,
+    document: dict,
+    transcript_sha: str,
+    *,
+    report: Report | None = None,
+) -> bool:
+    """The source's rows in the full-text index (`Store.replace_segments`), rebuilt whole when
+    the published transcript changed. True when this call built it.
+
+    The index rows are the `segments` table, which a tool whose raw segments live in that same
+    table (beelm's) must not overwrite with cleaned text; such a tool does not call this."""
+    shape = chain.kind.shape
+    inputs = {"transcript": transcript_sha}
+    if is_current(chain.store, source, shape.search_index, inputs):
+        return False
+    with chain.store.transaction():
+        chain.store.replace_segments(source, document["segments"])
+        record(
+            chain.store,
+            source,
+            shape.search_index,
+            root=chain.root,
+            path=None,
+            sha=transcript_sha,
+            inputs=inputs,
+            provenance={
+                "segments": len(document["segments"]),
+                "transcript_state": document["state"],
+            },
+            created_by=chain.created_by,
+        )
+    if report is not None:
+        report.count(shape.search_index)
+    return True
