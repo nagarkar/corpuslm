@@ -11,6 +11,16 @@ requires-python = ">=3.12"
 dependencies = []
 
 [project.optional-dependencies]
+# Shared transcript clean-up (corpuslm.transcript, corpuslm.cleanup): the spell
+# checker and the JSON schema validator. Versions as ytlm pins them.
+clean = [
+  "symspellpy>=6.7",
+  "jsonschema>=4.0",
+]
+# Model transport for consumers that call a model; corpuslm itself calls none.
+llm = [
+  "litellm>=1.70",
+]
 dev = [
   "pytest>=8.0",
   "ruff>=0.12",
