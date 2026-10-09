@@ -135,3 +135,20 @@ def test_a_version_3_database_is_renamed_in_place_after_a_backup(tmp_path):
         assert "corpus_sources" not in names and "videos" not in names
     finally:
         d.close()
+
+
+def test_every_reader_can_ask_for_one_kind_of_source(store):
+    """A consumer that only understands one kind (ytlm: youtube) asks for it by name."""
+    bee = "bee:me:2026-10-03T09:14:00.000-07:00"
+    store.add_source(bee, "beelm/conversations/d/1.json", created_by="cli", kind="bee")
+    for source_id in (SOURCE, bee):
+        store.replace_segments(
+            source_id, [{"idx": 0, "t0": 0.0, "t1": 1.0, "speaker": "A", "text": "shared words"}]
+        )
+    assert store.source_ids("youtube") == [SOURCE] and store.source_ids("bee") == [bee]
+    assert len(store.source_ids()) == 2
+    assert store.source_counts_by("status", "bee") == {"added": 1}
+    assert store.segment_count(kind="youtube") == 1 and store.segment_count() == 2
+    hits = store.search("shared", corpus_id=None, limit=10, kind="youtube")
+    assert [h["source_id"] for h in hits] == [SOURCE]
+    assert len(store.search("shared", corpus_id=None, limit=10)) == 2
