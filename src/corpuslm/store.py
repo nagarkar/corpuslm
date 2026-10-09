@@ -40,6 +40,20 @@ _LIST_PREFIX = {
 }
 
 
+def _of_kind(kind: str | None) -> tuple[str, list[str]]:
+    """WHERE clause (corpora aliased `c`) keeping the corpora a tool of source kind `kind`
+    reads: those with no members yet and those with at least one member of that kind. A corpus
+    made only of another kind's sources (beelm's, for ytlm) is left out."""
+    if kind is None:
+        return "", []
+    return (
+        "WHERE NOT EXISTS (SELECT 1 FROM corpus_members m WHERE m.corpus_id = c.id) "
+        "OR EXISTS (SELECT 1 FROM corpus_members m JOIN sources v ON v.id = m.source_id "
+        "WHERE m.corpus_id = c.id AND v.kind = ?) ",
+        [kind],
+    )
+
+
 class Store:
     def __init__(self, db: Database):
         self.db = db
@@ -194,11 +208,17 @@ class Store:
         row = self.db.one("SELECT * FROM corpora WHERE id = ?", (corpus_id,))
         return None if row is None else self._with_lists(row, CORPUS_LISTS, "corpus_id")
 
-    def corpus_ids(self) -> list[str]:
-        return [r["id"] for r in self.db.all("SELECT id FROM corpora ORDER BY rowid")]
+    def corpus_ids(self, kind: str | None = None) -> list[str]:
+        """Every corpus id, oldest first; with `kind`, only the corpora a tool of that source
+        kind reads: those with no members yet and those with a member of that kind."""
+        where, args = _of_kind(kind)
+        sql = f"SELECT id FROM corpora c {where}ORDER BY rowid"
+        return [r["id"] for r in self.db.all(sql, args)]
 
-    def corpus_names(self) -> list[str]:
-        return [r["name"] for r in self.db.all("SELECT name FROM corpora ORDER BY name")]
+    def corpus_names(self, kind: str | None = None) -> list[str]:
+        where, args = _of_kind(kind)
+        sql = f"SELECT name FROM corpora c {where}ORDER BY name"
+        return [r["name"] for r in self.db.all(sql, args)]
 
     def corpus_count(self) -> int:
         return self._row("SELECT COUNT(*) AS n FROM corpora")["n"]
@@ -280,12 +300,14 @@ class Store:
             )
         }
 
-    def corpus_summaries(self) -> list[dict]:
+    def corpus_summaries(self, kind: str | None = None) -> list[dict]:
+        where, args = _of_kind(kind)
         rows = self.db.all(
             "SELECT c.name, c.id, c.person, c.subject, COUNT(m.id) AS members, "
             "SUM(CASE WHEN m.member_status = 'ingested' THEN 1 ELSE 0 END) AS ingested "
             "FROM corpora c LEFT JOIN vw_corpus_members m ON m.corpus_id = c.id "
-            "GROUP BY c.id ORDER BY c.name"
+            f"{where}GROUP BY c.id ORDER BY c.name",
+            args,
         )
         return [dict(r) for r in rows]
 

@@ -12,3 +12,4 @@ dist/
 .venv/
 mutants/
 .coverage
+tests/js/node_modules/

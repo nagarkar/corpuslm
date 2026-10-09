@@ -1,0 +1,8 @@
+{
+  "name": "corpuslm-page-tests",
+  "private": true,
+  "description": "Headless checks of the review page's inline script (tests/test_review_page_script.py). Install: npm ci --prefix tests/js",
+  "devDependencies": {
+    "jsdom": "^26.1.0"
+  }
+}

@@ -18,6 +18,10 @@ page text, styles and script are the same for every kind, so a kind adds no code
 cards keep the key names `video_id` and `title` for the source's id and label: they are the
 format the page script and the decisions file already use.
 
+Where answers go: to the artifact's database when the page is published in a chat (claude.ai), or,
+when `window.claude` is absent and a local review server answers (corpuslm.review_server), to that
+server's file on this machine. A copy opened from a file saves nothing and says so.
+
 Where user data leaves the machine: into claude.ai, when someone publishes the page in a chat.
 This module publishes nothing. The page embeds every open card's text; whether a source kind's
 recordings may be put on a page is the owner's decision per kind.
@@ -33,6 +37,12 @@ Decisions:
   Enforced by: tests/test_review_page.py::test_a_kind_without_links_gives_time_labels_only.
 - An author's speaker name stays first in the picker and the speaker is not to-do. Enforced by:
   tests/test_review_page.py::test_an_author_named_speaker_is_not_to_do_and_is_listed_first.
+- The page script uses the local review server only when `window.claude` is absent; with it, the
+  calls are exactly the artifact database's. Enforced by:
+  tests/test_review_page_script.py::test_without_window_claude_the_page_saves_to_the_local_server_and_reads_it_back.
+- A workspace page lists only the corpora its kind's tool reads (a corpus made only of another
+  kind's sources is left out). Enforced by:
+  tests/test_review_page.py::test_a_workspace_page_lists_only_the_corpora_of_its_kind.
 - A page is split by whole corpora at the byte budget, never trimmed. Enforced by:
   tests/test_review_page.py::test_split_cuts_by_whole_corpora_and_never_trims.
 
@@ -227,9 +237,10 @@ def page_data(db, sources_directory: Path, corpus_name: str, *, kind: ReviewKind
 def workspace_data(db, sources_directory: Path, *, kind: ReviewKind) -> dict:
     """Every corpus, each as its own page_data, for the one workspace page
     (one link, a corpus dropdown). Corpora with no cards at all are listed but carry
-    nothing."""
+    nothing. Only the corpora the kind's tool reads are listed: a corpus made only of another
+    kind's sources is left out."""
     corpora = []
-    for name in Store(db).corpus_names():
+    for name in Store(db).corpus_names(kind.name):
         corpora.append(page_data(db, sources_directory, name, kind=kind))
     corpora.sort(key=lambda c: (-c["open_items"], c["corpus"].lower()))
     return {
@@ -296,7 +307,7 @@ _JS = r"""
 (function(){
   const DOC = JSON.parse(document.getElementById('data').textContent);
   let DATA = DOC.corpora[0] || {cards: [], collection: ''}; let cards = DATA.cards; let decisions = {};
-  let db = null; let filter = 'todo'; let unsubscribe = null; let current = 0;
+  let db = null; let applyHint = 'Tell Claude to apply the review.'; let filter = 'todo'; let unsubscribe = null; let current = 0;
   // per corpus index, the ids of cards answered on this page and not yet applied
   // (read once for the corpora not on screen, live for the one that is)
   const answered = {};
@@ -381,7 +392,7 @@ _JS = r"""
     if (!cards.some(visible)){
       const done = doneCount(current);
       const why = query ? 'No card here matches the search.'
-        : filter === 'todo' && done ? `Nothing left to do here: ${done} answered and saved. Tell Claude to apply the review.`
+        : filter === 'todo' && done ? `Nothing left to do here: ${done} answered and saved. ${applyHint}`
         : filter === 'todo' ? 'Nothing to do here.' : 'Nothing here yet.';
       $('#cards').insertAdjacentHTML('beforeend', `<p class="empty">${why}</p>`);
     }
@@ -437,14 +448,41 @@ _JS = r"""
         const mine = decisions[ch.doc.id]; if (mine && mine.verdict === (v.verdict||'')) continue;
         if (document.activeElement && document.activeElement.closest && document.activeElement.closest(`article[data-id="${ch.doc.id}"]`)) continue;
         decisions[ch.doc.id] = {verdict: v.verdict||''}; changed = true; }
-      if (first){ first=false; refilter(); render(); status.textContent = 'Every tap is saved. Tap again to undo. When you are done, tell Claude to apply the review.'; status.className='note'; }
+      if (first){ first=false; refilter(); render(); status.textContent = `Every tap is saved. Tap again to undo. When you are done, ${applyHint.charAt(0).toLowerCase() + applyHint.slice(1)}`; status.className='note'; }
       else if (changed) for (const id of Object.keys(decisions)) updateCard(id);
     });
   }
+  // The local backend: the same calls the page makes on claude.ai's database (doc().set, collection().get
+  // and .onSnapshot), answered by the local review server's one API route. Null when no server answers.
+  async function localDatabase(){
+    const call = async (method, params) => {
+      const r = await fetch('api/review', {method: 'POST', headers: {'Content-Type': 'application/json', 'X-Review': '1'}, body: JSON.stringify({method, params})});
+      if (!r.ok) throw new Error('the review server answered ' + r.status);
+      return (await r.json()).result;
+    };
+    try { await call('health', {}); } catch(e){ return null; }
+    const snapshot = async collection => {
+      const rows = await call('list', {collection});
+      const docs = rows.map(row => ({id: row.id, exists: true, data: () => row.data, metadata: {hasPendingWrites: false}}));
+      return {docs, docChanges: () => docs.map(doc => ({doc}))};
+    };
+    return {
+      doc: path => ({set: data => call('set', {path, data})}),
+      collection: collection => ({
+        get: () => snapshot(collection),
+        onSnapshot: callback => { snapshot(collection).then(callback).catch(() => {}); return () => {}; },
+      }),
+    };
+  }
   (async () => {
     const status = $('#status');
-    if (!window.claude || !window.claude.use){ status.textContent = 'Read-only copy: decisions are not saved here. Open the page from claude.ai.'; status.className='note warn'; return; }
-    db = await claude.use('db');
+    if (!window.claude || !window.claude.use){
+      // Not inside claude.ai: a page served by a local review server (corpuslm.review_server) keeps its
+      // answers there; a copy opened from a file keeps none.
+      db = await localDatabase();
+      if (!db){ status.textContent = 'Read-only copy: decisions are not saved here. Open the page from claude.ai.'; status.className='note warn'; return; }
+      applyHint = 'Run the apply verb to land the answers.';
+    } else { db = await claude.use('db'); }
     if (!db){ status.textContent = 'Not connected: decisions are not being saved.'; status.className='note warn'; return; }
     subscribe();
     // one read per other corpus with open cards, so the dropdown counts what is really left
@@ -611,6 +649,32 @@ def decisions_to_verdicts(
     return out, unknown
 
 
+def land_page_verdicts(
+    db, verdicts: list[dict], *, created_by: str, source: str = "phone page"
+) -> list[str]:
+    """Record each verdict `decisions_to_verdicts` returned as a row with provenance
+    (corpuslm.review.record_verdict), through the Store; returns `<source id>:<key>` for each.
+    An answer given again adds no row."""
+    from .review import record_verdict
+
+    landed = []
+    for v in verdicts:
+        record_verdict(
+            db,
+            source_id=v["video_id"],
+            key=v["key"],
+            kind=v["kind"],
+            verdict=v["verdict"],
+            span=v.get("span", ""),
+            role=v.get("role", ""),
+            created_by=created_by,
+            source=source,
+            idx=v.get("idx"),
+        )
+        landed.append(f"{v['video_id']}:{v['key']}")
+    return landed
+
+
 # The link line of the page script. The anchored line is the page's original; the time-label line
 # is used only when some card has no link, so a page of linked cards is byte-identical to before.
 _LINK_ANCHORED = (
@@ -646,6 +710,7 @@ def _script(data: dict) -> str:
 __all__ = [
     "DEFAULT_PAGE_BYTES",
     "decisions_to_verdicts",
+    "land_page_verdicts",
     "page_data",
     "render",
     "split",
