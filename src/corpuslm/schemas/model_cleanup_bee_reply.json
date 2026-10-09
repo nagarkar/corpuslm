@@ -1,0 +1,159 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "corpuslm.model_cleanup_bee_reply/1",
+ "title": "model clean-up batch reply, fixed speaker labels",
+ "description": "What the clean-up model returns for one batch of a source whose speaker labels are fixed (corpuslm.model_cleanup, the Bee scheme). It never assigns a label: `roles` is optional and may only repeat a segment's own label.",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "edits",
+  "ambiguities",
+  "bindings"
+ ],
+ "properties": {
+  "edits": {
+   "type": "object",
+   "description": "Changed segments only: segment index (as a string) to new text.",
+   "propertyNames": {
+    "pattern": "^[0-9]+$"
+   },
+   "additionalProperties": {
+    "type": "string",
+    "description": "New text for the segment."
+   }
+  },
+  "roles": {
+   "type": "object",
+   "description": "Optional. Only a segment's own fixed label may be repeated, as [label, confidence]; a different label is rejected.",
+   "propertyNames": {
+    "pattern": "^[0-9]+$"
+   },
+   "additionalProperties": {
+    "type": "array",
+    "description": "[label, confidence 0-1].",
+    "prefixItems": [
+     {
+      "type": "string",
+      "description": "The segment's own speaker label, exactly as shown."
+     },
+     {
+      "type": "number",
+      "description": "Confidence 0-1.",
+      "minimum": 0,
+      "maximum": 1
+     }
+    ],
+    "items": false,
+    "minItems": 2
+   }
+  },
+  "ambiguities": {
+   "type": "array",
+   "description": "Consequential ambiguities in this batch.",
+   "items": {
+    "type": "object",
+    "description": "One ambiguity.",
+    "required": [
+     "idx",
+     "span",
+     "candidates",
+     "pick"
+    ],
+    "additionalProperties": false,
+    "properties": {
+     "idx": {
+      "type": "integer",
+      "description": "Segment index.",
+      "minimum": 0
+     },
+     "span": {
+      "type": "string",
+      "description": "Words as heard."
+     },
+     "candidates": {
+      "type": "array",
+      "description": "Candidate readings, the words as heard among them (prompt v2).",
+      "items": {
+       "type": "string",
+       "description": "One reading."
+      },
+      "minItems": 1
+     },
+     "pick": {
+      "type": "string",
+      "description": "The reading applied."
+     },
+     "confidence": {
+      "type": "number",
+      "description": "Confidence 0-1 in the pick; prompt v1 replies only (v2 gives probabilities).",
+      "minimum": 0,
+      "maximum": 1
+     },
+     "probabilities": {
+      "type": "array",
+      "description": "One probability per candidate, in the same order: the chance that candidate is what the speaker said. Sums to 1.",
+      "items": {
+       "type": "number",
+       "description": "One candidate's probability.",
+       "minimum": 0,
+       "maximum": 1
+      },
+      "minItems": 1
+     }
+    },
+    "anyOf": [
+     {
+      "required": [
+       "probabilities"
+      ]
+     },
+     {
+      "required": [
+       "confidence"
+      ]
+     }
+    ]
+   }
+  },
+  "bindings": {
+   "type": "array",
+   "description": "Label to name bindings the batch's dialogue supports.",
+   "items": {
+    "type": "object",
+    "description": "One binding.",
+    "required": [
+     "role",
+     "name",
+     "idx",
+     "anchor"
+    ],
+    "additionalProperties": false,
+    "properties": {
+     "role": {
+      "type": "string",
+      "description": "The speaker label bound, exactly as shown in the batch."
+     },
+     "name": {
+      "type": "string",
+      "description": "The person's name."
+     },
+     "idx": {
+      "type": "integer",
+      "description": "Segment index of the anchor.",
+      "minimum": 0
+     },
+     "anchor": {
+      "type": "string",
+      "description": "Verbatim words from that segment supporting the binding."
+     },
+     "confidence": {
+      "type": "number",
+      "description": "Confidence 0-1 that this dialogue names the role.",
+      "minimum": 0,
+      "maximum": 1
+     }
+    }
+   }
+  }
+ }
+}
