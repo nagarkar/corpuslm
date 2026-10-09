@@ -23,6 +23,19 @@ flowchart LR
   core --> file[(transcript database)]
 ```
 
+## Review machinery is shared, with per-kind hooks (2026-10-08)
+
+- `corpuslm.review` (verdicts, correction memory, the notes round trip), `corpuslm.review_page` (the phone page) and `corpuslm.vault` (marker rules, speaker properties, transcript lines, the corpus note) hold everything that does not depend on where a source came from. ytlm keeps shims at its old module paths; beelm will call them directly.
+- What differs per source kind is one `corpuslm.review.ReviewKind`, passed in, never hard-wired: `anchor_url(source, seconds)` (a link to the moment, or None), `source_label(source)`, the `SpeakerScheme`, an optional footnote about the links, optional extra speaker names for the picker, and how a speaker label is spelled in a note's frontmatter key.
+- A kind whose `anchor_url` returns None gets a time label with no link, in notes and on the page. Bee does: a `file://` link fails on a phone.
+- The module only builds pages and notes. Serving a kind's recordings on a phone page over Tailscale needs the owner's confirmation per kind, and nothing here serves anything.
+- The page keeps the stored key names `video_id` and `title` for a source's id and label: they are the page script's and the decisions file's format, and a page of linked cards is byte-identical to the one ytlm generated before the move.
+
+**Why:** nagarkar/ytlm#50 step 6: beelm shows Bee speaker picks and clean-up ambiguities on the same page without copying code.
+
+**Rules out:** a branch on the kind's name inside these modules; a `file://` link on a page; ytlm and beelm each keeping a copy of the page builder.
+
 ## Changes
 
 - 2026-10-03 Created (nagarkar/ytlm#50, slice 1).
+- 2026-10-08 Review machinery moved here with per-kind hooks (nagarkar/ytlm#50 step 6).
