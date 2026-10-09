@@ -83,6 +83,9 @@ class ReviewKind:
     extra_speaker_names: Callable[[dict], list[str]] = lambda source: []  # picker additions
     # How a speaker label is spelled in a note's flat frontmatter key (`speaker_<label>`).
     role_pattern: str = DEFAULT_ROLE_PATTERN
+    # The tool's refinement of the transcript schema, when its documents are not valid under the
+    # shared one (Bee's speaker labels are its own); None reads them with the shared schema.
+    refined_schema: dict | None = None
 
 
 def item_pattern(review_key_prefix: str = "spk") -> re.Pattern[str]:

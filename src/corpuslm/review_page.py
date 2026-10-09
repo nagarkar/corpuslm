@@ -105,7 +105,7 @@ def page_data(db, sources_directory: Path, corpus_name: str, *, kind: ReviewKind
         t_path = sources_directory / vid / "transcript.json"
         if not t_path.exists():
             continue
-        t = transcript_loads(t_path.read_text("utf-8"))
+        t = transcript_loads(t_path.read_text("utf-8"), refined_schema=kind.refined_schema)
         segments = t["segments"]
         for a in t.get("ambiguities") or []:
             if a["status"] in ("capped", "expired"):
