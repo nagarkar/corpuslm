@@ -233,3 +233,18 @@ def test_every_srt_entry_is_numbered_and_timed_from_its_segment(segments, width)
         # wrapping moves line breaks, never a character
         assert "".join(lines).replace(" ", "") == seg["text"].replace(" ", "")
         assert all(len(line) <= width for line in lines) or lines == [seg["text"]]
+
+
+def test_free_labels_accept_a_label_the_shared_schema_does_not_list():
+    t = transcript.from_segments(
+        "any", [{"t0": 0, "t1": 1, "text": "hello", "speaker": "Quill"}], CAPTION, "x.transcript/1"
+    )
+    t["segments"][0]["role"] = "Quill"
+    with pytest.raises(schemas.SchemaError, match="role"):
+        transcript.dumps(t)
+    free = transcript.with_free_labels()
+    assert transcript.loads(transcript.dumps(t, refined_schema=free), refined_schema=free) == t
+    assert (
+        "enum"
+        in schemas.schema("transcript")["properties"]["segments"]["items"]["properties"]["role"]
+    )  # the shared schema itself is untouched

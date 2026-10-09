@@ -18,6 +18,9 @@ Decisions:
 - `dumps` is canonical (stable key order, one trailing newline), so staleness is a byte
   comparison; a document is validated at write and at read. Enforced by:
   tests/test_transcript.py::test_dumps_is_canonical_and_loads_round_trips_it.
+- A source with fixed labels gets a schema whose segment `role` is any label
+  (`with_free_labels`). Enforced by:
+  tests/test_transcript.py::test_free_labels_accept_a_label_the_shared_schema_does_not_list.
 - Every SRT entry is numbered and starts at its segment's start. Enforced by:
   tests/test_transcript.py::test_every_srt_entry_is_numbered_and_timed_from_its_segment.
 
@@ -31,6 +34,7 @@ Terms:
 
 from __future__ import annotations
 
+import copy
 import html
 import json
 import re
@@ -88,6 +92,18 @@ def from_segments(
         ],
         "words": [],
     }
+
+
+def with_free_labels(refined_schema: dict | None = None) -> dict:
+    """The transcript schema (or a tool's refinement of it) with a segment's `role` free to be
+    any label. The shared schema lists YouTube's labels; a source with fixed labels (Bee's
+    diarization) carries the source's own."""
+    free = copy.deepcopy(
+        refined_schema if refined_schema is not None else schemas.schema("transcript")
+    )
+    role = free["properties"]["segments"]["items"]["properties"]["role"]
+    role.pop("enum", None)
+    return free
 
 
 def dumps(t: dict, *, refined_schema: dict | None = None) -> str:

@@ -54,7 +54,18 @@ class FakeKind:
         return f"{node}.json"
 
     def refined_schema(self):
-        return None
+        return transcript.with_free_labels()
+
+    def row(self, source):
+        return {"id": source}
+
+    def export_file_name(self, source, node):
+        return {"transcript": "transcript.json", "subtitles": "subtitles.srt"}.get(
+            node, f"{node}.json"
+        )
+
+    def validate(self, name, document):
+        pass
 
 
 @pytest.fixture
@@ -192,3 +203,117 @@ def test_is_current_needs_a_built_row_with_equal_inputs(store, tmp_path):
     )  # fmt: skip
     assert store.artifact(SOURCE, "normalize")["path"] == ""
     assert not chain.is_current(store, SOURCE, "normalize", {"a": 1})
+
+
+# ---- the steps after the model clean-up ---------------------------------------------------
+
+
+class CountingReport:
+    def __init__(self):
+        self.counts, self.errors, self.notes, self.stopped_by = {}, {}, {}, None
+
+    def count(self, node, n=1):
+        self.counts[node] = self.counts.get(node, 0) + n
+
+
+def _through_model_cleanup(store, tmp_path):
+    """The chain up to spell fix, with the spell-fix document standing in for the model's."""
+    c = chain.Chain(store, FakeKind(tmp_path / "t"), tmp_path, "test")
+    _, _, third = _run(c)
+    document = c.load(SOURCE, "spell_fix")
+    document["segments"][0]["role"] = "Quill"
+    document["segments"][1]["role"] = "Speaker 2"
+    path = c.path(SOURCE, "model_cleanup")
+    sha = chain.write_if_changed(path, c.dumps(document))
+    chain.record(
+        store,
+        SOURCE,
+        "model_cleanup",
+        root=tmp_path,
+        path=path,
+        sha=sha,
+        inputs={"spell_fix": third.sha},
+        provenance={},
+        created_by="test",
+    )
+    return c, sha
+
+
+def test_the_export_builders_build_once_and_then_nothing(store, tmp_path):
+    from corpuslm.speaker_map import bee_scheme
+
+    scheme = bee_scheme("Quill")
+    c, model_sha = _through_model_cleanup(store, tmp_path)
+    report = CountingReport()
+    speaker_map = chain.build_speaker_map(
+        c, SOURCE, model_sha, scheme=scheme, extra_inputs={"metadata": "m1"}, report=report
+    )
+    assert speaker_map["roles"]["Quill"] == {"name": "Quill", "status": "RESOLVED_FROM_METADATA"}
+    assert speaker_map["roles"]["Speaker 2"]["status"] == "NEEDS_AUTHOR"
+    row = store.artifact(SOURCE, "speaker_map")
+    assert json.loads(row["inputs"]) == {
+        "model_cleanup": model_sha,
+        "metadata": "m1",
+        "verdicts": chain.canonical_sha256({}),
+        "step": "corpuslm.speaker_map/1",
+    }
+    document, transcript_sha = chain.publish_best(
+        c, SOURCE, speaker_map, preference=("model_cleanup", "spell_fix"), scheme=scheme
+    )
+    assert chain.build_subtitles(
+        c, SOURCE, document, transcript_sha, max_line_chars=42, report=report
+    )
+    assert chain.build_search_index(c, SOURCE, document, transcript_sha, report=report)
+    assert store.artifact(SOURCE, "search_index")["sha256"] == transcript_sha
+    again = CountingReport()
+    chain.build_speaker_map(
+        c, SOURCE, model_sha, scheme=scheme, extra_inputs={"metadata": "m1"}, report=again
+    )
+    assert not chain.build_subtitles(c, SOURCE, document, transcript_sha, max_line_chars=42)
+    assert not chain.build_search_index(c, SOURCE, document, transcript_sha)
+    assert again.counts == {}
+    assert report.counts == {"speaker_map": 1, "subtitles": 1, "search_index": 1}
+    srt = (tmp_path / "t" / SOURCE / "subtitles.srt").read_text()
+    assert srt.startswith("1\n00:00:00")
+
+
+def test_a_subtitle_width_change_rebuilds_only_the_subtitles(store, tmp_path):
+    from corpuslm.speaker_map import bee_scheme
+
+    c, model_sha = _through_model_cleanup(store, tmp_path)
+    document, sha = chain.publish_best(
+        c, SOURCE, None, preference=("model_cleanup",), scheme=bee_scheme("Quill")
+    )
+    assert chain.build_subtitles(c, SOURCE, document, sha, max_line_chars=42)
+    assert not chain.build_subtitles(c, SOURCE, document, sha, max_line_chars=42)
+    assert chain.build_subtitles(c, SOURCE, document, sha, max_line_chars=20)
+
+
+def test_publish_best_takes_the_first_built_node_and_applies_the_speaker_map(store, tmp_path):
+    from corpuslm.speaker_map import bee_scheme
+
+    scheme = bee_scheme("Quill")
+    c, _ = _through_model_cleanup(store, tmp_path)
+    speaker_map = {
+        "source_id": SOURCE,
+        "candidates": [],
+        "roles": {
+            "Quill": {"name": "Quill Q", "status": "AUTHOR"},
+            "Speaker 2": {"name": "Ann", "status": "AUTHOR"},
+        },
+    }
+    document, sha = chain.publish_best(
+        c, SOURCE, speaker_map, preference=("model_cleanup", "spell_fix"), scheme=scheme
+    )
+    assert [seg["speaker"] for seg in document["segments"]] == ["Quill Q", "Ann"]
+    path = tmp_path / "t" / SOURCE / "transcript.json"
+    assert chain.canonical_sha256(path.read_text()) and sha == chain.write_if_changed(
+        path, c.dumps(document)
+    )
+    # the node ahead of the others is stale or missing: the next one is taken
+    document, _ = chain.publish_best(
+        c, SOURCE, None, preference=("never_built", "spell_fix"), scheme=scheme
+    )
+    assert document["segments"][0].get("role") is None
+    with pytest.raises(chain.schemas.SchemaError):
+        chain.publish_best(c, SOURCE, None, preference=("never_built",), scheme=scheme)
