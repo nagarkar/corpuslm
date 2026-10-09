@@ -220,8 +220,10 @@ class Store:
         sql = f"SELECT name FROM corpora c {where}ORDER BY name"
         return [r["name"] for r in self.db.all(sql, args)]
 
-    def corpus_count(self) -> int:
-        return self._row("SELECT COUNT(*) AS n FROM corpora")["n"]
+    def corpus_count(self, kind: str | None = None) -> int:
+        """How many corpora; with `kind`, only those a tool of that source kind reads."""
+        where, args = _of_kind(kind)
+        return self._row(f"SELECT COUNT(*) AS n FROM corpora c {where}".strip(), args)["n"]
 
     def add_corpus(self, fields: dict[str, Any], *, created_by: str) -> str:
         scalar, listed = self._split(fields, CORPUS_LISTS)
