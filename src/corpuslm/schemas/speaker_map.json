@@ -1,0 +1,90 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "corpuslm.speaker_map/1",
+ "title": "speaker_map.json",
+ "description": "Label to name bindings for one source (corpuslm.speaker_map). A tool may require its own source id key; this schema accepts `video_id` (the legacy key) or `source_id`.",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "candidates",
+  "roles"
+ ],
+ "anyOf": [
+  {
+   "required": [
+    "video_id"
+   ]
+  },
+  {
+   "required": [
+    "source_id"
+   ]
+  }
+ ],
+ "properties": {
+  "video_id": {
+   "type": "string",
+   "description": "The source id under its legacy key (ytlm)."
+  },
+  "source_id": {
+   "type": "string",
+   "description": "The source id under its plain key (beelm)."
+  },
+  "candidates": {
+   "type": "array",
+   "description": "Person names found in the source's vocabulary, deterministic.",
+   "items": {
+    "type": "string",
+    "description": "A candidate name."
+   }
+  },
+  "roles": {
+   "type": "object",
+   "description": "Per label: the binding and its status.",
+   "additionalProperties": {
+    "type": "object",
+    "description": "One label's binding.",
+    "required": [
+     "name",
+     "status"
+    ],
+    "additionalProperties": false,
+    "properties": {
+     "name": {
+      "type": "string",
+      "description": "Bound name, '' when unknown."
+     },
+     "status": {
+      "type": "string",
+      "description": "Binding status.",
+      "enum": [
+       "RESOLVED_FROM_METADATA",
+       "INFERRED",
+       "NEEDS_AUTHOR",
+       "AUTHOR"
+      ]
+     },
+     "confidence": {
+      "type": "number",
+      "description": "Confidence 0-1 for inferred bindings.",
+      "minimum": 0,
+      "maximum": 1
+     },
+     "anchor": {
+      "type": "string",
+      "description": "Verbatim dialogue supporting the binding."
+     },
+     "idx": {
+      "type": "integer",
+      "description": "Segment index of the anchor.",
+      "minimum": 0
+     },
+     "key": {
+      "type": "string",
+      "description": "Review key when NEEDS_AUTHOR."
+     }
+    }
+   }
+  }
+ }
+}

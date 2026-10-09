@@ -115,3 +115,18 @@ def test_the_unresolved_label_has_no_speaker_and_no_map_entry_when_the_scheme_na
 def test_candidates_are_deduplicated_in_order(scheme):
     m = sm.build_map(SOURCE, _t([]), [], candidates=["b", "a", "b"], scheme=scheme)
     assert m["candidates"] == ["b", "a"]
+
+
+def test_the_shared_speaker_map_schema_takes_either_source_id_key_and_names_a_bad_status():
+    from corpuslm import schemas
+
+    for key in ("video_id", "source_id"):
+        doc = {key: "s1", "candidates": [], "roles": {"A": {"name": "", "status": "NEEDS_AUTHOR"}}}
+        schemas.validate("speaker_map", doc)
+    with pytest.raises(schemas.SchemaError, match="status"):
+        schemas.validate(
+            "speaker_map",
+            {"source_id": "s1", "candidates": [], "roles": {"A": {"name": "", "status": "MAYBE"}}},
+        )
+    with pytest.raises(schemas.SchemaError):
+        schemas.validate("speaker_map", {"candidates": [], "roles": {}})
