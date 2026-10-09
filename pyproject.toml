@@ -17,9 +17,11 @@ clean = [
   "symspellpy>=6.7",
   "jsonschema>=4.0",
 ]
-# Model transport for consumers that call a model; corpuslm itself calls none.
+# Model transport (corpuslm.llm) for consumers that call a model; corpuslm itself calls none.
+# jsonschema validates the ledger lines.
 llm = [
   "litellm>=1.70",
+  "jsonschema>=4.0",
 ]
 dev = [
   "corpuslm[clean]",
