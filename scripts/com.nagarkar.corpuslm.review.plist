@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  corpuslm's review server (src/corpuslm/review_server.py) on 127.0.0.1, port from the settings
+  file, kept running by launchd and started at login. It serves the review page of every corpus of
+  every source kind and keeps the answers in the shared transcript database. The database path,
+  the port and each kind's folder come from the settings file (see scripts/review.example.toml),
+  never from this command line. The owner installs it (metalm operations.md, launch agents):
+    cp scripts/com.nagarkar.corpuslm.review.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.nagarkar.corpuslm.review.plist
+  Restart onto new code (after every merge that touches src/):
+    launchctl kickstart -k gui/501/com.nagarkar.corpuslm.review
+  Check it runs the newest code:
+    .venv/bin/corpuslm review check "(then the config flag and the settings file path)"
+  The tailnet port is the owner's to choose (tailscale serve runs only on the owner's word).
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.nagarkar.corpuslm.review</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/nagarkar/workspace/repos/corpuslm/.venv/bin/python</string>
+    <string>-m</string>
+    <string>corpuslm.cli</string>
+    <string>review</string>
+    <string>serve</string>
+    <string>--config</string>
+    <string>/Volumes/Crucial X6/corpuslm/review.toml</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/nagarkar/workspace/repos/corpuslm</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <!-- At most one restart attempt per 10 s, e.g. while something else holds the port. -->
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/nagarkar/Library/Logs/corpuslm-review.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/nagarkar/Library/Logs/corpuslm-review.log</string>
+</dict>
+</plist>

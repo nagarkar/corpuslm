@@ -3,4 +3,4 @@
 It owns the schema of the shared transcript database (docs/design/storage-schema.md).
 """
 
-SCHEMA_VERSION = "4"
+SCHEMA_VERSION = "5"

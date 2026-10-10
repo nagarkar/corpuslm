@@ -37,7 +37,7 @@ def test_without_window_claude_the_page_saves_to_the_local_server_and_reads_it_b
     corpus_id = add_corpus_of_bee_sources(Store(database), "Walks", [BEE_SOURCE, SECOND_BEE_SOURCE])
     write_source(sources, BEE_SOURCE, bee_transcript(), bee_speaker_map())
     write_source(sources, SECOND_BEE_SOURCE, bee_transcript())
-    documents = review_server.Documents(tmp_path / "state" / "review.json")
+    documents = review_server.Answers(tmp_path / "transcript.sqlite")
 
     def page() -> str:  # the database is opened for each request, in the request's thread
         per_request = db.Database(tmp_path / "transcript.sqlite")
@@ -48,7 +48,7 @@ def test_without_window_claude_the_page_saves_to_the_local_server_and_reads_it_b
         finally:
             per_request.close()
 
-    httpd = review_server.make_server("127.0.0.1", 0, page=page, documents=documents)
+    httpd = review_server.make_server("127.0.0.1", 0, page=page, answers=documents)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     try:
         base = f"http://127.0.0.1:{httpd.server_address[1]}"
@@ -69,8 +69,8 @@ def test_without_window_claude_the_page_saves_to_the_local_server_and_reads_it_b
     assert "run the apply verb" in report["status"]
     assert report["links"] == 0  # a Bee card has a time label and no link
     assert any("0:05" in w for w in report["where"])
-    assert report["picker"][:3] == ["Ren", "Wren", "Moss"]
+    assert report["picker"][:2] == ["Ren", "Quill"]
     assert report["pressed"] == "true"
     assert report["reloaded_pressed"] == "true"
     saved = documents.list(f"reviews/{corpus_id}/items")
-    assert [row["data"]["verdict"] for row in saved] == ["Wren"]
+    assert [row["data"]["verdict"] for row in saved] == ["Ren"]

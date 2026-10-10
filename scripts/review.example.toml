@@ -1,0 +1,19 @@
+# corpuslm's review settings: one file beside the shared database (never in git). Pass it as
+# `--config FILE` to `corpuslm review page|serve|apply|check`; the launch agent does.
+# Every key is required unless it says otherwise.
+
+# The shared transcript database (an absolute path).
+database = "/path/to/corpuslm/transcript.sqlite"
+
+# The review server's port on 127.0.0.1. Default 8781.
+port = 8781
+
+# One table per source kind that has review cards. `directory` holds <source id>/transcript.json and
+# <source id>/speaker_map.json for each source of that kind.
+[kinds.youtube]
+directory = "/path/to/ytlm/workspace/videos"
+
+[kinds.bee]
+directory = "/path/to/Bee/beelm/transcripts"
+# Offered first in Bee's speaker picker and resolved as the owner's own label. Optional.
+owner_first_name = "Quill"

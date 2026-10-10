@@ -82,6 +82,46 @@ def bee_transcript(*, ambiguities: list[dict] | None = None) -> dict:
     }
 
 
+YOUTUBE_SOURCE = "aaaaaaaaaaa"
+
+
+def youtube_transcript() -> dict:
+    """A YouTube-shaped transcript (the shared schema's labels) that mishears 'wren' once."""
+    return {
+        "video_id": YOUTUBE_SOURCE,
+        "schema": "ytlm.transcript/1",
+        "state": "LLM-CLEANED",
+        "caption": {"language": "en", "generated": True, "fetcher": "test"},
+        "speaker_source": "inferred",
+        "words": [],
+        "segments": [
+            {**segment(0, 0.0, "Welcome to the show.", speaker="Quill Channel"), "role": "HOST"},
+            {
+                **segment(1, 12.0, "Please call Wren.", raw="please call wren", speaker="GUEST_1"),
+                "role": "GUEST_1",
+            },
+        ],
+        "ambiguities": [ambiguity("amb-0001", 1, "wren", "Wren", ["Wren", "Ren"])],
+    }
+
+
+def youtube_speaker_map() -> dict:
+    return {
+        "video_id": YOUTUBE_SOURCE,
+        "candidates": SUMMARY_HEADINGS,
+        "roles": {
+            "HOST": {"name": "Quill Channel", "status": "RESOLVED_FROM_METADATA"},
+            "GUEST_1": {
+                "name": "",
+                "status": "NEEDS_AUTHOR",
+                "key": "spk-1",
+                "idx": 1,
+                "anchor": "Ren (Ren, you are on)",
+            },
+        },
+    }
+
+
 def bee_speaker_map(*, unknown_status: str = "NEEDS_AUTHOR", unknown_name: str = "") -> dict:
     unknown = {"name": unknown_name, "status": unknown_status, "key": "spk-1", "idx": 1}
     if unknown_status == "NEEDS_AUTHOR":
@@ -109,3 +149,10 @@ def add_corpus_of_bee_sources(store: Store, name: str, source_ids: list[str]) ->
         store.add_source(source_id, f"transcripts/{source_id}.md", created_by="test", kind="bee")
         store.add_member(corpus_id, source_id, "author", created_by="test")
     return corpus_id
+
+
+def add_youtube_source(store: Store, corpus_id: str) -> None:
+    store.add_source(
+        YOUTUBE_SOURCE, f"https://www.youtube.com/watch?v={YOUTUBE_SOURCE}", created_by="test"
+    )
+    store.add_member(corpus_id, YOUTUBE_SOURCE, "author", created_by="test")

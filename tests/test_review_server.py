@@ -1,5 +1,5 @@
-"""Review server (corpuslm.review_server): the page's local database over HTTP on loopback, with
-Bee-shaped fixtures only."""
+"""Review server (corpuslm.review_server): the page's database over HTTP on loopback, answers kept
+in the shared transcript database, with Bee-shaped fixtures only."""
 
 from __future__ import annotations
 
@@ -23,14 +23,26 @@ from corpuslm.store import Store
 
 
 @pytest.fixture
-def documents(tmp_path):
-    return review_server.Documents(tmp_path / "state" / "review.json")
+def corpora(tmp_path):
+    """Two corpora in a transcript database; (database path, first id, second id)."""
+    path = tmp_path / "transcript.sqlite"
+    database = db.Database(path)
+    store = Store(database)
+    first = store.add_corpus({"name": "Walks"}, created_by="test")
+    second = store.add_corpus({"name": "Talks"}, created_by="test")
+    database.close()
+    return path, first, second
+
+
+@pytest.fixture
+def documents(corpora):
+    return review_server.Answers(corpora[0])
 
 
 @pytest.fixture
 def server(documents):
     httpd = review_server.make_server(
-        "127.0.0.1", 0, page=lambda: "<title>page</title>", documents=documents
+        "127.0.0.1", 0, page=lambda: "<title>page</title>", answers=documents
     )
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
@@ -62,7 +74,7 @@ def call(server, method, params=None, headers=GOOD):
 def test_the_page_and_health_are_served_and_the_page_is_built_for_each_request(documents):
     builds = []
     httpd = review_server.make_server(
-        "127.0.0.1", 0, page=lambda: builds.append(1) or "<title>p</title>", documents=documents
+        "127.0.0.1", 0, page=lambda: builds.append(1) or "<title>p</title>", answers=documents
     )
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     try:
@@ -76,19 +88,24 @@ def test_the_page_and_health_are_served_and_the_page_is_built_for_each_request(d
         httpd.server_close()
 
 
-def test_documents_round_trip_set_get_list_delete(server):
-    path = "reviews/cor-1/items/card-1"
-    assert call(server, "set", {"path": path, "data": {"verdict": "Wren"}})[0] == 200
+def test_answers_round_trip_set_get_list_delete(server, corpora):
+    _, first, second = corpora
+    path = f"reviews/{first}/items/card-1"
+    at = "2026-10-09T10:00:00Z"
+    assert call(server, "set", {"path": path, "data": {"verdict": "Wren", "at": at}})[0] == 200
     assert (
-        call(server, "set", {"path": "reviews/cor-1/items/card-2", "data": {"verdict": ""}})[0]
+        call(server, "set", {"path": f"reviews/{first}/items/card-2", "data": {"verdict": ""}})[0]
         == 200
     )
     assert (
-        call(server, "set", {"path": "reviews/cor-2/items/card-9", "data": {"verdict": "x"}})[0]
+        call(server, "set", {"path": f"reviews/{second}/items/card-9", "data": {"verdict": "x"}})[0]
         == 200
     )
-    assert call(server, "get", {"path": path}) == (200, {"result": {"verdict": "Wren"}})
-    status, listed = call(server, "list", {"collection": "reviews/cor-1/items"})
+    assert call(server, "get", {"path": path}) == (
+        200,
+        {"result": {"verdict": "Wren", "at": at}},
+    )
+    status, listed = call(server, "list", {"collection": f"reviews/{first}/items"})
     assert [row["id"] for row in listed["result"]] == ["card-1", "card-2"]
     assert call(server, "delete", {"path": path}) == (200, {"result": {"deleted": True}})
     assert call(server, "get", {"path": path})[0] == 404
@@ -110,6 +127,8 @@ def test_the_write_check_declines_each_bad_request(server):
     assert request(server, "POST", "/api/review", "[1]", GOOD)[0] == 400
     assert request(server, "POST", "/api/review", "not json", GOOD)[0] == 400
     assert call(server, "set", {"path": "../escape", "data": {}})[0] == 400
+    assert call(server, "set", {"path": "reviews/cor-nope/items/c", "data": {}})[0] == 400
+    assert call(server, "set", {"path": "reviews/x/items/c", "data": {"at": "yesterday"}})[0] == 400
     assert call(server, "set", {"path": "a/b", "data": [1]})[0] == 400
     assert call(server, "nonsense")[0] == 400
     assert request(server, "POST", "/api/other", body, GOOD)[0] == 404
@@ -124,28 +143,30 @@ def test_a_host_that_is_not_this_machine_gets_421(server):
 
 def test_the_server_will_not_bind_a_public_address(documents):
     with pytest.raises(ValueError, match="loopback"):
-        review_server.make_server("0.0.0.0", 0, page=lambda: "", documents=documents)
+        review_server.make_server("0.0.0.0", 0, page=lambda: "", answers=documents)
 
 
-def test_two_taps_at_once_both_land(server, documents):
+def test_two_taps_at_once_both_land(server, documents, corpora):
+    _, first, _ = corpora
+
     def tap(n):
-        call(server, "set", {"path": f"reviews/cor-1/items/c{n}", "data": {"verdict": str(n)}})
+        call(server, "set", {"path": f"reviews/{first}/items/c{n}", "data": {"verdict": str(n)}})
 
     threads = [threading.Thread(target=tap, args=(n,)) for n in range(25)]
     for t in threads:
         t.start()
     for t in threads:
         t.join()
-    assert len(documents.list("reviews/cor-1/items")) == 25
+    assert len(documents.list(f"reviews/{first}/items")) == 25
 
 
 def test_an_unexpected_error_names_only_its_type(tmp_path):
-    class Broken(review_server.Documents):
+    class Broken(review_server.Answers):
         def call(self, method, params):
             raise RuntimeError("secret words from a transcript")
 
     httpd = review_server.make_server(
-        "127.0.0.1", 0, page=lambda: "", documents=Broken(tmp_path / "r.json")
+        "127.0.0.1", 0, page=lambda: "", answers=Broken(tmp_path / "r.sqlite")
     )
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     try:
@@ -156,8 +177,26 @@ def test_an_unexpected_error_names_only_its_type(tmp_path):
         httpd.server_close()
 
 
-def test_saved_answers_become_a_decisions_file_that_lands_as_verdicts(tmp_path, documents):
+def test_answers_of_every_corpus_share_one_table(documents, corpora):
+    path, first, second = corpora
+    documents.set(f"reviews/{first}/items/a", {"verdict": "one"})
+    documents.set(f"reviews/{second}/items/a", {"verdict": "two"})
+    database = db.Database(path)
+    try:
+        assert Store(database).review_answer_counts() == {first: 1, second: 1}
+    finally:
+        database.close()
+    assert documents.get(f"reviews/{first}/items/a")["verdict"] == "one"
+
+
+def test_health_says_when_the_server_started(server):
+    status, data = request(server, "GET", "/health")
+    assert status == 200 and json.loads(data)["started_at"].endswith("Z")
+
+
+def test_saved_answers_become_a_decisions_file_that_lands_as_verdicts(tmp_path):
     database = db.Database(tmp_path / "transcript.sqlite")
+    documents = review_server.Answers(tmp_path / "transcript.sqlite")
     try:
         sources = tmp_path / "sources"
         corpus_id = add_corpus_of_bee_sources(
@@ -167,7 +206,10 @@ def test_saved_answers_become_a_decisions_file_that_lands_as_verdicts(tmp_path, 
         write_source(sources, SECOND_BEE_SOURCE, bee_transcript())
         data = review_page.page_data(database, sources, "Walks", kind=BEE_KIND)
         speaker = next(c for c in data["cards"] if c.get("role") == "Unknown")
-        documents.set(f"{data['collection']}/{speaker['id']}", {"verdict": "Wren", "at": "t"})
+        documents.set(
+            f"{data['collection']}/{speaker['id']}",
+            {"verdict": "Wren", "at": "2026-10-09T10:00:00.123Z"},
+        )
         documents.set(f"{data['collection']}/blank", {"verdict": ""})
         decisions = documents.decisions(corpus_id)
         assert decisions["decisions"][speaker["id"]] == {"verdict": "Wren"}

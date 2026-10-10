@@ -43,6 +43,7 @@ erDiagram
   corpora ||--o{ corpus_members : "members"
   sources ||--o{ corpus_members : "member of"
   corpora ||--o{ artifacts : "corpus note"
+  corpora ||--o{ review_answers : "answers not yet landed"
   sources ||--o{ artifacts : "artifacts"
 ```
 
@@ -123,7 +124,7 @@ places. The stored copy could disagree (a metadata failure left members
 
 | Kind | Tables | Rule |
 |---|---|---|
-| master data | `sources`, `corpora`, `corpus_members` and the list tables | mutable; `version` bumps on every update; a trigger writes every changed column to `change_log` (old value, new value, row version); list tables are written position by position and log each element added or removed (an element that moves counts as removed and added) |
+| master data | `sources`, `corpora`, `corpus_members`, `review_answers` and the list tables | mutable; `version` bumps on every update; a trigger writes every changed column to `change_log` (old value, new value, row version); list tables are written position by position and log each element added or removed (an element that moves counts as removed and added) |
 | decisions | `review_verdicts`, `speaker_verdicts`, `corrections` | append-only (a trigger aborts UPDATE and DELETE); an answer given again or changed is a new row; the newest row per slot is in force (`vw_current_*`) |
 | evidence | `fetch_attempts`, `change_log` | append-only |
 | runs | `runs` | one row per pipeline run (`ytlm run`), opened `running` and closed once as `ok` or `error` |
@@ -163,7 +164,7 @@ keep lineage.
 
 ## Migrations: user_version, a verified backup, one transaction (2026-10-03)
 
-The schema version is `PRAGMA user_version` (`db.USER_VERSION`, now 4; a
+The schema version is `PRAGMA user_version` (`db.USER_VERSION`, now 5; a
 database made before it was tracked reads 0 and has the v1 schema, frozen
 in `tests/fixtures/schema_v1.sql`). On open, `db.migrate`:
 
@@ -180,12 +181,19 @@ in `tests/fixtures/schema_v1.sql`). On open, `db.migrate`:
    `PRAGMA integrity_check` and the author-table counts again. Any failure
    rolls back and names the backup (`MigrationFailed`).
 
+The v4 → v5 step is additive: after the verified backup it creates `review_answers` and its
+change-log trigger in one transaction, sets `user_version` 5 inside it, and checks that no author
+row changed (`review_answers` is counted with the author tables, so a backup carries it from
+then on). The v2 and v3 rebuilds end at the current schema, so they create it too.
+
 The v1 → v2 rebuild renames each v1 table to `legacy_v1_<name>`, creates
 the v2 tables, copies every row, drops the legacy tables, rebuilds the FTS
 index, then creates triggers and views (so the copy writes no change-log
 rows). A v1 `perspective` of `''` becomes NULL: it was the column default,
 so it meant "not known yet". A v1 database made before the detail columns
 existed gains them first.
+
+Proof of the v4 → v5 step on a copy of the real database (2026-10-09, 293 sources): every table kept its row count (214,557 segments, 597 review verdicts, 30 speaker verdicts, 580 corrections), `review_answers` appeared empty, `integrity_check` read `ok`, and the backup was written first.
 
 Retention (Ruled 2026-10-03, "keep the newest three"): after a new backup
 passes `PRAGMA integrity_check` and the row counts, `db.prune_backups`
@@ -342,6 +350,25 @@ setting `metadata.merged_from` to the folded corpus's id, so the change log reco
 move. The folded corpus's row, lists and members, whole, are appended to the target
 corpus's `metadata.merged_from` before the folded rows are deleted: nothing a corpus
 held is lost with its row.
+
+### `review_answers`
+
+History: master.
+
+What the review page saved and `review apply` has not yet landed: one row per
+(corpus, card), mutable (a card answered again replaces its row; the change log keeps
+the old values). `review apply` lands each answer as verdict rows
+(`review_verdicts`, the record) and then deletes it, so the table only ever holds
+answers not yet landed. A card's id is a hash of the corpus id, so a merged-away
+corpus's answers are carried in the target's `metadata.merged_from` and deleted.
+
+| column | type | null | meaning |
+|---|---|---|---|
+| (base) | | | |
+| corpus_id | TEXT | no | the corpus the page was showing; unique with card_id |
+| card_id | TEXT | no | the card's id on the page (`review_page.page_data`), not empty |
+| verdict | TEXT | no | what the owner tapped or typed; `''` when the tap was undone |
+| answered_at | TEXT | no | when the page saved it (ISO UTC) |
 
 ### `fetch_attempts`
 
