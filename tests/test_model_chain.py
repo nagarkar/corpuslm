@@ -305,3 +305,52 @@ def test_a_recorded_verdict_changes_the_inputs_and_a_term_rule_is_applied(world)
     assert after["verdicts"] != before["verdicts"] and after["memory"] != before["memory"]
     assert after["prompt"] == before["prompt"]
     assert sum(client.calls for client in world.clients) == asked  # served from the cache
+
+
+def ambiguous_reply(index):
+    return {
+        "edits": {},
+        "ambiguities": [
+            {
+                "idx": index,
+                "span": "line",
+                "candidates": ["line", "lime"],
+                "probabilities": [0.25, 0.75],
+                "pick": "lime",
+            }
+        ],
+        "bindings": [],
+    }
+
+
+def test_building_the_model_cleanup_records_its_suggestions(world):
+    batches = world.batches()
+    for batch in batches:
+        world.script(f"{SOURCE}-{batch.tag_suffix}", ambiguous_reply(batch.start))
+    sha = world.build()
+    held = world.store.model_suggestions(SOURCE)
+    assert list(held) == [f"amb-{n:04d}" for n in range(1, len(batches) + 1)]
+    first = held["amb-0001"]
+    assert first["span_norm"] == "line" and first["suggestion"] == "lime"
+    assert first["suggestion_probability"] == 0.75
+    assert first["candidates"] == ["line", "lime"] and first["probabilities"] == [0.25, 0.75]
+    assert first["model"] == MODEL and first["artifact_sha256"] == sha
+    # the artifact file itself is the same bytes the recorded hash names
+    assert world.row()["sha256"] == sha
+    # the owner's verdict rebuilds the artifact (new bytes); its rows are replaced, and the
+    # suggestion stays the model's pick, not the owner's reading
+    reviewing = model_chain.DatabaseReview(world.store)
+    review.record_verdict(
+        world.database,
+        source_id=SOURCE,
+        key="amb-0001",
+        kind="ambiguity",
+        verdict="lime green",
+        span="line",
+        created_by="test",
+    )
+    again = world.build(review=reviewing)
+    assert again != sha
+    rows = world.store.model_suggestions(SOURCE)
+    assert {r["artifact_sha256"] for r in rows.values()} == {again}
+    assert len(rows) == len(held) and rows["amb-0001"]["suggestion"] == "lime"

@@ -46,6 +46,8 @@ KINDS = ("youtube", "bee")
 # The artifacts of a YouTube source that go stale when the owner answers one of its cards: the
 # next run rebuilds them (the clean-up pass patches the transcript at the answer).
 YOUTUBE_STALE_NODES = ("pass3", "speaker_map")
+# ytlm stores the model clean-up under its first name (`pass3`); beelm's is `model_cleanup`.
+YOUTUBE_MODEL_CLEANUP_NODE = "pass3"
 
 
 def youtube_anchor_url(video: dict, seconds: float) -> str:
@@ -64,6 +66,7 @@ def youtube_review() -> ReviewKind:
         scheme=YOUTUBE,
         links_note=YOUTUBE_LINKS_NOTE,
         stale_nodes=YOUTUBE_STALE_NODES,
+        model_cleanup_node=YOUTUBE_MODEL_CLEANUP_NODE,
     )
 
 
@@ -125,6 +128,7 @@ __all__ = [
     "BEE_SCHEMA_ID",
     "KINDS",
     "YOUTUBE_LINKS_NOTE",
+    "YOUTUBE_MODEL_CLEANUP_NODE",
     "YOUTUBE_STALE_NODES",
     "bee_refined_schema",
     "bee_review",

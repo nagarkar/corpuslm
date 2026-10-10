@@ -32,6 +32,8 @@ erDiagram
   sources ||--o{ speaker_verdicts : "names"
   sources ||--o{ corrections : "origin of"
   sources ||--o{ segments : "indexed segments"
+  sources ||--o{ model_suggestions : "model's suggestions"
+  model_suggestions ||--o{ model_suggestion_candidates : "candidates"
 ```
 
 What hangs off a corpus, and where the two meet:
@@ -128,7 +130,7 @@ places. The stored copy could disagree (a metadata failure left members
 | decisions | `review_verdicts`, `speaker_verdicts`, `corrections` | append-only (a trigger aborts UPDATE and DELETE); an answer given again or changed is a new row; the newest row per slot is in force (`vw_current_*`) |
 | evidence | `fetch_attempts`, `change_log` | append-only |
 | runs | `runs` | one row per pipeline run (`ytlm run`), opened `running` and closed once as `ok` or `error` |
-| derived state | `artifacts`, `segments`, `segments_fts` | rebuilt from files; no history |
+| derived state | `artifacts`, `segments`, `segments_fts`, `model_suggestions`, `model_suggestion_candidates` | rebuilt from files; no history |
 | coordination | `locks` | deleted when released; no history |
 
 A verdict that lands again unchanged (a re-run `review apply`) adds no
@@ -164,7 +166,7 @@ keep lineage.
 
 ## Migrations: user_version, a verified backup, one transaction (2026-10-03)
 
-The schema version is `PRAGMA user_version` (`db.USER_VERSION`, now 5; a
+The schema version is `PRAGMA user_version` (`db.USER_VERSION`, now 6; a
 database made before it was tracked reads 0 and has the v1 schema, frozen
 in `tests/fixtures/schema_v1.sql`). On open, `db.migrate`:
 
@@ -192,6 +194,17 @@ index, then creates triggers and views (so the copy writes no change-log
 rows). A v1 `perspective` of `''` becomes NULL: it was the column default,
 so it meant "not known yet". A v1 database made before the detail columns
 existed gains them first.
+
+The v5 → v6 step is additive too: after the verified backup it creates `model_suggestions` and
+`model_suggestion_candidates` (both empty) in one transaction and sets `user_version` 6 inside it;
+a v4 database takes both additive steps in one transaction. Neither is an author table, so the
+author counts are unchanged by construction and still checked.
+
+Proof of the v5 → v6 step on a copy of the real database (2026-10-10, 293 sources: 191 YouTube,
+102 Bee): the backup was written first and verified, the only tables that changed were the two
+new ones (both appeared empty), every other table kept its row count (214,557 segments, 694
+review verdicts, 113 speaker verdicts, 582 corrections, no waiting answers), and `integrity_check`
+read `ok`.
 
 Proof of the v4 → v5 step on a copy of the real database (2026-10-09, 293 sources): every table kept its row count (214,557 segments, 597 review verdicts, 30 speaker verdicts, 580 corrections), `review_answers` appeared empty, `integrity_check` read `ok`, and the backup was written first.
 
@@ -369,6 +382,43 @@ corpus's answers are carried in the target's `metadata.merged_from` and deleted.
 | card_id | TEXT | no | the card's id on the page (`review_page.page_data`), not empty |
 | verdict | TEXT | no | what the owner tapped or typed; `''` when the tap was undone |
 | answered_at | TEXT | no | when the page saved it (ISO UTC) |
+
+### `model_suggestions`
+
+History: derived.
+
+The clean-up model's top suggestion for one ambiguity, copied from the source's model clean-up
+artifact (`corpuslm.model_suggestions`): one row per (source, review key). Rebuilt with the
+artifact: a rebuilt artifact replaces every row of its source, and a second `suggestions record`
+writes nothing. The suggestion is the model's own pick, never the owner's resolution. A review
+key (`amb-0001`) names the ambiguity inside one source; a source that is rebuilt may number its
+ambiguities differently, which is why the rows carry the hash of the artifact they came from.
+
+| column | type | null | meaning |
+|---|---|---|---|
+| (base) | | | |
+| source_id | TEXT | no | the source the ambiguity is in; unique with key |
+| key | TEXT | no | the review key, `amb-NNNN`, not empty |
+| span_norm | TEXT | no | the words as heard, normalized (`identity.normalize_span`): what a review card is keyed on |
+| suggestion | TEXT | no | the reading the model picked, spelled as it spelled it |
+| suggestion_probability | REAL | yes | the model's probability for its pick, 0 to 1; NULL when the model gave none (a reply from the first prompt gave one confidence, not probabilities) |
+| model | TEXT | no | the model that cleaned the source (`passes.pass3.model`), `''` when the document records none |
+| artifact_sha256 | TEXT | no | SHA-256 of the model clean-up artifact the row was read from (64 characters) |
+
+### `model_suggestion_candidates`
+
+History: derived.
+
+The candidates of one suggestion, one row per candidate in the model's order (the list is rows,
+not JSON).
+
+| column | type | null | meaning |
+|---|---|---|---|
+| (base) | | | |
+| suggestion_id | TEXT | no | the `model_suggestions` row; unique with position |
+| position | INTEGER | no | order in the list, from 0 |
+| candidate | TEXT | no | one reading the model offered |
+| probability | REAL | yes | the model's probability for this candidate, 0 to 1; NULL when the model gave none |
 
 ### `fetch_attempts`
 
@@ -585,3 +635,4 @@ segment changed, so it carries the previous hash):
 - 2026-10-03: Moved from ytlm to corpuslm with `db.py`, `store.py`, `model.py` and `clock.py`; the canonical hash and the verdict subject hash move to `identity.py`; the SQL function `ytlm_subject_sha256` is renamed `corpuslm_subject_sha256` (registered per connection, never stored); the error for a newer database names corpuslm; the JSON state files stay in ytlm's copy of this document (nagarkar/ytlm#50)
 - 2026-10-08: Version 3: `video_sources` (a video records the playlists and channels it was found through, dated by the row); `corpus_sources` kept, unused (nagarkar/ytlm#61)
 - 2026-10-08: Version 4 (nagarkar/ytlm#50, seam cut 1): `videos` is `sources` with a `kind` (`youtube`, `bee`), `url` is `locator`, every `video_id` is `source_id`, the playlist/channel list is `source_feeds`; `corpus_sources` is gone (a corpus records no feed). Rows in `change_log` written before keep the old table names.
+- 2026-10-10: Version 6: `model_suggestions` and `model_suggestion_candidates` (derived): the clean-up model's top suggestion for every ambiguity, written whenever the model clean-up artifact is built and by `corpuslm suggestions record`; `corpuslm review accept-suggestions` answers open cards from them

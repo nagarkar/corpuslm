@@ -14,7 +14,7 @@ one per kind of table (architecture.md, "History and identity"):
   trigger aborts any UPDATE or DELETE, and the newest row for a slot is
   the one in force (the `vw_current_*` views);
 - `runs` holds one row per pipeline run (`ytlm run`), opened and closed once;
-- derived state (artifacts, segments and their FTS5 index) and
+- derived state (artifacts, segments and their FTS5 index, the model's suggestions) and
   coordination (locks) are rebuilt or deleted freely and carry no history.
 
 Nothing outside this module and `store.py` (the Repository) speaks SQL.
@@ -40,7 +40,7 @@ from .identity import canonical_sha256  # noqa: F401  (re-exported: db.canonical
 
 # PRAGMA user_version of the schema below. 0 is a database made before the
 # version was tracked (the v1 schema, frozen in tests/fixtures/schema_v1.sql).
-USER_VERSION = 5
+USER_VERSION = 6
 
 BACKUPS_DIRNAME = "backups"
 # How many verified backups `<workspace>/backups/` keeps (owner ruling
@@ -64,6 +64,32 @@ REVIEW_ANSWERS_TABLE = f"""CREATE TABLE IF NOT EXISTS review_answers (
     verdict TEXT NOT NULL,
     answered_at TEXT NOT NULL CHECK (answered_at <> ''),
     UNIQUE (corpus_id, card_id)
+) STRICT;
+"""
+
+# Derived state: the clean-up model's top suggestion for each ambiguity, read from the model
+# clean-up artifact (`Store.replace_model_suggestions`). One row per (source, review key); the
+# candidates are rows of their own, in the model's order.
+MODEL_SUGGESTIONS_TABLES = f"""CREATE TABLE IF NOT EXISTS model_suggestions (
+    {KNOWLEDGE_OBJECT_COLUMNS},
+    source_id TEXT NOT NULL REFERENCES sources(id),
+    key TEXT NOT NULL CHECK (key <> ''),
+    span_norm TEXT NOT NULL,
+    suggestion TEXT NOT NULL,
+    suggestion_probability REAL
+        CHECK (suggestion_probability IS NULL OR suggestion_probability BETWEEN 0 AND 1),
+    model TEXT NOT NULL DEFAULT '',
+    artifact_sha256 TEXT NOT NULL CHECK (length(artifact_sha256) = 64),
+    UNIQUE (source_id, key)
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS model_suggestion_candidates (
+    {KNOWLEDGE_OBJECT_COLUMNS},
+    suggestion_id TEXT NOT NULL REFERENCES model_suggestions(id),
+    position INTEGER NOT NULL CHECK (position >= 0),
+    candidate TEXT NOT NULL,
+    probability REAL CHECK (probability IS NULL OR probability BETWEEN 0 AND 1),
+    UNIQUE (suggestion_id, position)
 ) STRICT;
 """
 
@@ -218,6 +244,7 @@ CREATE TABLE IF NOT EXISTS corrections (
 ) STRICT;
 
 {REVIEW_ANSWERS_TABLE}
+{MODEL_SUGGESTIONS_TABLES}
 CREATE TABLE IF NOT EXISTS runs (
     {KNOWLEDGE_OBJECT_COLUMNS},
     scope TEXT NOT NULL,
@@ -616,6 +643,11 @@ def _v4_to_v5_script() -> list[str]:
     ]
 
 
+def _v5_to_v6_script() -> list[str]:
+    """Additive: the model suggestions table and its candidates table."""
+    return _statements(MODEL_SUGGESTIONS_TABLES)
+
+
 def _user_version(conn: sqlite3.Connection) -> int:
     return conn.execute("PRAGMA user_version").fetchone()[0]
 
@@ -801,11 +833,13 @@ def migrate(conn: sqlite3.Connection, db_path: Path) -> dict:
         return {"from": version, "to": USER_VERSION, "backup": None, "created": True}
     saved = backup(conn, db_path, label=f"before-v{USER_VERSION}")
     deleted = prune_backups(db_path)  # only after the new one verified
-    if version == 4:
+    if version in (4, 5):
         before = _counts(conn, AUTHOR_TABLES)
-        if not _run_in_transaction(
-            conn, lambda c: _v4_to_v5_script(), from_version=version, to_version=USER_VERSION
-        ):
+
+        def additive(c: sqlite3.Connection) -> list[str]:
+            return [*(_v4_to_v5_script() if version == 4 else []), *_v5_to_v6_script()]
+
+        if not _run_in_transaction(conn, additive, from_version=version, to_version=USER_VERSION):
             return {
                 "from": version,
                 "to": USER_VERSION,

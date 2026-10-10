@@ -41,6 +41,9 @@ Decisions:
 - With fixed labels the transcript's speaker source stays what the source said (a diarization
   is not "inferred"). Enforced by:
   tests/test_model_chain.py::test_fixed_labels_keep_the_sources_speaker_source.
+- A build or rebuild records the model's suggestions for every ambiguity
+  (corpuslm.model_suggestions) with the artifact, in one transaction. Enforced by:
+  tests/test_model_chain.py::test_building_the_model_cleanup_records_its_suggestions.
 - `estimate` calls no model and bills nothing. Enforced by:
   tests/test_model_chain.py::test_the_estimate_calls_no_model_and_counts_what_would_be_billed.
 
@@ -59,7 +62,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
-from . import cleanup, llm, model_cleanup, review
+from . import cleanup, llm, model_cleanup, model_suggestions, review
 from . import clock as clock_module
 from . import prompts as prompts_module
 from .chain import Chain, Report, canonical_sha256, is_current, record, write_if_changed
@@ -551,31 +554,37 @@ def build_model_cleanup(
         "unplaced": carried["unplaced_items"],
     }
     sha = write_if_changed(path, chain.dumps(document))
-    put(
-        path=path,
-        sha=sha,
-        inputs=inputs | held,
-        provenance={
-            **lineage,
-            **({"replayed": True} if held else {}),
-            **totals,
-            "ambiguities_new": totals["ambiguities"]
-            - capped
-            - carried["carried"]
-            - carried["auto_resolved"],
-            "ambiguities_capped": capped,
-            "verdicts_carried": carried["carried"],
-            "verdicts_unplaced": carried["unplaced"],
-            "verdicts_already_applied": carried["already_applied"],
-            "memory_substitutions": memory_stats["applied"],
-            "dropped_after_memory": dropped_after_memory,
-            **({"arbiter": arbiter_stats} if arbiter_stats else {}),
-            "unplaced": carried["unplaced_items"],
-            "auto_resolved": carried["auto_resolved"],
-            "bindings": bindings,
-            "calls": calls,
-        },
-    )
+    # The artifact and the model's suggestions it holds are recorded together, so a rebuilt
+    # artifact replaces the suggestions of the one before it.
+    with store.transaction():
+        put(
+            path=path,
+            sha=sha,
+            inputs=inputs | held,
+            provenance={
+                **lineage,
+                **({"replayed": True} if held else {}),
+                **totals,
+                "ambiguities_new": totals["ambiguities"]
+                - capped
+                - carried["carried"]
+                - carried["auto_resolved"],
+                "ambiguities_capped": capped,
+                "verdicts_carried": carried["carried"],
+                "verdicts_unplaced": carried["unplaced"],
+                "verdicts_already_applied": carried["already_applied"],
+                "memory_substitutions": memory_stats["applied"],
+                "dropped_after_memory": dropped_after_memory,
+                **({"arbiter": arbiter_stats} if arbiter_stats else {}),
+                "unplaced": carried["unplaced_items"],
+                "auto_resolved": carried["auto_resolved"],
+                "bindings": bindings,
+                "calls": calls,
+            },
+        )
+        model_suggestions.record(
+            store, source, document, artifact_sha256=sha, created_by=chain.created_by
+        )
     report.count(f"{node}_replayed" if held else node)
     return sha
 

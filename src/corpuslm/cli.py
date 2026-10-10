@@ -1,5 +1,6 @@
-"""The corpuslm command line (docs/design/surfaces.md): `help`, `doctor`, `completion` and the
-review verbs `review page`, `review serve`, `review apply` and `review check`.
+"""The corpuslm command line (docs/design/surfaces.md): `help`, `doctor`, `completion`, the
+review verbs `review page`, `review serve`, `review apply`, `review check` and
+`review accept-suggestions`, and `suggestions record`.
 
 Verbs print a short board (counts, paths, next step), never content;
 `--json` anywhere on the line prints the board as JSON. The review verbs read one settings file
@@ -22,6 +23,8 @@ from datetime import datetime
 from pathlib import Path
 
 from . import clikit, db
+from .model_suggestions import backfill
+from .review_accept_suggestions import accept, parse_cutoff
 from .review_apply import apply as apply_answers
 from .review_page import render, workspace_data_by_kind, write_pages
 from .review_server import Answers, make_server
@@ -62,6 +65,24 @@ DESCRIPTIONS = {
         "rebuilds the speaker map where the tool's own `review apply` is used; other "
         "answers wait for the next AI clean-up run. `--dry-run` counts and writes nothing.",
         "corpuslm review apply --config /path/to/review.toml --dry-run",
+    ),
+    "review accept-suggestions": (
+        "Answer the open ambiguity cards of one source kind with the clean-up model's recorded "
+        "suggestion, for sources recorded before a date (--before): each answer is saved as the "
+        "review page would save it, so it shows on the page for the owner to change; nothing "
+        "is landed. A card that already has an answer, a speaker card, a card with a source "
+        "on or after the date or of another kind, and a card with no recorded suggestion "
+        "(or differing ones) are left alone. Calls no model. `--dry-run` counts and writes "
+        "nothing.",
+        "corpuslm review accept-suggestions --config /path/to/review.toml --kind bee "
+        "--before 2026-07-01 --dry-run",
+    ),
+    "suggestions record": (
+        "Record the clean-up model's top suggestion for every ambiguity in the database, read "
+        "from each source's existing model clean-up file (no model is called, nothing is "
+        "billed). Safe to run again: sources already recorded are left alone. `--dry-run` "
+        "counts and writes nothing.",
+        "corpuslm suggestions record --config /path/to/review.toml --dry-run",
     ),
     "review check": (
         "Check the running review server: it answers, and it is not older than the newest "
@@ -164,6 +185,41 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument(
                 "--kind", default=None, metavar="SOURCE_KIND", help="land only this source kind"
             )
+    accept_parser = leaf(
+        review_verbs,
+        "accept-suggestions",
+        "answer open cards with the model's recorded suggestion",
+        "review accept-suggestions",
+    )
+    accept_parser.add_argument(
+        "--config", required=True, metavar="FILE", help="the review settings file"
+    )
+    accept_parser.add_argument(
+        "--kind", required=True, metavar="SOURCE_KIND", help="only sources of this kind"
+    )
+    accept_parser.add_argument(
+        "--before",
+        required=True,
+        metavar="YYYY-MM-DD",
+        help="only sources recorded (published_at) before this date",
+    )
+    accept_parser.add_argument(
+        "--dry-run", action="store_true", help="count and print; write nothing"
+    )
+    suggestions = verbs.add_parser("suggestions", help="the model's recorded suggestions: record")
+    suggestions_verbs = suggestions.add_subparsers(dest="suggestions_verb", metavar="<subverb>")
+    record_parser = leaf(
+        suggestions_verbs,
+        "record",
+        "record the model's suggestions from the existing clean-up files",
+        "suggestions record",
+    )
+    record_parser.add_argument(
+        "--config", required=True, metavar="FILE", help="the review settings file"
+    )
+    record_parser.add_argument(
+        "--dry-run", action="store_true", help="count and print; write nothing"
+    )
     return parser
 
 
@@ -286,6 +342,79 @@ def review_apply_board(settings: ReviewSettings, kind: str | None, dry_run: bool
     }
 
 
+def review_accept_suggestions_board(
+    settings: ReviewSettings, kind: str, before: str, dry_run: bool
+) -> dict:
+    setups = kind_setups(settings)
+    if kind not in setups:
+        raise SettingsError(
+            f"source kind {kind!r} is not in the settings file; known: {', '.join(setups)}"
+        )
+    cutoff = parse_cutoff(before)
+    database = _open_existing(settings)
+    try:
+        report = accept(database, setups, kind=kind, before=cutoff, dry_run=dry_run)
+    finally:
+        database.close()
+    return {
+        "verb": "review accept-suggestions",
+        "ok": True,
+        "kind": kind,
+        "before": cutoff.isoformat(),
+        "cards_considered": report.cards_considered,
+        "cards_to_answer": report.cards_to_answer,
+        "cards_answered": report.cards_answered,
+        "cards_skipped_already_answered": report.cards_skipped_already_answered,
+        "cards_skipped_a_source_not_before_the_cutoff": (
+            report.cards_skipped_a_source_not_before_the_cutoff
+        ),
+        "cards_skipped_no_recorded_suggestion": report.cards_skipped_no_recorded_suggestion,
+        "cards_skipped_suggestions_differ": report.cards_skipped_suggestions_differ,
+        "cards_left_alone_with_a_source_of_another_kind": (
+            report.cards_left_alone_with_a_source_of_another_kind
+        ),
+        "note": "dry run: nothing was written"
+        if dry_run
+        else "the answers are saved, not landed: the owner sees them on the review page and "
+        "can change them; `review apply` lands them",
+        "next": "corpuslm review apply --config " + str(settings.path) + " --dry-run",
+    }
+
+
+def suggestions_record_board(settings: ReviewSettings, dry_run: bool) -> dict:
+    database = _open_existing(settings)
+    try:
+        store = Store(database)
+        report = backfill(store, kind_setups(settings), created_by="corpuslm", dry_run=dry_run)
+        held = store.model_suggestion_counts()
+    finally:
+        database.close()
+    return {
+        "verb": "suggestions record",
+        "ok": True,
+        "sources_checked": report.sources_checked,
+        "sources_without_model_cleanup": report.sources_without_model_cleanup,
+        "sources_file_changed_since_built": report.sources_file_changed_since_built,
+        "sources_unreadable": report.sources_unreadable,
+        "sources_read": report.sources_read,
+        "sources_already_recorded": report.sources_already_recorded,
+        "sources_to_record": report.sources_to_record,
+        "sources_recorded": report.sources_recorded,
+        "suggestions_to_record": report.suggestions_to_record,
+        "suggestions_recorded": report.suggestions_recorded,
+        "suggestions_to_record_with_probability": report.suggestions_to_record_with_probability,
+        "database_sources_with_suggestions": held["sources"],
+        "database_suggestions": held["suggestions"],
+        "database_suggestions_with_probability": held["with_probability"],
+        "note": "dry run: nothing was written"
+        if dry_run
+        else "recorded; a second run writes nothing",
+        "next": "corpuslm review accept-suggestions --config "
+        + str(settings.path)
+        + " --kind bee --before YYYY-MM-DD --dry-run",
+    }
+
+
 def _newest_commit_time(repository: Path) -> datetime | None:
     try:
         out = subprocess.run(
@@ -359,7 +488,15 @@ def main(argv: list[str] | None = None) -> int:
             text, code = clikit.help_text(parser, PROG, ["review"])
             print(text, end="")
             return code
+        if namespace.verb == "suggestions" and namespace.suggestions_verb is None:
+            text, code = clikit.help_text(parser, PROG, ["suggestions"])
+            print(text, end="")
+            return code
         settings = load(Path(namespace.config))
+        if namespace.verb == "suggestions":
+            board = suggestions_record_board(settings, namespace.dry_run)
+            _print(board, as_json)
+            return 0
         match namespace.review_verb:
             case "page":
                 board = review_page_board(
@@ -367,6 +504,10 @@ def main(argv: list[str] | None = None) -> int:
                 )
             case "apply":
                 board = review_apply_board(settings, namespace.kind, namespace.dry_run)
+            case "accept-suggestions":
+                board = review_accept_suggestions_board(
+                    settings, namespace.kind, namespace.before, namespace.dry_run
+                )
             case "check":
                 board = review_check_board(settings)
             case _:
