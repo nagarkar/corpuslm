@@ -193,6 +193,8 @@ rows). A v1 `perspective` of `''` becomes NULL: it was the column default,
 so it meant "not known yet". A v1 database made before the detail columns
 existed gains them first.
 
+Proof of the v4 → v5 step on a copy of the real database (2026-10-09, 293 sources): every table kept its row count (214,557 segments, 597 review verdicts, 30 speaker verdicts, 580 corrections), `review_answers` appeared empty, `integrity_check` read `ok`, and the backup was written first.
+
 Retention (Ruled 2026-10-03, "keep the newest three"): after a new backup
 passes `PRAGMA integrity_check` and the row counts, `db.prune_backups`
 deletes all but the three newest files in `<workspace>/backups/` that
