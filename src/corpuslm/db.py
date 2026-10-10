@@ -7,8 +7,8 @@ Every catalog table carries the authorlm KnowledgeObject base: id, version,
 created_at, created_by, schema_version, metadata. Four kinds of history,
 one per kind of table (architecture.md, "History and identity"):
 
-- master data (sources, corpora, memberships and their lists) is mutable;
-  every changed field is written to `change_log` by trigger;
+- master data (sources, corpora, memberships and their lists, and the review answers not yet
+  landed) is mutable; every changed field is written to `change_log` by trigger;
 - decisions and evidence (review and speaker verdicts, the correction
   memory, fetch attempts, the change log itself) are append-only: a
   trigger aborts any UPDATE or DELETE, and the newest row for a slot is
@@ -40,7 +40,7 @@ from .identity import canonical_sha256  # noqa: F401  (re-exported: db.canonical
 
 # PRAGMA user_version of the schema below. 0 is a database made before the
 # version was tracked (the v1 schema, frozen in tests/fixtures/schema_v1.sql).
-USER_VERSION = 4
+USER_VERSION = 5
 
 BACKUPS_DIRNAME = "backups"
 # How many verified backups `<workspace>/backups/` keeps (owner ruling
@@ -55,6 +55,16 @@ KNOWLEDGE_OBJECT_COLUMNS = """
     created_by TEXT NOT NULL,
     schema_version TEXT NOT NULL,
     metadata TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(metadata))
+"""
+
+REVIEW_ANSWERS_TABLE = f"""CREATE TABLE IF NOT EXISTS review_answers (
+    {KNOWLEDGE_OBJECT_COLUMNS},
+    corpus_id TEXT NOT NULL REFERENCES corpora(id),
+    card_id TEXT NOT NULL CHECK (card_id <> ''),
+    verdict TEXT NOT NULL,
+    answered_at TEXT NOT NULL CHECK (answered_at <> ''),
+    UNIQUE (corpus_id, card_id)
+) STRICT;
 """
 
 TABLES = f"""
@@ -207,6 +217,7 @@ CREATE TABLE IF NOT EXISTS corrections (
     origin_key TEXT NOT NULL
 ) STRICT;
 
+{REVIEW_ANSWERS_TABLE}
 CREATE TABLE IF NOT EXISTS runs (
     {KNOWLEDGE_OBJECT_COLUMNS},
     scope TEXT NOT NULL,
@@ -271,6 +282,7 @@ MASTER_COLUMNS: dict[str, tuple[str, ...]] = {
     ),
     "corpora": ("name", "person", "subject", "auto_ingest", "llm_cleanup", "metadata"),
     "corpus_members": ("reason", "metadata"),
+    "review_answers": ("verdict", "answered_at", "metadata"),
 }  # fmt: skip
 
 # Lists of a master row, one row per element: (table, parent column, the
@@ -301,19 +313,21 @@ def _log_values(table: str, row_id: str, column: str, old: str, new: str, versio
     )
 
 
+def _master_trigger(table: str, columns: tuple[str, ...]) -> str:
+    body = "\n".join(
+        f"    INSERT INTO change_log ({_LOG_COLUMNS})\n"
+        f"    SELECT {_log_values(table, 'new.id', c, f'old.{c}', f'new.{c}', 'new.version')}"
+        f"\n    WHERE old.{c} IS NOT new.{c};"
+        for c in columns
+    )
+    return (
+        f"CREATE TRIGGER IF NOT EXISTS {table}_change_log AFTER UPDATE ON {table} BEGIN\n"
+        f"{body}\nEND;"
+    )
+
+
 def _triggers() -> str:
-    out = []
-    for table, columns in MASTER_COLUMNS.items():
-        body = "\n".join(
-            f"    INSERT INTO change_log ({_LOG_COLUMNS})\n"
-            f"    SELECT {_log_values(table, 'new.id', c, f'old.{c}', f'new.{c}', 'new.version')}"
-            f"\n    WHERE old.{c} IS NOT new.{c};"
-            for c in columns
-        )
-        out.append(
-            f"CREATE TRIGGER IF NOT EXISTS {table}_change_log AFTER UPDATE ON {table} BEGIN\n"
-            f"{body}\nEND;"
-        )
+    out = [_master_trigger(table, columns) for table, columns in MASTER_COLUMNS.items()]
     for table, parent, name, element in LIST_TABLES:
         new_el = element.format(r="new")
         old_el = element.format(r="old")
@@ -451,7 +465,7 @@ V1_TABLES = (
 
 # The tables whose rows are irreplaceable author work; a backup must carry
 # every one of their rows before a migration may start.
-AUTHOR_TABLES = ("review_verdicts", "speaker_verdicts", "corrections")
+AUTHOR_TABLES = ("review_verdicts", "speaker_verdicts", "corrections", "review_answers")
 
 
 def _ko_copy(prefix: str, created_at: str = "p.created_at") -> str:
@@ -592,6 +606,14 @@ def _v3_to_v4_script(conn: sqlite3.Connection) -> list[str]:
     tail = ["DROP TABLE IF EXISTS corpus_sources;"]
     rebuild = ["INSERT INTO segments_fts(segments_fts) VALUES ('rebuild');"]
     return [*drops, *V3_TO_V4_RENAMES, *tail, *_statements(SCHEMA), *rebuild]
+
+
+def _v4_to_v5_script() -> list[str]:
+    """Additive: the review answers table and its change-log trigger."""
+    return [
+        *_statements(REVIEW_ANSWERS_TABLE),
+        _master_trigger("review_answers", MASTER_COLUMNS["review_answers"]),
+    ]
 
 
 def _user_version(conn: sqlite3.Connection) -> int:
@@ -779,6 +801,31 @@ def migrate(conn: sqlite3.Connection, db_path: Path) -> dict:
         return {"from": version, "to": USER_VERSION, "backup": None, "created": True}
     saved = backup(conn, db_path, label=f"before-v{USER_VERSION}")
     deleted = prune_backups(db_path)  # only after the new one verified
+    if version == 4:
+        before = _counts(conn, AUTHOR_TABLES)
+        if not _run_in_transaction(
+            conn, lambda c: _v4_to_v5_script(), from_version=version, to_version=USER_VERSION
+        ):
+            return {
+                "from": version,
+                "to": USER_VERSION,
+                "backup": str(saved),
+                "backups_deleted": deleted,
+                "by": "another process",
+            }
+        check = conn.execute("PRAGMA integrity_check").fetchone()[0]
+        after = _counts(conn, AUTHOR_TABLES)
+        if check != "ok" or any(before[t] != after[t] for t in before):
+            raise MigrationFailed(
+                f"{db_path} after migration: integrity_check {check}; author rows {before} -> "
+                f"{after}. The verified backup is {saved}."
+            )
+        return {
+            "from": version,
+            "to": USER_VERSION,
+            "backup": str(saved),
+            "backups_deleted": deleted,
+        }
     if version in (2, 3):
         dropped = (
             [r[0] for r in conn.execute("SELECT source_id FROM corpus_sources ORDER BY rowid")]
@@ -799,7 +846,7 @@ def migrate(conn: sqlite3.Connection, db_path: Path) -> dict:
             }
         check = conn.execute("PRAGMA integrity_check").fetchone()[0]
         after = _counts(conn, AUTHOR_TABLES)
-        if check != "ok" or before != after:
+        if check != "ok" or any(before[t] != after[t] for t in before):
             raise MigrationFailed(
                 f"{db_path} after migration: integrity_check {check}; author rows {before} -> "
                 f"{after}. The verified backup is {saved}."
@@ -828,7 +875,7 @@ def migrate(conn: sqlite3.Connection, db_path: Path) -> dict:
         }
     check = conn.execute("PRAGMA integrity_check").fetchone()[0]
     after = _counts(conn, AUTHOR_TABLES)
-    if check != "ok" or before != after:
+    if check != "ok" or any(before[t] != after[t] for t in before):
         raise MigrationFailed(
             f"{db_path} after migration: integrity_check {check}; author rows {before} → "
             f"{after}. The verified backup is {saved}."

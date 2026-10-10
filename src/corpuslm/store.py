@@ -371,6 +371,12 @@ class Store:
                     "merged_at": now_iso(),
                     "merged_by": created_by,
                 }
+                # The answers not yet landed are keyed by card, which hashes the corpus id: they
+                # cannot follow a membership, so the folded corpus carries them in its snapshot.
+                snapshot["review_answers"] = [
+                    {k: a[k] for k in ("card_id", "verdict", "answered_at", "created_at")}
+                    for a in self.review_answers(cid)
+                ]
                 kept.append(snapshot)
                 for m in members:
                     if self.is_member(into_id, m["source_id"]):
@@ -385,6 +391,7 @@ class Store:
                     )
                     moved += 1
                 self.db.execute("DELETE FROM artifacts WHERE corpus_id = ?", (cid,))
+                self.db.execute("DELETE FROM review_answers WHERE corpus_id = ?", (cid,))
                 for table, _ in CORPUS_LISTS.values():
                     self.db.execute(f"DELETE FROM {table} WHERE corpus_id = ?", (cid,))
                 self.db.execute("DELETE FROM corpora WHERE id = ?", (cid,))
@@ -778,6 +785,67 @@ class Store:
             "WHERE status = 'ok' ORDER BY finished_at DESC, rowid DESC LIMIT 1"
         )
         return None if row is None else dict(row)
+
+    # ---- review answers (master data: what the review page saved, not yet landed) -----
+
+    def review_answer(self, corpus_id: str, card_id: str) -> dict | None:
+        row = self.db.one(
+            "SELECT * FROM review_answers WHERE corpus_id = ? AND card_id = ?",
+            (corpus_id, card_id),
+        )
+        return None if row is None else dict(row)
+
+    def review_answers(self, corpus_id: str) -> list[dict]:
+        """The answers saved for one corpus, by card id."""
+        return [
+            dict(r)
+            for r in self.db.all(
+                "SELECT * FROM review_answers WHERE corpus_id = ? ORDER BY card_id", (corpus_id,)
+            )
+        ]
+
+    def review_answer_counts(self) -> dict[str, int]:
+        """corpus id -> how many answers wait to land, for the corpora that have any."""
+        return {
+            r["corpus_id"]: r["n"]
+            for r in self.db.all(
+                "SELECT corpus_id, COUNT(*) AS n FROM review_answers GROUP BY corpus_id "
+                "ORDER BY corpus_id"
+            )
+        }
+
+    def save_review_answer(
+        self, corpus_id: str, card_id: str, verdict: str, answered_at: str, *, created_by: str
+    ) -> None:
+        """One answer per (corpus, card): a card answered again replaces its row (the change log
+        keeps the old values). An unknown corpus is a ValueError."""
+        if self.corpus(corpus_id) is None:
+            raise ValueError("no such corpus")
+        with self.db.transaction():
+            existing = self.review_answer(corpus_id, card_id)
+            if existing is None:
+                self.db.insert(
+                    "review_answers",
+                    ko_fields("ans", created_by=created_by)
+                    | {
+                        "corpus_id": corpus_id,
+                        "card_id": card_id,
+                        "verdict": verdict,
+                        "answered_at": answered_at,
+                    },
+                )
+            else:
+                self.db.update(
+                    "review_answers",
+                    existing["id"],
+                    {"verdict": verdict, "answered_at": answered_at},
+                )
+
+    def delete_review_answer(self, corpus_id: str, card_id: str) -> bool:
+        cursor = self.db.execute(
+            "DELETE FROM review_answers WHERE corpus_id = ? AND card_id = ?", (corpus_id, card_id)
+        )
+        return cursor.rowcount > 0
 
     # ---- change log (history of master data) ----------------------------------------
 
