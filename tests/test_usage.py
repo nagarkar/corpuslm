@@ -148,3 +148,13 @@ def test_a_settings_file_without_a_usage_table_is_named(tmp_path):
     )
     with pytest.raises(ValueError, match="no \\[usage\\] table"):
         usage.board(review_settings.load(path), now=clock.utc_now())
+
+
+def test_a_fetch_error_text_is_escaped_on_the_page(settings):
+    database = db.Database(settings.database)
+    Store(database).append_fetch_attempt(
+        YOUTUBE_SOURCE, "supadata", "error", "zz <script>alert(1)</script>", created_by="test"
+    )
+    database.close()
+    page = usage_page.render(usage.board(settings, now=NOW))
+    assert "<script>" not in page and "&lt;script&gt;" in page
