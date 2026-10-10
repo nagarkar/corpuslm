@@ -206,6 +206,10 @@ The v6 → v7 step is additive too: after the verified backup it creates `feeds`
 it; a v4 or v5 database takes the earlier additive steps in the same transaction. Neither new table
 is an author table, so the author counts are unchanged by construction and still checked.
 
+Proof of the v6 → v7 step on a copy of the real database (2026-10-10): the backup was written first
+and verified, the only tables that changed were the two new ones (both appeared empty), every
+other table kept its row count (229,340 rows in all), and `integrity_check` read `ok`.
+
 Proof of the v5 → v6 step on a copy of the real database (2026-10-10, 293 sources: 191 YouTube,
 102 Bee): the backup was written first and verified, the only tables that changed were the two
 new ones (both appeared empty), every other table kept its row count (214,557 segments, 694
