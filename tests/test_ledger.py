@@ -229,3 +229,17 @@ def test_read_returns_what_was_written(tmp_path, capsys):
     assert len(out) == 1
     assert out[0]["exit_code"] == 1 and out[0]["argv"] == ["run", "--now"]
     assert "malformed" not in capsys.readouterr().err
+
+
+def test_read_with_rotated_reads_older_generations_first(tmp_path):
+    d = tmp_path / "logs"
+    led = ledger.Ledger(d)
+    for tag in ("old", "mid", "new"):
+        led.usage(usage_event(tag=tag))
+    path = d / "usage.jsonl"
+    older = path.read_text().splitlines()
+    path.write_text(older[2] + "\n")
+    path.with_name("usage.jsonl.1").write_text(older[1] + "\n")
+    path.with_name("usage.jsonl.2").write_text(older[0] + "\n")
+    assert [e["tag"] for e in ledger.read(path)] == ["new"]
+    assert [e["tag"] for e in ledger.read(path, with_rotated=True)] == ["old", "mid", "new"]

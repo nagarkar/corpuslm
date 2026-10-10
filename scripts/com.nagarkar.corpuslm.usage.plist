@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  corpuslm's usage dashboard (src/corpuslm/usage_server.py) on 127.0.0.1, port from [usage] in the
+  settings file (default 8779), kept running by launchd and started at login. It is the one usage
+  page for the whole system: model spend by tool, stage and day beside each tool's per-run cap,
+  and caption fetches per fetcher and outcome. Read-only; counts and money only. It replaces
+  ytlm's own fetch-usage dashboard (com.nagarkar.ytlm.dashboard, never installed). The ledger
+  folders come from the settings file (see scripts/review.example.toml), never from this command
+  line. The owner installs it (metalm operations.md, launch agents):
+    cp scripts/com.nagarkar.corpuslm.usage.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.nagarkar.corpuslm.usage.plist
+  The tailnet port is 11443 (the owner's served-apps table, formerly the ytlm dashboard):
+    tailscale serve --bg --https=11443 http://127.0.0.1:8779
+  Restart onto new code (after every merge that touches src/):
+    launchctl kickstart -k gui/501/com.nagarkar.corpuslm.usage
+  Look without serving:
+    .venv/bin/corpuslm usage show --config "/Volumes/Crucial X6/corpuslm/review.toml"
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.nagarkar.corpuslm.usage</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/nagarkar/workspace/repos/corpuslm/.venv/bin/python</string>
+    <string>-m</string>
+    <string>corpuslm.cli</string>
+    <string>usage</string>
+    <string>serve</string>
+    <string>--config</string>
+    <string>/Volumes/Crucial X6/corpuslm/review.toml</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/nagarkar/workspace/repos/corpuslm</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <!-- At most one restart attempt per 10 s, e.g. while something else holds the port. -->
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/nagarkar/Library/Logs/corpuslm-usage.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/nagarkar/Library/Logs/corpuslm-usage.log</string>
+</dict>
+</plist>

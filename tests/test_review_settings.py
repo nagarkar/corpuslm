@@ -69,3 +69,44 @@ def test_an_unknown_source_kind_is_named_and_declined(tmp_path):
 def test_a_missing_file_says_how_to_name_one(tmp_path):
     with pytest.raises(SettingsError, match="--config FILE"):
         review_settings.load(tmp_path / "nope.toml")
+
+
+USAGE = """
+[usage]
+port = 8790
+
+[usage.ledgers]
+ytlm = "{folder}/ytlm-logs"
+beelm = "~/Bee/beelm/logs"
+
+[usage.tool_settings]
+ytlm = "{folder}/ytlm.toml"
+"""
+
+
+def test_the_usage_table_is_read_and_is_optional(tmp_path):
+    assert review_settings.load(write(tmp_path)).usage is None
+    usage = review_settings.load(write(tmp_path, GOOD + USAGE)).usage
+    assert usage.port == 8790
+    assert usage.ledgers["ytlm"] == tmp_path / "ytlm-logs"
+    assert usage.ledgers["beelm"].is_absolute()  # ~ is expanded
+    assert set(usage.tool_settings) == {"ytlm"}
+    assert (
+        review_settings.load(write(tmp_path, GOOD + "[usage.ledgers]\nytlm = '/x'\n")).usage.port
+        == 8779
+    )
+
+
+@pytest.mark.parametrize(
+    ("addition", "message"),
+    [
+        ("[usage]\nport = 1\n[usage.ledgers]\nytlm = '/x'\n", "port must be"),
+        ("[usage]\nfoo = 1\n", "unknown key 'foo'"),
+        ("[usage]\n", "name at least one tool"),
+        ("[usage.ledgers]\nytlm = ''\n", "non-empty"),
+        ("[usage.ledgers]\nytlm = '/x'\n[usage.tool_settings]\nother = '/y'\n", "no ledger"),
+    ],
+)
+def test_a_wrong_usage_table_is_named(tmp_path, addition, message):
+    with pytest.raises(SettingsError, match=message):
+        review_settings.load(write(tmp_path, GOOD + addition))

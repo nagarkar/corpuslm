@@ -1,6 +1,7 @@
 """The corpuslm command line (docs/design/surfaces.md): `help`, `doctor`, `completion`, the
 review verbs `review page`, `review serve`, `review apply`, `review check` and
-`review accept-suggestions`, and `suggestions record`.
+`review accept-suggestions`, `suggestions record`, and the usage verbs `usage show` and
+`usage serve`.
 
 Verbs print a short board (counts, paths, next step), never content;
 `--json` anywhere on the line prints the board as JSON. The review verbs read one settings file
@@ -12,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import signal
 import sqlite3
 import subprocess
@@ -22,7 +24,7 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-from . import clikit, db
+from . import clikit, db, usage, usage_page, usage_server
 from .model_suggestions import backfill
 from .review_accept_suggestions import accept, parse_cutoff
 from .review_apply import apply as apply_answers
@@ -83,6 +85,22 @@ DESCRIPTIONS = {
         "billed). Safe to run again: sources already recorded are left alone. `--dry-run` "
         "counts and writes nothing.",
         "corpuslm suggestions record --config /path/to/review.toml --dry-run",
+    ),
+    "usage show": (
+        "Show what the system spent: model spend by tool, stage and day with each tool's "
+        "per-run cap beside the month, and caption fetches per fetcher, outcome and day. "
+        "Numbers and money only; the dollar figures are the tools' own ledger figures and "
+        "the vendor's meter is the authority. Reads the ledger folders and the database "
+        "named under [usage] in the settings file; writes nothing. `--json` prints the "
+        "board as JSON.",
+        "corpuslm usage show --config /path/to/review.toml --month 2026-10",
+    ),
+    "usage serve": (
+        "Serve the same usage board as a page on this Mac (loopback address, port from "
+        "[usage] in the settings file, refreshed every 60 seconds) at / and /health. "
+        "Read-only. Runs until stopped; launchd keeps it up. `--dry-run` starts nothing "
+        "and prints the address.",
+        "corpuslm usage serve --config /path/to/review.toml",
     ),
     "review check": (
         "Check the running review server: it answers, and it is not older than the newest "
@@ -220,7 +238,55 @@ def build_parser() -> argparse.ArgumentParser:
     record_parser.add_argument(
         "--dry-run", action="store_true", help="count and print; write nothing"
     )
+    usage_group = verbs.add_parser("usage", help="what the system spends: show, serve")
+    usage_verbs = usage_group.add_subparsers(dest="usage_verb", metavar="<subverb>")
+    for name, help_text in (
+        ("show", "show model spend and caption fetches"),
+        ("serve", "serve the usage page"),
+    ):
+        sub = leaf(usage_verbs, name, help_text, f"usage {name}")
+        sub.add_argument("--config", required=True, metavar="FILE", help="the review settings file")
+        if name == "show":
+            sub.add_argument(
+                "--month", default=None, metavar="YYYY-MM", help="the month (default: this one)"
+            )
+        else:
+            sub.add_argument("--port", type=int, default=None, help="override the settings port")
+            sub.add_argument(
+                "--dry-run", action="store_true", help="start nothing; print the address"
+            )
     return parser
+
+
+def _usage_board(settings: ReviewSettings, month: str | None) -> dict:
+    if settings.usage is None:
+        raise SettingsError(
+            f"{settings.path} has no [usage] table; see scripts/review.example.toml"
+        )
+    if month is not None and not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month):
+        raise SettingsError(f"--month must look like 2026-10, not {month!r}")
+    return usage.board(settings, month=month)
+
+
+def usage_serve_board(settings: ReviewSettings, port: int | None, dry_run: bool):
+    """(server or None, board). The server is bound but not serving until `serve_forever`."""
+    _usage_board(settings, None)  # a settings file with no [usage] table stops here
+    assert settings.usage is not None
+    chosen = port or settings.usage.port
+    board = {
+        "verb": "usage serve",
+        "ok": True,
+        "url": f"http://127.0.0.1:{chosen}/",
+        "tools": list(settings.usage.ledgers),
+        "next": "corpuslm usage show --config " + str(settings.path),
+    }
+    if dry_run:
+        return None, board | {"note": "dry run: nothing was started"}
+
+    def build_page() -> str:  # built per request, so the page is never older than the ledgers
+        return usage_page.render(usage.board(settings))
+
+    return usage_server.make_server("127.0.0.1", chosen, page=build_page), board
 
 
 def _open_existing(settings: ReviewSettings) -> db.Database:
@@ -492,7 +558,25 @@ def main(argv: list[str] | None = None) -> int:
             text, code = clikit.help_text(parser, PROG, ["suggestions"])
             print(text, end="")
             return code
+        if namespace.verb == "usage" and namespace.usage_verb is None:
+            text, code = clikit.help_text(parser, PROG, ["usage"])
+            print(text, end="")
+            return code
         settings = load(Path(namespace.config))
+        if namespace.verb == "usage":
+            if namespace.usage_verb == "show":
+                shown = _usage_board(settings, namespace.month)
+                if as_json:
+                    _print(shown, True)
+                else:
+                    print(usage_page.text(shown), end="")
+                return 0
+            server, board = usage_serve_board(settings, namespace.port, namespace.dry_run)
+            _print(board, as_json)
+            sys.stdout.flush()
+            if server is not None:
+                serve_until_stopped(server)
+            return 0
         if namespace.verb == "suggestions":
             board = suggestions_record_board(settings, namespace.dry_run)
             _print(board, as_json)

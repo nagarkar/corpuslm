@@ -17,3 +17,19 @@ directory = "/path/to/ytlm/workspace/videos"
 directory = "/path/to/Bee/beelm/transcripts"
 # Offered first in Bee's speaker picker and resolved as the owner's own label. Optional.
 owner_first_name = "Quill"
+
+# Optional: where the usage dashboard (`corpuslm usage show|serve --config FILE`) finds model spend
+# and how it reaches its own port. `ledgers` names each tool's ledger folder (the one holding
+# usage.jsonl); `tool_settings` names the tool's own settings file, read only for its
+# `[llm].max_usd_per_run` and `max_usd_per_day`, shown beside the month. Optional per tool.
+[usage]
+# The dashboard's port on 127.0.0.1. Default 8779.
+port = 8779
+
+[usage.ledgers]
+ytlm = "/path/to/ytlm/workspace/logs"
+beelm = "~/Bee/beelm/logs"
+
+[usage.tool_settings]
+ytlm = "/path/to/ytlm/config.toml"
+beelm = "/path/to/beelm/config.toml"
