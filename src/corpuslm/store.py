@@ -275,6 +275,51 @@ class Store:
             | {"corpus_id": corpus_id, "source_id": source_id, "reason": reason},
         )
 
+    def member_rows(self, corpus_id: str) -> list[dict]:
+        """Each membership of the corpus as stored (its id, source, reason, who added it and
+        when), oldest first."""
+        return [
+            dict(r)
+            for r in self.db.all(
+                "SELECT id, source_id, reason, created_at, created_by, version "
+                "FROM corpus_members WHERE corpus_id = ? ORDER BY created_at, rowid",
+                (corpus_id,),
+            )
+        ]
+
+    def remove_member(self, corpus_id: str, source_id: str, *, created_by: str) -> bool:
+        """Take one video out of one corpus; False when it was not a member. The video, its
+        transcript and its other memberships are left alone. The removal leaves its trail in
+        the change log in the same transaction: one row naming the membership, with the old
+        value (corpus, source, reason, who added it and when) and no new value, written by
+        `created_by`: a deleted master row is never silent."""
+        with self.db.transaction():
+            row = self.db.one(
+                "SELECT id, version, corpus_id, source_id, reason, created_at, created_by "
+                "FROM corpus_members WHERE corpus_id = ? AND source_id = ?",
+                (corpus_id, source_id),
+            )
+            if row is None:
+                return False
+            was = {k: row[k] for k in ("corpus_id", "source_id", "reason")} | {
+                "added_at": row["created_at"],
+                "added_by": row["created_by"],
+            }
+            self.db.insert(
+                "change_log",
+                ko_fields("chg", created_by=created_by)
+                | {
+                    "table_name": "corpus_members",
+                    "row_id": row["id"],
+                    "column_name": "membership",
+                    "old_value": json.dumps(was, sort_keys=True),
+                    "new_value": None,
+                    "row_version": row["version"],
+                },
+            )
+            self.db.execute("DELETE FROM corpus_members WHERE id = ?", (row["id"],))
+        return True
+
     def member_source_ids(self, corpus_id: str) -> list[str]:
         return [
             r["source_id"]
@@ -398,6 +443,117 @@ class Store:
                 removed.append(corpus["name"])
             self.set_corpus_metadata(into_id, record | {"merged_from": kept})
         return {"moved": moved, "already_members": already, "removed": removed}
+
+    # ---- tracked feeds and skipped videos (master data) -----------------------------
+
+    def feed(self, feed_id: str) -> dict | None:
+        row = self.db.one("SELECT * FROM feeds WHERE feed_id = ?", (feed_id,))
+        return None if row is None else dict(row)
+
+    def feeds(self) -> list[dict]:
+        """Every tracked feed, oldest first."""
+        return [dict(r) for r in self.db.all("SELECT * FROM feeds ORDER BY created_at, rowid")]
+
+    def add_feed(self, feed_id: str, kind: str, title: str, *, created_by: str) -> bool:
+        """Track a playlist or channel; False when it is already tracked (its title is
+        refreshed when a new one is given)."""
+        existing = self.feed(feed_id)
+        if existing is not None:
+            if title and title != existing["title"]:
+                self.db.update("feeds", existing["id"], {"title": title})
+            return False
+        self.db.insert(
+            "feeds",
+            ko_fields("fed", created_by=created_by)
+            | {"feed_id": feed_id, "kind": kind, "title": title},
+        )
+        return True
+
+    def mark_feed_scanned(self, feed_id: str, *, when: str | None = None) -> None:
+        existing = self.feed(feed_id)
+        if existing is None:
+            raise KeyError(f"unknown feed {feed_id!r}")
+        self.db.update("feeds", existing["id"], {"last_scanned_at": when or now_iso()})
+
+    def sources_found_through(self, feed_id: str) -> list[str]:
+        """The catalog's sources whose `feeds` name this feed, oldest first."""
+        return [
+            r["source_id"]
+            for r in self.db.all(
+                "SELECT source_id FROM source_feeds WHERE feed_id = ? ORDER BY created_at, rowid",
+                (feed_id,),
+            )
+        ]
+
+    def skip(self, source_id: str) -> dict | None:
+        """The skip in force for a video, or None (never skipped, or lifted)."""
+        row = self.db.one(
+            "SELECT * FROM source_skips WHERE source_id = ? AND lifted_at IS NULL", (source_id,)
+        )
+        return None if row is None else dict(row)
+
+    def skips(self, *, feed_id: str | None = None) -> list[dict]:
+        """The skips in force, oldest first; only those made through `feed_id` when given."""
+        where, args = (" AND feed_id = ?", [feed_id]) if feed_id else ("", [])
+        return [
+            dict(r)
+            for r in self.db.all(
+                f"SELECT * FROM source_skips WHERE lifted_at IS NULL{where} "
+                "ORDER BY skipped_at, rowid",
+                args,
+            )
+        ]
+
+    def skip_source(
+        self,
+        source_id: str,
+        reason: str,
+        *,
+        feed_id: str | None = None,
+        title: str = "",
+        created_by: str,
+    ) -> bool:
+        """Record that a video is skipped (reason required; never silent). False when it is
+        already skipped. A video skipped again after `lift_skip` takes its old row back, with
+        the new reason and date; the change log keeps the earlier values."""
+        if self.skip(source_id) is not None:
+            return False
+        now = now_iso()
+        row = self.db.one("SELECT id FROM source_skips WHERE source_id = ?", (source_id,))
+        with self.db.transaction():
+            if row is None:
+                self.db.insert(
+                    "source_skips",
+                    ko_fields("skp", created_by=created_by)
+                    | {
+                        "source_id": source_id,
+                        "feed_id": feed_id,
+                        "title": title,
+                        "reason": reason,
+                        "skipped_at": now,
+                    },
+                )
+            else:
+                self.db.update(
+                    "source_skips",
+                    row["id"],
+                    {
+                        "feed_id": feed_id,
+                        "title": title,
+                        "reason": reason,
+                        "skipped_at": now,
+                        "lifted_at": None,
+                    },
+                )
+        return True
+
+    def lift_skip(self, source_id: str) -> bool:
+        """Reverse a skip (`unskip`); False when none is in force. The row stays, dated."""
+        row = self.skip(source_id)
+        if row is None:
+            return False
+        self.db.update("source_skips", row["id"], {"lifted_at": now_iso()})
+        return True
 
     # ---- fetch attempts (evidence, append-only) ---------------------------------
 

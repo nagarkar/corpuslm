@@ -221,9 +221,9 @@ def test_a_version_5_database_gains_the_tables_after_a_verified_backup(tmp_path)
     conn.close()
     opened = db.Database(path)
     try:
-        assert opened.migration["from"] == 5 and opened.migration["to"] == db.USER_VERSION == 6
-        assert opened.migration["backup"].endswith("-before-v6.sqlite")
-        assert opened.one("PRAGMA user_version")[0] == 6
+        assert opened.migration["from"] == 5 and opened.migration["to"] == db.USER_VERSION == 7
+        assert opened.migration["backup"].endswith("-before-v7.sqlite")
+        assert opened.one("PRAGMA user_version")[0] == 7
         assert opened.one("PRAGMA integrity_check")[0] == "ok"
         assert opened.one("SELECT COUNT(*) FROM model_suggestions")[0] == 0
         assert opened.one("SELECT COUNT(*) FROM corpora")[0] == 1

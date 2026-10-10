@@ -26,6 +26,7 @@ erDiagram
   sources ||--o{ source_topics : "topics"
   sources ||--o{ source_people : "people"
   sources ||--o{ source_feeds : "feeds"
+  feeds ||--o{ source_skips : "skipped through"
   sources ||--o{ fetch_attempts : "attempts"
   sources ||--o{ artifacts : "artifacts"
   sources ||--o{ review_verdicts : "verdicts"
@@ -126,7 +127,7 @@ places. The stored copy could disagree (a metadata failure left members
 
 | Kind | Tables | Rule |
 |---|---|---|
-| master data | `sources`, `corpora`, `corpus_members`, `review_answers` and the list tables | mutable; `version` bumps on every update; a trigger writes every changed column to `change_log` (old value, new value, row version); list tables are written position by position and log each element added or removed (an element that moves counts as removed and added) |
+| master data | `sources`, `corpora`, `corpus_members`, `review_answers`, `feeds`, `source_skips` and the list tables | mutable; `version` bumps on every update; a trigger writes every changed column to `change_log` (old value, new value, row version); list tables are written position by position and log each element added or removed (an element that moves counts as removed and added) |
 | decisions | `review_verdicts`, `speaker_verdicts`, `corrections` | append-only (a trigger aborts UPDATE and DELETE); an answer given again or changed is a new row; the newest row per slot is in force (`vw_current_*`) |
 | evidence | `fetch_attempts`, `change_log` | append-only |
 | runs | `runs` | one row per pipeline run (`ytlm run`), opened `running` and closed once as `ok` or `error` |
@@ -166,7 +167,7 @@ keep lineage.
 
 ## Migrations: user_version, a verified backup, one transaction (2026-10-03)
 
-The schema version is `PRAGMA user_version` (`db.USER_VERSION`, now 6; a
+The schema version is `PRAGMA user_version` (`db.USER_VERSION`, now 7; a
 database made before it was tracked reads 0 and has the v1 schema, frozen
 in `tests/fixtures/schema_v1.sql`). On open, `db.migrate`:
 
@@ -199,6 +200,15 @@ The v5 → v6 step is additive too: after the verified backup it creates `model_
 `model_suggestion_candidates` (both empty) in one transaction and sets `user_version` 6 inside it;
 a v4 database takes both additive steps in one transaction. Neither is an author table, so the
 author counts are unchanged by construction and still checked.
+
+The v6 → v7 step is additive too: after the verified backup it creates `feeds` and `source_skips`
+(both empty) with their change-log triggers in one transaction and sets `user_version` 7 inside
+it; a v4 or v5 database takes the earlier additive steps in the same transaction. Neither new table
+is an author table, so the author counts are unchanged by construction and still checked.
+
+Proof of the v6 → v7 step on a copy of the real database (2026-10-10): the backup was written first
+and verified, the only tables that changed were the two new ones (both appeared empty), every
+other table kept its row count (229,340 rows in all), and `integrity_check` read `ok`.
 
 Proof of the v5 → v6 step on a copy of the real database (2026-10-10, 293 sources: 191 YouTube,
 102 Bee): the backup was written first and verified, the only tables that changed were the two
@@ -312,6 +322,42 @@ video was found through that source (nagarkar/ytlm#61).
 | position | INTEGER | no | order in the list, from 0 |
 | feed_id | TEXT | no | a playlist or channel id the source was found through |
 
+### `feeds`
+
+History: master.
+
+The playlists and channels the owner tracks as inboxes (nagarkar/ytlm#21), one row each. A feed is
+never a corpus and holds no corpus; a video's own `source_feeds` rows say which feeds it was found
+through. `created_at` is the date the feed was added; the title is read once from YouTube when it is
+added.
+
+| column | type | null | meaning |
+|---|---|---|---|
+| (base) | | | |
+| feed_id | TEXT | no | the YouTube playlist or channel id; unique, not empty |
+| kind | TEXT | no | one of `playlist`, `channel` |
+| title | TEXT | no | the title YouTube gives it (`''` when not read) |
+| last_scanned_at | TEXT | yes | when a scan last listed it (ISO UTC); NULL when it never was |
+
+### `source_skips`
+
+History: master.
+
+A video the owner chose not to bring in from a feed's scan. One row per video, never deleted: a
+skip is lifted by setting `lifted_at` (`ytlm playlist unskip`), and a skip made again reuses the row
+with the new reason and date, the change log keeping the old ones. `source_id` is not a foreign key
+to `sources`: a skipped video is, by definition, not in the catalog.
+
+| column | type | null | meaning |
+|---|---|---|---|
+| (base) | | | |
+| source_id | TEXT | no | the video's YouTube id; unique, not empty |
+| feed_id | TEXT | yes | the tracked feed the scan was listing when it was skipped; NULL when skipped by hand |
+| title | TEXT | no | the video's title when it was skipped (`''` when not known), so a scan can name it |
+| reason | TEXT | no | why, in words; not empty |
+| skipped_at | TEXT | no | when it was skipped (ISO UTC) |
+| lifted_at | TEXT | yes | when the skip was reversed (ISO UTC); NULL while it is in force |
+
 ### `corpora`
 
 History: master.
@@ -357,6 +403,11 @@ History: master.
 | corpus_id | TEXT | no | the corpus |
 | source_id | TEXT | no | the video; unique with corpus_id |
 | reason | TEXT | no | one of `author`, `discovered`, `consumer` |
+
+`Store.remove_member` takes one video out of one corpus: in one transaction it writes a
+`change_log` row (`column_name` `membership`, old value the corpus, source, reason and the date and
+client that added it, no new value, `created_by` the client that removed it) and deletes the row.
+The video and its other memberships are left alone.
 
 A merge (`Store.merge_corpora`) moves a membership by changing its `corpus_id` and
 setting `metadata.merged_from` to the folded corpus's id, so the change log records the
@@ -636,3 +687,4 @@ segment changed, so it carries the previous hash):
 - 2026-10-08: Version 3: `video_sources` (a video records the playlists and channels it was found through, dated by the row); `corpus_sources` kept, unused (nagarkar/ytlm#61)
 - 2026-10-08: Version 4 (nagarkar/ytlm#50, seam cut 1): `videos` is `sources` with a `kind` (`youtube`, `bee`), `url` is `locator`, every `video_id` is `source_id`, the playlist/channel list is `source_feeds`; `corpus_sources` is gone (a corpus records no feed). Rows in `change_log` written before keep the old table names.
 - 2026-10-10: Version 6: `model_suggestions` and `model_suggestion_candidates` (derived): the clean-up model's top suggestion for every ambiguity, written whenever the model clean-up artifact is built and by `corpuslm suggestions record`; `corpuslm review accept-suggestions` answers open cards from them
+- 2026-10-10: Version 7 (nagarkar/ytlm#21): `feeds` (the tracked playlists and channels) and `source_skips` (videos skipped from a scan, lifted by date, never deleted), both master data; `Store.remove_member` (the removal is logged); `source_feeds.feed_id` is unchanged and still names a feed whether or not it is tracked
