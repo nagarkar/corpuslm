@@ -1,4 +1,5 @@
-"""Review answers (db.py `review_answers`, Store.save_review_answer ...; docs/design/storage-schema.md):
+"""Review answers (db.py `review_answers`, Store.save_review_answer ...;
+docs/design/storage-schema.md):
 what the review page saved and `review apply` has not landed, and the v4 -> v5 migration."""
 
 from __future__ import annotations

@@ -3,6 +3,8 @@
 import json
 import sqlite3
 
+import pytest
+
 from corpuslm import cli, db
 
 
@@ -14,7 +16,9 @@ def test_help_lists_every_verb_with_an_example(capsys):
     assert cli.main(["help", "--json"]) == 0
     verbs = _board(capsys)["verbs"]
     assert set(verbs) == set(cli.VERBS)
-    assert all("Example: corpuslm " in text for text in verbs.values())
+    assert all(
+        "Example: " in text and "corpuslm" in text.split("Example: ")[1] for text in verbs.values()
+    )
 
 
 def test_doctor_reports_a_current_database_and_changes_nothing(tmp_path, capsys):
@@ -46,6 +50,8 @@ def test_doctor_names_a_newer_schema(tmp_path, capsys):
     assert "newer than this corpuslm" in _board(capsys)["problems"][0]
 
 
-def test_an_unknown_verb_points_at_help(capsys):
-    assert cli.main(["frobnicate"]) == 2
+def test_an_unknown_verb_exits_one_and_points_at_help(capsys):
+    with pytest.raises(SystemExit) as stopped:
+        cli.main(["frobnicate"])
+    assert stopped.value.code == 1
     assert "corpuslm help" in capsys.readouterr().err

@@ -9,8 +9,8 @@ verdict rows.
 What differs per source kind is a `ReviewKind`, injected, never hard-wired: `anchor_url` (a link
 to the moment in the source, or None when the source cannot be linked), `source_label` (the
 text a card or note shows for a source), the `SpeakerScheme`, and the page footnote about the
-links. YouTube's kind lives in ytlm; Bee's has no links: a `file://` link fails on a phone, so a
-time label stands alone.
+links. Both kinds live in corpuslm.review_kinds; Bee's has no links: a `file://` link fails on a
+phone, so a time label stands alone.
 
 Export: `render_review` writes one callout per open item, each with a checkbox list (the
 options, `other: ___`, `skip`). Apply: `parse_note` reads a note back. ONE checked box is the
@@ -47,7 +47,8 @@ Terms:
   settle an ambiguity without asking again.
 - **review item**: one question for the author, with a stable key. The open ones form the
   review queue.
-- **review kind**: how one source kind links, labels and names speakers on review surfaces.
+- **review kind**: how one source kind links, labels and names speakers on review surfaces
+  (`corpuslm.review_kinds` builds them).
 - **verdict**: the author's answer to a review item (an option, `other`, `skip`, a name).
 """
 
@@ -86,6 +87,9 @@ class ReviewKind:
     # The tool's refinement of the transcript schema, when its documents are not valid under the
     # shared one (Bee's speaker labels are its own); None reads them with the shared schema.
     refined_schema: dict | None = None
+    # The artifacts of a source that go stale when the owner answers one of its cards, so the
+    # tool's next run rebuilds them; empty when the tool rebuilds from the answer itself.
+    stale_nodes: tuple[str, ...] = ()
 
 
 def item_pattern(review_key_prefix: str = "spk") -> re.Pattern[str]:

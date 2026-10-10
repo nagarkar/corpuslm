@@ -4,7 +4,7 @@ A source labels its speakers in its own way, and the way is a `SpeakerScheme`: t
 vocabulary, the label that means "nobody identified", how a label resolves to a name without
 any evidence, the prompt that cleans transcripts of that source, whether the labels are fixed
 (a diarization the model must not change) and the prefix of the review keys. YouTube's scheme
-(HOST, GUEST_n) lives in ytlm; `BEE` is built here by `bee_scheme`.
+(HOST, GUEST_n, `YOUTUBE`) and Bee's (`bee_scheme`) are both built here.
 
 Deterministic. Candidate names come from the source's vocabulary; labels come from the
 transcript's segments (`role`); label-to-name bindings come from the model clean-up's
@@ -163,3 +163,17 @@ def bee_scheme(owner_first_name: str) -> SpeakerScheme:
         fixed_labels=True,
         source_id_key="source_id",
     )
+
+
+def _host_is_the_channel(label: str, source: dict) -> str | None:
+    return source.get("channel_title") if label == "HOST" else None
+
+
+# YouTube's labels: HOST, GUEST_1 to GUEST_6 and UNKNOWN; HOST resolves to the channel title.
+YOUTUBE = SpeakerScheme(
+    labels=("HOST", "GUEST_1", "GUEST_2", "GUEST_3", "GUEST_4", "GUEST_5", "GUEST_6", "UNKNOWN"),
+    unresolved_label="UNKNOWN",
+    resolve_default=_host_is_the_channel,
+    prompt_id="cleanup",
+    fixed_labels=False,
+)

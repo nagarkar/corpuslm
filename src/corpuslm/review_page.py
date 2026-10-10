@@ -1,8 +1,8 @@
 """Review page: the self-contained phone page for answering review items, for any source kind.
 
 One page for a workspace with a corpus dropdown (or one corpus when asked), open items only,
-one card per distinct span, every tap saved to the artifact's database
-(`reviews/<corpus_id>/items/<card_id>`), read back into a decisions file that lands into the SAME
+one card per distinct span, every tap saved as an answer
+(`reviews/<corpus_id>/items/<card_id>`), read back into a decisions document that lands into the SAME
 verdict rows the vault note feeds (corpuslm.review). The page is an input surface; the rows are
 the record.
 
@@ -18,9 +18,14 @@ page text, styles and script are the same for every kind, so a kind adds no code
 cards keep the key names `video_id` and `title` for the source's id and label: they are the
 format the page script and the decisions file already use.
 
-Where answers go: to the artifact's database when the page is published in a chat (claude.ai), or,
-when `window.claude` is absent and a local review server answers (corpuslm.review_server), to that
-server's file on this machine. A copy opened from a file saves nothing and says so.
+Where answers go: to the `review_answers` table of the shared database, through the local review
+server (corpuslm.review_server), when `window.claude` is absent and the server answers; the same
+page, published in a chat, still saves to the artifact's database (a path kept working, no tool
+documents it). A copy opened from a file saves nothing and says so.
+
+`page_data_by_kind` and `workspace_data_by_kind` read each source with the review kind and folder
+of its own source kind (`KindSetup`), so one page serves every kind; `page_data` and
+`workspace_data` are the one-kind forms.
 
 Where user data leaves the machine: into claude.ai, when someone publishes the page in a chat.
 This module publishes nothing. The page embeds every open card's text; whether a source kind's
@@ -61,11 +66,14 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 from .files import write_atomic
 from .identity import normalize_span
 from .review import ReviewKind, reading_options, speaker_names
+from .review_kinds import KINDS as SOURCE_KINDS
 from .store import Store
 from .transcript import loads as transcript_loads
 from .transcript import timestamp
@@ -92,10 +100,27 @@ def _context(seg: dict, span: str, applied: str) -> str:
     return text
 
 
+@dataclass(frozen=True, slots=True)
+class KindSetup:
+    """One source kind on the page: its review kind, and the folder holding its sources'
+    documents (`<folder>/<source id>/transcript.json` and `speaker_map.json`)."""
+
+    kind: ReviewKind
+    sources_directory: Path
+
+
 def page_data(db, sources_directory: Path, corpus_name: str, *, kind: ReviewKind) -> dict:
-    """Cards for one corpus. `sources_directory/<source id>/transcript.json` (and
-    `speaker_map.json`) hold each source's documents. The cards keep the key names
-    `video_id` and `title`: they are the page's stored and served format."""
+    """Cards for one corpus, every source read with `kind` and `sources_directory` whatever its
+    source kind (`page_data_by_kind` reads each with its own)."""
+    setup = KindSetup(kind, Path(sources_directory))
+    return page_data_by_kind(db, dict.fromkeys(SOURCE_KINDS, setup), corpus_name)
+
+
+def page_data_by_kind(db, kinds: Mapping[str, KindSetup], corpus_name: str) -> dict:
+    """Cards for one corpus. Each source is read with the review kind and the folder of ITS
+    source kind (`kinds`, by the kind the sources table stores); a source whose kind is not in
+    `kinds` has no cards. The cards keep the key names `video_id` and `title`: they are the
+    page's stored and served format."""
     store = Store(db)
     corpus = store.corpus_by_name(corpus_name, exact=True)
     if corpus is None:
@@ -106,6 +131,10 @@ def page_data(db, sources_directory: Path, corpus_name: str, *, kind: ReviewKind
     open_items = 0
     for order, video in enumerate(videos):
         vid = video["id"]
+        setup = kinds.get(video["kind"])
+        if setup is None:
+            continue
+        kind, sources_directory = setup.kind, setup.sources_directory
         t_path = sources_directory / vid / "transcript.json"
         if not t_path.exists():
             continue
@@ -233,13 +262,25 @@ def page_data(db, sources_directory: Path, corpus_name: str, *, kind: ReviewKind
 
 
 def workspace_data(db, sources_directory: Path, *, kind: ReviewKind) -> dict:
-    """Every corpus, each as its own page_data, for the one workspace page
-    (one link, a corpus dropdown). Corpora with no cards at all are listed but carry
-    nothing. Only the corpora the kind's tool reads are listed: a corpus made only of another
-    kind's sources is left out."""
-    corpora = []
-    for name in Store(db).corpus_names(kind.name):
-        corpora.append(page_data(db, sources_directory, name, kind=kind))
+    """Every corpus the tool of `kind` reads, each source read with `kind` and
+    `sources_directory`."""
+    corpora = [
+        page_data(db, sources_directory, name, kind=kind)
+        for name in Store(db).corpus_names(kind.name)
+    ]
+    return _workspace_document(corpora)
+
+
+def workspace_data_by_kind(db, kinds: Mapping[str, KindSetup]) -> dict:
+    """Every corpus, each as its own page_data, for the one workspace page (one link, a corpus
+    dropdown). Corpora with no cards at all are listed but carry nothing. Only the corpora a
+    kind in `kinds` reads are listed: a corpus made only of sources of other kinds is left out."""
+    store = Store(db)
+    names = list(dict.fromkeys(name for kind in kinds for name in store.corpus_names(kind)))
+    return _workspace_document([page_data_by_kind(db, kinds, name) for name in names])
+
+
+def _workspace_document(corpora: list[dict]) -> dict:
     corpora.sort(key=lambda c: (-c["open_items"], c["corpus"].lower()))
     return {
         "title": "Corpus review",
@@ -593,13 +634,35 @@ def write_pages(
 # ---- decisions file → per-key verdicts ---------------------------------------
 
 
+def decisions_document(store: Store, corpus_id: str) -> dict:
+    """The answers saved for one corpus as a decisions document ({corpus_id, decisions:
+    {card_id: {verdict}}}), the input of `decisions_to_verdicts`."""
+    return {
+        "corpus_id": corpus_id,
+        "decisions": {
+            row["card_id"]: {"verdict": row["verdict"]} for row in store.review_answers(corpus_id)
+        },
+    }
+
+
 def decisions_to_verdicts(
     db, sources_directory: Path, corpus_name: str, decisions: dict, *, kind: ReviewKind
 ) -> tuple[list[dict], list[str]]:
     """Map a decisions file ({corpus_id, decisions: {card_id: {verdict}}}) to
     per-key verdicts by recomputing the page data. Returns (verdicts,
     unknown card ids)."""
-    data = page_data(db, sources_directory, corpus_name, kind=kind)
+    setup = KindSetup(kind, Path(sources_directory))
+    return decisions_to_verdicts_by_kind(
+        db, dict.fromkeys(SOURCE_KINDS, setup), corpus_name, decisions
+    )
+
+
+def decisions_to_verdicts_by_kind(
+    db, kinds: Mapping[str, KindSetup], corpus_name: str, decisions: dict
+) -> tuple[list[dict], list[str]]:
+    """`decisions_to_verdicts` over sources of several kinds. Each verdict also carries the
+    `card_id` it came from."""
+    data = page_data_by_kind(db, kinds, corpus_name)
     if decisions.get("corpus_id") and decisions["corpus_id"] != data["corpus_id"]:
         raise ValueError(
             f"decisions are for corpus {decisions['corpus_id']}, not {data['corpus_id']}"
@@ -632,6 +695,7 @@ def decisions_to_verdicts(
                         "verdict": verdict,
                         "span": card["span"],
                         "idx": item["idx"],
+                        "card_id": card_id,
                     }
                 )
         else:
@@ -642,6 +706,7 @@ def decisions_to_verdicts(
                     "kind": "speaker",
                     "verdict": verdict,
                     "role": card["role"],
+                    "card_id": card_id,
                 }
             )
     return out, unknown
@@ -707,11 +772,16 @@ def _script(data: dict) -> str:
 
 __all__ = [
     "DEFAULT_PAGE_BYTES",
+    "KindSetup",
+    "decisions_document",
     "decisions_to_verdicts",
+    "decisions_to_verdicts_by_kind",
     "land_page_verdicts",
     "page_data",
+    "page_data_by_kind",
     "render",
     "split",
     "workspace_data",
+    "workspace_data_by_kind",
     "write_pages",
 ]

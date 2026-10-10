@@ -1,15 +1,16 @@
-"""Review server: serves the review page on this machine and keeps its answers in a file.
+"""Review server: serves the review page on this machine and keeps its answers in the database.
 
-The review page (corpuslm.review_page) saves every tap to the database Claude gives a published
-artifact. This module is the page's other home: a small standard-library HTTP server on the
-loopback address that answers the same calls (get, set, list, delete of documents under the same
-collection names, `reviews/<corpus id>/items/<card id>`) from one JSON file in the tool's own state
-folder. The page script picks it when `window.claude` is absent and a server answers; a tool that
-reads the answers back (`documents.decisions`) lands them with `decisions_to_verdicts`.
+The review page (corpuslm.review_page) saves every tap through a small database interface that
+claude.ai once gave a published artifact. This module is the page's home now: a small
+standard-library HTTP server on the loopback address that answers the same calls (get, set, list,
+delete of the answers under `reviews/<corpus id>/items/<card id>`) from the `review_answers` table
+of the shared transcript database, through the Store. The page script picks it when `window.claude`
+is absent and a server answers; `corpuslm.review_apply` lands the saved answers and deletes them.
 
-Routes: `GET /` the page (built per request by the function the tool passes in), `GET /health`,
-and one `POST /api/review` with `{"method": ..., "params": {...}}` dispatched to `Documents`. The
-page's script (never a second copy of the page) is the only client.
+Routes: `GET /` the page (built per request by the function the caller passes in), `GET /health`
+(with the time this server started, for `review check`), and one `POST /api/review` with
+`{"method": ..., "params": {...}}` dispatched to `Answers`. The page's script (never a second copy
+of the page) is the only client.
 
 Never imports: cli, clikit, any model transport.
 
@@ -22,15 +23,19 @@ Decisions:
   (403), Origin, when sent, equal to Host (403), body at most 64 KB (413), a JSON object (400).
   There is no CORS, no cookie and no answer to OPTIONS. Enforced by:
   tests/test_review_server.py::test_the_write_check_declines_each_bad_request.
-- The file is loaded for every request and written atomically under one lock, so two taps at once
-  both land. Enforced by: tests/test_review_server.py::test_two_taps_at_once_both_land.
+- Answers are stored through the Store, one short transaction per call on a connection of its
+  own, under one lock, so two taps at once both land. Enforced by:
+  tests/test_review_server.py::test_two_taps_at_once_both_land.
 - An error answers with the message for a bad request, a bare 404 for a missing document, and
   only the exception's type for anything else; no stored text is in an error. Enforced by:
   tests/test_review_server.py::test_an_unexpected_error_names_only_its_type.
+- One server and one answers table serve every source kind's corpora; the page it builds names
+  them all. Enforced by: tests/test_review_server.py::test_answers_of_every_corpus_share_one_table.
 
 Terms:
-- **documents**: the page's answers, one JSON file of `path -> document`, where a path is
-  `<collection>/<id>`. The page stores `{verdict, at}` for each card.
+- **answers**: what the page saved and `review apply` has not landed: one `review_answers` row per
+  (corpus, card), shown to the page as the document `{verdict, at}` at
+  `reviews/<corpus id>/items/<card id>`.
 """
 
 from __future__ import annotations
@@ -39,78 +44,109 @@ import json
 import re
 import threading
 from collections.abc import Callable
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from .files import write_atomic
+from . import clock
+from .db import Database, now_iso
+from .review_page import decisions_document
+from .store import Store
 
 APP = "review"
+CREATED_BY = "review page"
 MAX_BODY_BYTES = 64 * 1024
+MAX_VERDICT_CHARS = 2000
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "[::1]"})
-_PATH = re.compile(r"^[A-Za-z0-9_.:-]+(/[A-Za-z0-9_.:-]+)+$")
+_WORD = r"[A-Za-z0-9_.:-]+"
+_ANSWER_PATH = re.compile(rf"^reviews/(?P<corpus>{_WORD})/items/(?P<card>{_WORD})$")
+_COLLECTION = re.compile(rf"^reviews/(?P<corpus>{_WORD})/items$")
+_BAD_PATH = "a path is reviews/<corpus id>/items/<card id>"
 
 
-class Documents:
-    """The page's database: documents by path in one JSON file. The file is read for every call
-    and rewritten whole under a lock, so a call never sees another's half-written state."""
+class Answers:
+    """The page's database: the saved answers of every corpus, in the shared transcript database.
+    Each call opens its own connection and writes under a lock, so a call never sees another's
+    half-written state."""
 
-    def __init__(self, path: Path):
-        self.path = Path(path)
+    def __init__(self, database: Path):
+        self.database = Path(database)
         self._lock = threading.Lock()
 
-    def _load(self) -> dict[str, dict]:
-        if not self.path.is_file():
-            return {}
-        loaded = json.loads(self.path.read_text("utf-8"))
-        return loaded if isinstance(loaded, dict) else {}
+    def _store(self) -> tuple[Database, Store]:
+        db = Database(self.database)
+        return db, Store(db)
 
     @staticmethod
-    def _checked(path: object) -> str:
-        if not isinstance(path, str) or not _PATH.match(path) or ".." in path.split("/"):
-            raise ValueError("a path is words joined by slashes, like reviews/<corpus>/items/<id>")
-        return path
+    def _answer_path(path: object) -> tuple[str, str]:
+        match = _ANSWER_PATH.match(path) if isinstance(path, str) else None
+        if match is None:
+            raise ValueError(_BAD_PATH)
+        return match["corpus"], match["card"]
 
-    def get(self, path: str) -> dict | None:
-        return self._load().get(self._checked(path))
+    @staticmethod
+    def _collection(collection: object) -> str:
+        match = _COLLECTION.match(collection) if isinstance(collection, str) else None
+        if match is None:
+            raise ValueError("a collection is reviews/<corpus id>/items")
+        return match["corpus"]
 
-    def set(self, path: str, data: object) -> None:
+    @staticmethod
+    def _document(row: dict) -> dict:
+        return {"verdict": row["verdict"], "at": row["answered_at"]}
+
+    def get(self, path: object) -> dict | None:
+        corpus_id, card_id = self._answer_path(path)
+        db, store = self._store()
+        try:
+            row = store.review_answer(corpus_id, card_id)
+        finally:
+            db.close()
+        return None if row is None else self._document(row)
+
+    def set(self, path: object, data: object) -> None:
+        corpus_id, card_id = self._answer_path(path)
         if not isinstance(data, dict):
             raise ValueError("a document is a JSON object")
-        key = self._checked(path)
+        verdict = data.get("verdict", "")
+        stamp = data.get("at") or now_iso()
+        if not isinstance(verdict, str) or len(verdict) > MAX_VERDICT_CHARS:
+            raise ValueError(f"verdict is text of at most {MAX_VERDICT_CHARS} characters")
+        if not isinstance(stamp, str) or not _is_time(stamp):
+            raise ValueError("at is a time like 2026-10-09T10:00:00Z")
         with self._lock:
-            documents = self._load()
-            documents[key] = data
-            write_atomic(self.path, json.dumps(documents, ensure_ascii=False, sort_keys=True))
+            db, store = self._store()
+            try:
+                store.save_review_answer(corpus_id, card_id, verdict, stamp, created_by=CREATED_BY)
+            finally:
+                db.close()
 
-    def delete(self, path: str) -> bool:
-        key = self._checked(path)
+    def delete(self, path: object) -> bool:
+        corpus_id, card_id = self._answer_path(path)
         with self._lock:
-            documents = self._load()
-            if key not in documents:
-                return False
-            del documents[key]
-            write_atomic(self.path, json.dumps(documents, ensure_ascii=False, sort_keys=True))
-            return True
+            db, store = self._store()
+            try:
+                return store.delete_review_answer(corpus_id, card_id)
+            finally:
+                db.close()
 
-    def list(self, collection: str) -> list[dict]:
-        """The documents directly under `collection`: `[{"id", "data"}]`, by id."""
-        prefix = self._checked(collection) + "/"
-        return [
-            {"id": key[len(prefix) :], "data": value}
-            for key, value in sorted(self._load().items())
-            if key.startswith(prefix) and "/" not in key[len(prefix) :]
-        ]
+    def list(self, collection: object) -> list[dict]:
+        """The documents under `collection`: `[{"id", "data"}]`, by card id."""
+        corpus_id = self._collection(collection)
+        db, store = self._store()
+        try:
+            rows = store.review_answers(corpus_id)
+        finally:
+            db.close()
+        return [{"id": row["card_id"], "data": self._document(row)} for row in rows]
 
     def decisions(self, corpus_id: str) -> dict:
-        """The decisions file for one corpus (`decisions_to_verdicts`' input): every card's
-        saved verdict under `reviews/<corpus id>/items`."""
-        return {
-            "corpus_id": corpus_id,
-            "decisions": {
-                row["id"]: {"verdict": str(row["data"].get("verdict", ""))}
-                for row in self.list(f"reviews/{corpus_id}/items")
-            },
-        }
+        """The decisions document of one corpus (`decisions_to_verdicts`' input)."""
+        db, store = self._store()
+        try:
+            return decisions_document(store, corpus_id)
+        finally:
+            db.close()
 
     def call(self, method: object, params: object) -> object:
         """Dispatch one API call. ValueError for a bad call, KeyError for a missing document."""
@@ -119,18 +155,26 @@ class Documents:
         if method == "health":
             return {"status": "ok"}
         if method == "get":
-            found = self.get(params.get("path"))  # type: ignore[arg-type]
+            found = self.get(params.get("path"))
             if found is None:
                 raise KeyError("no such document")
             return found
         if method == "set":
-            self.set(params.get("path"), params.get("data"))  # type: ignore[arg-type]
+            self.set(params.get("path"), params.get("data"))
             return {"saved": True}
         if method == "delete":
-            return {"deleted": self.delete(params.get("path"))}  # type: ignore[arg-type]
+            return {"deleted": self.delete(params.get("path"))}
         if method == "list":
-            return self.list(params.get("collection"))  # type: ignore[arg-type]
+            return self.list(params.get("collection"))
         raise ValueError("method must be one of: health, get, set, delete, list")
+
+
+def _is_time(text: str) -> bool:
+    try:
+        datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return True
 
 
 def _host_is_this_machine(host_header: str) -> bool:
@@ -141,9 +185,10 @@ def _host_is_this_machine(host_header: str) -> bool:
 
 
 def make_server(
-    host: str, port: int, *, page: Callable[[], str], documents: Documents
+    host: str, port: int, *, page: Callable[[], str], answers: Answers
 ) -> ThreadingHTTPServer:
-    """A server for `page` (called for every `GET /`) over `documents`. Loopback addresses only."""
+    """A server for `page` (called for every `GET /`) over `answers`. Loopback addresses only."""
+    started_at = clock.iso(clock.utc_now())
     if host not in {"127.0.0.1", "::1", "localhost"}:
         raise ValueError(f"the review server binds the loopback address only, not {host!r}")
 
@@ -174,7 +219,7 @@ def make_server(
             if not self._this_machine():
                 return
             if self.path == "/health":
-                self._json(200, {"status": "ok"})
+                self._json(200, {"status": "ok", "started_at": started_at})
             elif self.path in ("/", "/index.html"):
                 html = page()
                 self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
@@ -211,7 +256,7 @@ def make_server(
                 body = json.loads(self.rfile.read(length))
                 if not isinstance(body, dict):
                     raise ValueError("the body must be a JSON object")
-                result = documents.call(body.get("method"), body.get("params", {}))
+                result = answers.call(body.get("method"), body.get("params", {}))
             except (ValueError, UnicodeDecodeError) as error:
                 self._json(400, {"error": str(error)})
             except KeyError:
@@ -228,4 +273,4 @@ def make_server(
     return Server((host, port), Handler)
 
 
-__all__ = ["APP", "Documents", "MAX_BODY_BYTES", "make_server"]
+__all__ = ["APP", "Answers", "MAX_BODY_BYTES", "make_server"]
