@@ -90,6 +90,9 @@ class ReviewKind:
     # The artifacts of a source that go stale when the owner answers one of its cards, so the
     # tool's next run rebuilds them; empty when the tool rebuilds from the answer itself.
     stale_nodes: tuple[str, ...] = ()
+    # The artifact node holding the model clean-up's document (`transcript.json`'s ambiguities
+    # before any later step), where its suggestions are read from.
+    model_cleanup_node: str = "model_cleanup"
 
 
 def item_pattern(review_key_prefix: str = "spk") -> re.Pattern[str]:

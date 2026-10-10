@@ -47,9 +47,19 @@ flowchart LR
 
 **Rules out:** a second answers store per tool; the server importing ytlm or beelm; the database path in a plist or on a command line; publishing the page as an Artifact.
 
+## The model's suggestions, recorded and used (2026-10-10)
+
+- The clean-up model's top suggestion for every ambiguity is a row of `model_suggestions` (schema 6, [`src/corpuslm/model_suggestions.py`](../../src/corpuslm/model_suggestions.py)), written by the model clean-up builder with the artifact, for ytlm and beelm alike. `corpuslm suggestions record --config FILE` writes the rows from the artifacts already on disk, with no model call, and a second run writes nothing.
+- `corpuslm review accept-suggestions --config FILE --kind NAME --before YYYY-MM-DD` saves an answer equal to the suggestion on every open ambiguity card whose sources are all of that kind and recorded before the date, through the Store method the review server uses. The owner sees the answers on the page and can change them; nothing is landed. It never overwrites an answer and never touches a speaker card. `--dry-run` counts only.
+
+**Why:** the owner wants the model's suggestion kept so older conversations can be answered without rerunning the model, faster and free.
+
+**Rules out:** a model call in either verb; landing an answer on the owner's behalf; overwriting or undoing an answer.
+
 ## Changes
 
 - 2026-10-09 One review server and one `review_answers` table for every kind (schema 5); both review kinds and YouTube's speaker scheme moved here; `review page|serve|apply|check`.
 
 - 2026-10-03 Created (nagarkar/ytlm#50, slice 1).
 - 2026-10-08 Review machinery moved here with per-kind hooks (nagarkar/ytlm#50 step 6).
+- 2026-10-10 Model suggestions recorded (schema 6); `suggestions record` and `review accept-suggestions`.

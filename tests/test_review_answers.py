@@ -89,6 +89,8 @@ def _v4_database(path):
     conn = sqlite3.connect(path)
     conn.execute("DROP TRIGGER review_answers_change_log")
     conn.execute("DROP TABLE review_answers")
+    conn.execute("DROP TABLE model_suggestion_candidates")
+    conn.execute("DROP TABLE model_suggestions")
     conn.execute("PRAGMA user_version = 4")
     conn.commit()
     conn.close()
@@ -107,10 +109,11 @@ def test_a_version_4_database_gains_the_table_after_a_verified_backup(tmp_path):
 
     opened = db.Database(path)
     try:
-        assert opened.migration["from"] == 4 and opened.migration["to"] == db.USER_VERSION == 5
+        assert opened.migration["from"] == 4 and opened.migration["to"] == db.USER_VERSION == 6
         backup = opened.migration["backup"]
-        assert backup.endswith("-before-v5.sqlite")
-        assert opened.one("PRAGMA user_version")[0] == 5
+        assert backup.endswith("-before-v6.sqlite")
+        assert opened.one("PRAGMA user_version")[0] == 6
+        assert opened.one("SELECT COUNT(*) FROM model_suggestions")[0] == 0
         assert opened.one("PRAGMA integrity_check")[0] == "ok"
         assert opened.one("SELECT COUNT(*) FROM review_answers")[0] == 0
         assert opened.one("SELECT COUNT(*) FROM corpora")[0] == 1

@@ -14,6 +14,8 @@ corpuslm is a library. ytlm and beelm import it. The command line is for checks.
 | Write the review page of every corpus as one file, to look at | `corpuslm review page --config FILE [--out FILE] [--dry-run]` |
 | Serve the review page (all corpora, all source kinds) and keep the owner's taps | `corpuslm review serve --config FILE [--port N] [--dry-run]` (launchd runs it; see `scripts/com.nagarkar.corpuslm.review.plist`) |
 | Land the saved answers as verdicts | `corpuslm review apply --config FILE [--kind SOURCE_KIND] [--dry-run]` |
+| Keep the clean-up model's top suggestion for every ambiguity in the database (read from the existing files; no model, no cost) | `corpuslm suggestions record --config FILE [--dry-run]` (safe to run again; the model clean-up builder records them itself from now on) |
+| Fill open review cards with those suggestions for older recordings, for the owner to change on the page | `corpuslm review accept-suggestions --config FILE --kind NAME --before YYYY-MM-DD [--dry-run]` |
 | Is the review server up and on the newest code? | `corpuslm review check --config FILE` |
 | Shell completion | `corpuslm completion` |
 
@@ -22,6 +24,7 @@ corpuslm is a library. ytlm and beelm import it. The command line is for checks.
 - Never query the transcript database with `sqlite3` or raw SQL from another repo. Go through `corpuslm.store.Store`, or ask for a verb.
 - The review verbs read `review.toml` (`--config FILE`; example `scripts/review.example.toml`, kept beside the database, never in git). It holds the database path, the port, each kind's folder and the owner's first name; none of them goes on a command line.
 - The answers table holds only answers not yet landed. `review apply` never calls a model: a speaker answer is rebuilt by the tool's own `review apply` (beelm), the rest waits for the tool's next AI clean-up run. Restart the server after a merge: `launchctl kickstart -k gui/501/com.nagarkar.corpuslm.review` (the owner installs and restarts it).
+- `suggestions record` and `review accept-suggestions` call no model. `accept-suggestions` saves answers as the page would (the owner sees them on the page and can change them) and lands nothing; it never overwrites an answer (an undone one included), never touches a speaker card, and leaves a card alone when any of its sources is of another kind, recorded on or after the date (or undated), has no recorded suggestion, or the sources' suggestions differ. The owner chooses `--before`; run `--dry-run` first and never pick a date for them.
 - The board shows counts and paths only. Transcript text never enters the chat window.
 - The launcher is `.venv/bin/corpuslm` in this checkout.
 

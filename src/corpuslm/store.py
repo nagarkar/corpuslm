@@ -847,6 +847,107 @@ class Store:
         )
         return cursor.rowcount > 0
 
+    # ---- model suggestions (derived state: the clean-up model's top suggestions) -------
+
+    def model_suggestions(self, source_id: str) -> dict[str, dict]:
+        """The recorded suggestions of one source by review key (`amb-0001`): `span_norm`,
+        `suggestion`, `suggestion_probability` (None when the model gave none), `model`,
+        `artifact_sha256`, `candidates` and `probabilities` (one per candidate, in the model's
+        order; a probability is None when the model gave none)."""
+        out: dict[str, dict] = {}
+        for row in self.db.all(
+            "SELECT * FROM model_suggestions WHERE source_id = ? ORDER BY key", (source_id,)
+        ):
+            candidates = self.db.all(
+                "SELECT candidate, probability FROM model_suggestion_candidates "
+                "WHERE suggestion_id = ? ORDER BY position",
+                (row["id"],),
+            )
+            out[row["key"]] = {
+                "span_norm": row["span_norm"],
+                "suggestion": row["suggestion"],
+                "suggestion_probability": row["suggestion_probability"],
+                "model": row["model"],
+                "artifact_sha256": row["artifact_sha256"],
+                "candidates": [c["candidate"] for c in candidates],
+                "probabilities": [c["probability"] for c in candidates],
+            }
+        return out
+
+    def replace_model_suggestions(
+        self,
+        source_id: str,
+        suggestions: Sequence[dict],
+        *,
+        artifact_sha256: str,
+        model: str,
+        created_by: str,
+    ) -> bool:
+        """Make the source's recorded suggestions exactly `suggestions` (each: `key`,
+        `span_norm`, `suggestion`, `suggestion_probability`, `candidates`, `probabilities`), read
+        from the model clean-up artifact with `artifact_sha256`. A rebuilt artifact replaces the
+        rows of the one before. Nothing is written, and False returned, when the rows already come
+        from this artifact. An unknown source is a KeyError."""
+        if not self.has_source(source_id):
+            raise KeyError(f"unknown source {source_id!r}")
+        keys = [item["key"] for item in suggestions]
+        if len(set(keys)) != len(keys):
+            raise ValueError(f"model suggestions of {source_id} repeat a review key")
+        with self.db.transaction():
+            held = self._row(
+                "SELECT COUNT(*) AS n, COUNT(DISTINCT artifact_sha256) AS shas, "
+                "MIN(artifact_sha256) AS sha FROM model_suggestions WHERE source_id = ?",
+                (source_id,),
+            )
+            if held["n"] == len(suggestions) and (
+                held["n"] == 0 or (held["shas"] == 1 and held["sha"] == artifact_sha256)
+            ):
+                return False
+            self.db.execute(
+                "DELETE FROM model_suggestion_candidates WHERE suggestion_id IN "
+                "(SELECT id FROM model_suggestions WHERE source_id = ?)",
+                (source_id,),
+            )
+            self.db.execute("DELETE FROM model_suggestions WHERE source_id = ?", (source_id,))
+            for item in suggestions:
+                fields = ko_fields("sug", created_by=created_by)
+                self.db.insert(
+                    "model_suggestions",
+                    fields
+                    | {
+                        "source_id": source_id,
+                        "key": item["key"],
+                        "span_norm": item["span_norm"],
+                        "suggestion": item["suggestion"],
+                        "suggestion_probability": item["suggestion_probability"],
+                        "model": model,
+                        "artifact_sha256": artifact_sha256,
+                    },
+                )
+                for position, (candidate, probability) in enumerate(
+                    zip(item["candidates"], item["probabilities"], strict=True)
+                ):
+                    self.db.insert(
+                        "model_suggestion_candidates",
+                        ko_fields("sgc", created_by=created_by)
+                        | {
+                            "suggestion_id": fields["id"],
+                            "position": position,
+                            "candidate": candidate,
+                            "probability": probability,
+                        },
+                    )
+        return True
+
+    def model_suggestion_counts(self) -> dict[str, int]:
+        """`sources` with a suggestion, `suggestions` recorded, and how many of them
+        `with_probability`."""
+        row = self._row(
+            "SELECT COUNT(DISTINCT source_id) AS sources, COUNT(*) AS suggestions, "
+            "COUNT(suggestion_probability) AS with_probability FROM model_suggestions"
+        )
+        return {k: row[k] for k in ("sources", "suggestions", "with_probability")}
+
     # ---- change log (history of master data) ----------------------------------------
 
     def changes_of(self, table: str, row_id: str) -> list[dict]:
