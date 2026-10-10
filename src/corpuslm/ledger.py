@@ -82,13 +82,24 @@ class Ledger:
                 os.replace(newer, older)
 
 
-def read(path: Path) -> list[dict]:
+def read(path: Path, *, with_rotated: bool = False) -> list[dict]:
     """Lines validated at read; a malformed line is skipped, never
     raised, so a damaged ledger still reads, and the number skipped is
-    printed as one note on stderr."""
+    printed as one note on stderr. `with_rotated` reads the older
+    generations (`<name>.2`, `<name>.1`) first, oldest line first."""
+    name = path.stem.replace("-", "_") + "_line"
+    files = [path]
+    if with_rotated:
+        files = [path.with_name(f"{path.name}.{n}") for n in range(GENERATIONS, 0, -1)] + files
+    out: list[dict] = []
+    for file in files:
+        out.extend(_read_file(file, name))
+    return out
+
+
+def _read_file(path: Path, name: str) -> list[dict]:
     if not path.exists():
         return []
-    name = path.stem.replace("-", "_") + "_line"
     out: list[dict] = []
     skipped = 0
     for line in path.read_text(encoding="utf-8").splitlines():

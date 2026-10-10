@@ -1,0 +1,204 @@
+"""Usage page: the board of `corpuslm.usage` as one HTML page, and the same board as terminal text.
+
+Numbers and money only. Light and dark colours are tokens on the root, tables scroll inside their
+own box so the page never scrolls sideways on a phone, and the page asks the browser to reload
+every 60 seconds.
+
+Never imports: cli, clikit, db, store, any model transport.
+"""
+
+from __future__ import annotations
+
+from html import escape
+
+REFRESH_SECONDS = 60
+OUTCOMES = ("ok", "none", "error", "skipped")
+
+STYLE = """
+:root{--bg:#fff;--fg:#1d1d1f;--mut:#6e6e73;--card:#f5f5f7;--ok:#1a7f37;--bad:#c62828;--warn:#9a6700;
+--bar:#d9d9de;--fill:#0a66c2}
+@media(prefers-color-scheme:dark){:root{--bg:#111;--fg:#f2f2f2;--mut:#98989d;--card:#1c1c1e;
+--ok:#4cc26b;--bad:#ff6b6b;--warn:#e3b341;--bar:#3a3a3c;--fill:#5aa9ff}}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:15px/1.4 -apple-system,system-ui,sans-serif;
+margin:0 auto;max-width:820px;padding:16px}
+h1{font-size:20px;margin:0 0 4px}h2{font-size:17px;margin:26px 0 4px}
+h3{font-size:15px;margin:16px 0 4px}
+.mut{color:var(--mut)}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:12px 0}
+.card{background:var(--card);border-radius:12px;padding:12px;min-width:0}
+.card b{display:block;font-size:26px}.card small{display:block;color:var(--mut)}
+.meter{height:6px;border-radius:3px;background:var(--bar);margin-top:8px;overflow:hidden}
+.meter i{display:block;height:100%;background:var(--fill)}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%}th,td{text-align:right;padding:6px 8px;
+border-bottom:1px solid var(--card);white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+.ok{color:var(--ok)}.error{color:var(--bad)}.none{color:var(--warn)}
+"""
+
+
+def money(value: float) -> str:
+    return f"${value:,.2f}" if value >= 0.01 or value == 0 else f"${value:,.4f}"
+
+
+def _count(table: dict, fetcher: str, outcome: str) -> int:
+    return table.get(fetcher, {}).get(outcome, 0)
+
+
+def _cap_text(cap: float | None) -> str:
+    return money(cap) if cap is not None else "none set"
+
+
+def _tool_card(tool: dict) -> str:
+    cap, biggest = tool["per_run_usd"], tool["biggest_day_usd"]
+    meter = ""
+    if cap:
+        share = min(100, round(100 * biggest / cap))
+        meter = (
+            f'<div class="meter" title="{share}% of the per-run cap">'
+            f'<i style="width:{share}%"></i></div>'
+        )
+    return (
+        f'<div class="card"><span class="mut">{escape(tool["tool"])}</span>'
+        f"<b>{money(tool['total']['cost_usd'])}</b>"
+        f"<small>Per-run cap {_cap_text(cap)}</small>"
+        f"<small>Biggest day {money(biggest)} (a day can hold several runs)</small>"
+        f"<small>Per-day cap {_cap_text(tool['per_day_usd'])}</small>{meter}</div>"
+    )
+
+
+def _stage_table(tool: dict) -> str:
+    rows = "".join(
+        f"<tr><td>{escape(stage)}</td><td>{r['calls']}</td><td>{r['cached']}</td>"
+        f"<td>{r['tokens_in']:,}</td><td>{r['tokens_out']:,}</td><td>{money(r['cost_usd'])}</td></tr>"
+        for stage, r in tool["by_stage"].items()
+    )
+    if not rows:
+        return '<p class="mut">No model calls this month.</p>'
+    return (
+        '<div class="scroll"><table><tr><th>Stage</th><th>Calls</th><th>Cached</th>'
+        f"<th>Tokens in</th><th>Tokens out</th><th>Dollars</th></tr>{rows}</table></div>"
+    )
+
+
+def _day_table(tools: list[dict]) -> str:
+    days = sorted({d for t in tools for d in t["by_day"]}, reverse=True)
+    if not days:
+        return ""
+    head = "".join(
+        f"<th>{escape(t['tool'])} calls</th><th>{escape(t['tool'])} $</th>" for t in tools
+    )
+    body = ""
+    for day in days:
+        cells = ""
+        for t in tools:
+            r = t["by_day"].get(day)
+            cells += (
+                f"<td>{r['calls']}</td><td>{money(r['cost_usd'])}</td>"
+                if r
+                else "<td></td><td></td>"
+            )
+        body += f"<tr><td>{escape(day)}</td>{cells}</tr>"
+    return f'<div class="scroll"><table><tr><th>Day (UTC)</th>{head}</tr>{body}</table></div>'
+
+
+def _fetch_section(fetches: dict, month: str) -> str:
+    mt, total = fetches["this_month"], fetches["all_time"]
+    cards = [
+        (f"Supadata calls answered ({month})", _count(mt, "supadata", "ok"), "ok"),
+        (
+            f"Rejected: limit (HTTP 429) or error ({month})",
+            _count(mt, "supadata", "error"),
+            "error",
+        ),
+        ("No captions in that language", _count(mt, "supadata", "none"), "none"),
+        ("Answered, all time", _count(total, "supadata", "ok"), "ok"),
+        ("Rejected, all time", _count(total, "supadata", "error"), "error"),
+    ]
+    tiles = "".join(
+        f'<div class="card"><span class="mut">{escape(label)}</span><b class="{cls}">{n}</b></div>'
+        for label, n, cls in cards
+    )
+    columns = [
+        (f, o)
+        for f in sorted({f for day in fetches["by_day"].values() for f in day})
+        for o in OUTCOMES
+        if any(day.get(f, {}).get(o) for day in fetches["by_day"].values())
+    ]
+    head = "".join(f"<th>{escape(f)} {o}</th>" for f, o in columns)
+    body = "".join(
+        f"<tr><td>{escape(day)}</td>"
+        + "".join(
+            f'<td class="{o}">{_count(fetches["by_day"][day], f, o) or ""}</td>' for f, o in columns
+        )
+        + "</tr>"
+        for day in sorted(fetches["by_day"], reverse=True)
+    )
+    error = fetches["last_error"].get("supadata", "")
+    note = f"Last Supadata error: {escape(error)}." if error else "No Supadata error on record."
+    table = f'<div class="scroll"><table><tr><th>Day (UTC)</th>{head}</tr>{body}</table></div>'
+    return (
+        "<h2>Caption fetches</h2>"
+        '<div class="mut">Counts from the fetch ledger. A Supadata call answered is one billed '
+        "call; the plan's own meter is the authority on credits.</div>"
+        f'<div class="cards">{tiles}</div><p class="mut">{note}</p>{table}'
+    )
+
+
+def render(board: dict) -> str:
+    spend = board["model_spend"]
+    tools = list(spend["tools"].values())
+    cards = "".join(_tool_card(t) for t in tools)
+    stages = "".join(f"<h3>{escape(t['tool'])}, by stage</h3>{_stage_table(t)}" for t in tools)
+    problems = "".join(f'<p class="error">{escape(p)}</p>' for p in board["problems"])
+    return (
+        '<!doctype html><meta charset="utf-8"><meta name="viewport" '
+        'content="width=device-width,initial-scale=1">'
+        f'<meta http-equiv="refresh" content="{REFRESH_SECONDS}">'
+        f"<title>Usage</title><style>{STYLE}</style>"
+        f"<h1>Usage, {escape(board['month'])}</h1>"
+        f'<div class="mut">{escape(board["note"])}</div>{problems}'
+        f"<h2>Model spend, {money(spend['cost_usd'])} this month</h2>"
+        f'<div class="cards">{cards}</div>{stages}<h3>By day</h3>{_day_table(tools)}'
+        f"{_fetch_section(board['caption_fetches'], board['month'])}"
+    )
+
+
+def text(board: dict) -> str:
+    """The same board for a terminal: short tables, numbers only."""
+    spend = board["model_spend"]
+    out = [f"usage {board['month']}", board["note"], ""]
+    out.append(f"model spend: {money(spend['cost_usd'])} this month")
+    for t in spend["tools"].values():
+        r = t["total"]
+        out.append(
+            f"  {t['tool']}: {money(r['cost_usd'])}, {r['calls']} calls ({r['cached']} cached), "
+            f"{r['tokens_in']:,} tokens in, {r['tokens_out']:,} out; per-run cap "
+            f"{_cap_text(t['per_run_usd'])}, biggest day {money(t['biggest_day_usd'])}, "
+            f"per-day cap {_cap_text(t['per_day_usd'])}"
+        )
+        for stage, s in t["by_stage"].items():
+            out.append(
+                f"    {stage}: {s['calls']} calls, {s['cached']} cached, "
+                f"{s['tokens_in']:,}/{s['tokens_out']:,} tokens, {money(s['cost_usd'])}"
+            )
+        for day, d in sorted(t["by_day"].items(), reverse=True):
+            out.append(f"    {day}: {d['calls']} calls, {money(d['cost_usd'])}")
+    fetches = board["caption_fetches"]
+    out += ["", "caption fetches:"]
+    for label, table in (("this month", fetches["this_month"]), ("all time", fetches["all_time"])):
+        for fetcher in sorted(table):
+            counts = ", ".join(f"{o} {n}" for o, n in sorted(table[fetcher].items()))
+            out.append(f"  {label}, {fetcher}: {counts}")
+    for day in sorted(fetches["by_day"], reverse=True)[:14]:
+        cells = ", ".join(
+            f"{f} {o} {n}"
+            for f, t in sorted(fetches["by_day"][day].items())
+            for o, n in sorted(t.items())
+        )
+        out.append(f"  {day}: {cells}")
+    for fetcher, error in sorted(fetches["last_error"].items()):
+        out.append(f"  last {fetcher} error: {error}")
+    out += [f"problem: {p}" for p in board["problems"]]
+    return "\n".join(out) + "\n"

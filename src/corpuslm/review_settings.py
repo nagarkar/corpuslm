@@ -16,7 +16,21 @@ serve every kind without importing ytlm or beelm. See `scripts/review.example.to
     owner_first_name = "Quill"
 
 `directory` holds `<source id>/transcript.json` and `<source id>/speaker_map.json` for each source
-of the kind. The file is read strictly: an unknown section or key, a wrong type or a missing
+of the kind. An optional `[usage]` table tells the usage dashboard (`corpuslm.usage`) where each
+tool keeps its ledger folder, and where its own settings file holds the spend caps:
+
+    [usage]
+    port = 8779
+
+    [usage.ledgers]
+    ytlm = "/path/to/ytlm/workspace/logs"
+    beelm = "~/Bee/beelm/logs"
+
+    [usage.tool_settings]
+    ytlm = "/path/to/ytlm/config.toml"
+    beelm = "/path/to/beelm/config.toml"
+
+The file is read strictly: an unknown section or key, a wrong type or a missing
 `database` is named and declines.
 
 Never imports: cli, clikit, db, any model transport.
@@ -43,6 +57,7 @@ from .review_kinds import KINDS, kinds_for_settings
 from .review_page import KindSetup
 
 DEFAULT_PORT = 8781
+DEFAULT_USAGE_PORT = 8779
 
 
 class SettingsError(ValueError):
@@ -56,11 +71,21 @@ class KindSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class UsageSettings:
+    """Where the usage dashboard finds each tool's ledger folder and spend-cap settings file."""
+
+    port: int
+    ledgers: dict[str, Path]
+    tool_settings: dict[str, Path]
+
+
+@dataclass(frozen=True, slots=True)
 class ReviewSettings:
     database: Path
     port: int
     kinds: dict[str, KindSettings]
     path: Path
+    usage: UsageSettings | None = None
 
 
 def _strict(table: dict, known: tuple[str, ...], where: str) -> None:
@@ -80,6 +105,35 @@ def _text(table: dict, key: str, where: str, *, required: bool = True) -> str:
     return value
 
 
+def _port(table: dict, where: str, default: int) -> int:
+    port = table.get("port", default)
+    if isinstance(port, bool) or not isinstance(port, int) or not 1024 <= port <= 65535:
+        raise SettingsError(f"{where}: port must be a whole number from 1024 to 65535")
+    return port
+
+
+def _paths(table: object, where: str, *, required: bool) -> dict[str, Path]:
+    if table is None and not required:
+        return {}
+    if not isinstance(table, dict) or (required and not table):
+        raise SettingsError(f'{where}: name at least one tool as `tool = "/path"`')
+    return {name: Path(_text(table, name, where)).expanduser() for name in table}
+
+
+def _usage(raw: object, where: str) -> UsageSettings:
+    if not isinstance(raw, dict):
+        raise SettingsError(f"{where}: must be a table")
+    _strict(raw, ("port", "ledgers", "tool_settings"), where)
+    ledgers = _paths(raw.get("ledgers"), f"{where}.ledgers", required=True)
+    tool_settings = _paths(raw.get("tool_settings"), f"{where}.tool_settings", required=False)
+    for name in tool_settings:
+        if name not in ledgers:
+            raise SettingsError(
+                f"{where}.tool_settings: {name!r} has no ledger; known: {', '.join(ledgers)}"
+            )
+    return UsageSettings(_port(raw, where, DEFAULT_USAGE_PORT), ledgers, tool_settings)
+
+
 def load(path: Path) -> ReviewSettings:
     """Read and check the settings file at `path`."""
     path = Path(path).expanduser()
@@ -91,10 +145,8 @@ def load(path: Path) -> ReviewSettings:
         raw = tomllib.loads(path.read_text("utf-8"))
     except tomllib.TOMLDecodeError as error:
         raise SettingsError(f"{path}: not valid TOML ({error})") from error
-    _strict(raw, ("database", "port", "kinds"), str(path))
-    port = raw.get("port", DEFAULT_PORT)
-    if isinstance(port, bool) or not isinstance(port, int) or not 1024 <= port <= 65535:
-        raise SettingsError(f"{path}: port must be a whole number from 1024 to 65535")
+    _strict(raw, ("database", "port", "kinds", "usage"), str(path))
+    port = _port(raw, str(path), DEFAULT_PORT)
     kinds_table = raw.get("kinds")
     if not isinstance(kinds_table, dict) or not kinds_table:
         raise SettingsError(f"{path}: name at least one source kind under [kinds.<kind>]")
@@ -112,7 +164,10 @@ def load(path: Path) -> ReviewSettings:
             Path(_text(table, "directory", where)).expanduser(),
             _text(table, "owner_first_name", where, required=False),
         )
-    return ReviewSettings(Path(_text(raw, "database", str(path))).expanduser(), port, kinds, path)
+    usage = _usage(raw["usage"], f"{path} [usage]") if "usage" in raw else None
+    return ReviewSettings(
+        Path(_text(raw, "database", str(path))).expanduser(), port, kinds, path, usage
+    )
 
 
 def kind_setups(settings: ReviewSettings) -> dict[str, KindSetup]:
@@ -121,4 +176,13 @@ def kind_setups(settings: ReviewSettings) -> dict[str, KindSetup]:
     return {name: KindSetup(kinds[name], settings.kinds[name].directory) for name in kinds}
 
 
-__all__ = ["DEFAULT_PORT", "KindSettings", "ReviewSettings", "SettingsError", "kind_setups", "load"]
+__all__ = [
+    "DEFAULT_PORT",
+    "DEFAULT_USAGE_PORT",
+    "KindSettings",
+    "ReviewSettings",
+    "SettingsError",
+    "UsageSettings",
+    "kind_setups",
+    "load",
+]
