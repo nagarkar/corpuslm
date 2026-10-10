@@ -33,10 +33,11 @@ def test_a_kind_without_links_renders_time_labels_only():
     text = "\n".join(lines)
     assert '> [!question] amb-0001 · 0:05 · heard "wren"' in text
     assert "](" not in text and "file://" not in text
-    # the 'Unknown' speaker is a review item, offered the names heard and the map's candidates
+    # the 'Unknown' speaker is a review item, offered the names heard and the names the map
+    # carries, never its candidates
     assert "> [!question] spk-1 · who is Unknown? Heard: Ren (Ren, are you there?)" in text
-    assert text.index("> - [ ] Ren\n") < text.index("> - [ ] Wren\n", text.index("spk-1"))
-    assert "> - [ ] Moss" in text and "> - [ ] other: ___" in text
+    assert text.index("> - [ ] Ren\n") < text.index(f"> - [ ] {OWNER}\n", text.index("spk-1"))
+    assert "Summary" not in text and "Kiln Day" not in text and "> - [ ] other: ___" in text
     # the owner's label resolved by default is not asked about
     assert f"who is {OWNER}?" not in text
 

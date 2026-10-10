@@ -54,7 +54,7 @@ Terms:
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -97,6 +97,35 @@ _ITEM = item_pattern()
 _BOX = re.compile(r"^> - \[(?P<mark>[ xX])\] (?P<label>.*)$")
 
 # ---- export ----------------------------------------------------------------
+
+
+def speaker_names(
+    entry: dict, speaker_map: dict, kind_names: list[str], picked: Iterable[str]
+) -> list[str]:
+    """The names the picker offers for one speaker label, only from sources of real names:
+    the name the map already holds for this label, the names the model proposed (the heard
+    anchor), the names the other labels of this source already carry (a model's binding, the
+    owner's pick, a scheme default), the kind's own (the owner's first name) and the names the
+    owner already picked. Never the map's `candidates` (the source's protected vocabulary: a
+    title's or a summary's capitalised words are not names)."""
+    names: list[str] = []
+
+    def add(name: object) -> None:
+        text = str(name or "").strip()
+        if text and text not in names:
+            names.append(text)
+
+    add(entry.get("name"))
+    if entry.get("status") == "NEEDS_AUTHOR" and entry.get("anchor"):
+        for n in re.findall(r"([^;(]+) \(", entry["anchor"]):
+            add(n)
+    for other in (speaker_map.get("roles") or {}).values():
+        add(other.get("name"))
+    for n in kind_names:
+        add(n)
+    for n in picked:
+        add(n)
+    return names
 
 
 def moment_label(kind: ReviewKind, source: dict, seconds: float) -> str:
@@ -144,14 +173,10 @@ def render_review(
         if entry.get("status") == "NEEDS_AUTHOR":
             heard = f" Heard: {entry['anchor']}" if entry.get("anchor") else ""
             pending += [f"> [!question] {entry['key']} · who is {role}?{heard}"]
-            names = []
-            if entry.get("anchor"):
-                names = re.findall(r"([^;(]+) \(", entry["anchor"])
-            for n in [n.strip() for n in names if n.strip()]:
-                pending.append(f"> - [ ] {n}")
-            for c in (speaker_map or {}).get("candidates") or []:
-                if c not in names:
-                    pending.append(f"> - [ ] {c}")
+            for name in speaker_names(
+                entry, speaker_map or {}, kind.extra_speaker_names(source), ()
+            ):
+                pending.append(f"> - [ ] {name}")
             pending += [f"> - [ ] {OTHER}", f"> - [ ] {SKIP}", ""]
         elif entry.get("status") == "AUTHOR":
             resolved.append(f'> - {role} → "{entry["name"]}" (author)')
