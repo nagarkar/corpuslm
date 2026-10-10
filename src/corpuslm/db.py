@@ -40,7 +40,7 @@ from .identity import canonical_sha256  # noqa: F401  (re-exported: db.canonical
 
 # PRAGMA user_version of the schema below. 0 is a database made before the
 # version was tracked (the v1 schema, frozen in tests/fixtures/schema_v1.sql).
-USER_VERSION = 6
+USER_VERSION = 7
 
 BACKUPS_DIRNAME = "backups"
 # How many verified backups `<workspace>/backups/` keeps (owner ruling
@@ -90,6 +90,28 @@ CREATE TABLE IF NOT EXISTS model_suggestion_candidates (
     candidate TEXT NOT NULL,
     probability REAL CHECK (probability IS NULL OR probability BETWEEN 0 AND 1),
     UNIQUE (suggestion_id, position)
+) STRICT;
+"""
+
+# Tracked feeds: the playlists and channels the owner follows as inboxes (nagarkar/ytlm#21), and
+# the videos skipped from a scan. A feed is never a corpus; a video's own `source_feeds` rows say
+# which feeds it was found through.
+FEEDS_TABLES = f"""CREATE TABLE IF NOT EXISTS feeds (
+    {KNOWLEDGE_OBJECT_COLUMNS},
+    feed_id TEXT NOT NULL UNIQUE CHECK (feed_id <> ''),
+    kind TEXT NOT NULL CHECK (kind IN ('playlist', 'channel')),
+    title TEXT NOT NULL DEFAULT '',
+    last_scanned_at TEXT
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS source_skips (
+    {KNOWLEDGE_OBJECT_COLUMNS},
+    source_id TEXT NOT NULL UNIQUE CHECK (source_id <> ''),
+    feed_id TEXT REFERENCES feeds(feed_id),
+    title TEXT NOT NULL DEFAULT '',
+    reason TEXT NOT NULL CHECK (reason <> ''),
+    skipped_at TEXT NOT NULL CHECK (skipped_at <> ''),
+    lifted_at TEXT
 ) STRICT;
 """
 
@@ -245,6 +267,7 @@ CREATE TABLE IF NOT EXISTS corrections (
 
 {REVIEW_ANSWERS_TABLE}
 {MODEL_SUGGESTIONS_TABLES}
+{FEEDS_TABLES}
 CREATE TABLE IF NOT EXISTS runs (
     {KNOWLEDGE_OBJECT_COLUMNS},
     scope TEXT NOT NULL,
@@ -310,6 +333,8 @@ MASTER_COLUMNS: dict[str, tuple[str, ...]] = {
     "corpora": ("name", "person", "subject", "auto_ingest", "llm_cleanup", "metadata"),
     "corpus_members": ("reason", "metadata"),
     "review_answers": ("verdict", "answered_at", "metadata"),
+    "feeds": ("kind", "title", "last_scanned_at", "metadata"),
+    "source_skips": ("feed_id", "title", "reason", "skipped_at", "lifted_at", "metadata"),
 }  # fmt: skip
 
 # Lists of a master row, one row per element: (table, parent column, the
@@ -648,6 +673,16 @@ def _v5_to_v6_script() -> list[str]:
     return _statements(MODEL_SUGGESTIONS_TABLES)
 
 
+def _v6_to_v7_script() -> list[str]:
+    """Additive: the tracked feeds table and the skipped sources table, each with its
+    change-log trigger."""
+    return [
+        *_statements(FEEDS_TABLES),
+        _master_trigger("feeds", MASTER_COLUMNS["feeds"]),
+        _master_trigger("source_skips", MASTER_COLUMNS["source_skips"]),
+    ]
+
+
 def _user_version(conn: sqlite3.Connection) -> int:
     return conn.execute("PRAGMA user_version").fetchone()[0]
 
@@ -833,11 +868,15 @@ def migrate(conn: sqlite3.Connection, db_path: Path) -> dict:
         return {"from": version, "to": USER_VERSION, "backup": None, "created": True}
     saved = backup(conn, db_path, label=f"before-v{USER_VERSION}")
     deleted = prune_backups(db_path)  # only after the new one verified
-    if version in (4, 5):
+    if version in (4, 5, 6):
         before = _counts(conn, AUTHOR_TABLES)
 
         def additive(c: sqlite3.Connection) -> list[str]:
-            return [*(_v4_to_v5_script() if version == 4 else []), *_v5_to_v6_script()]
+            return [
+                *(_v4_to_v5_script() if version == 4 else []),
+                *(_v5_to_v6_script() if version <= 5 else []),
+                *_v6_to_v7_script(),
+            ]
 
         if not _run_in_transaction(conn, additive, from_version=version, to_version=USER_VERSION):
             return {

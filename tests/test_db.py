@@ -101,8 +101,8 @@ def _verdict(store: Store, vid=VID, key="amb-0001", verdict="Dharma", sha=HASH_A
 
 
 def test_fresh_file_gets_user_version(database, dbpath):
-    # storage-schema.md: "The schema version is PRAGMA user_version (db.USER_VERSION, now 6)"
-    assert db.USER_VERSION == 6
+    # storage-schema.md: "The schema version is PRAGMA user_version (db.USER_VERSION, now 7)"
+    assert db.USER_VERSION == 7
     assert database.one("PRAGMA user_version")[0] == db.USER_VERSION
     raw = sqlite3.connect(dbpath)
     try:
@@ -915,7 +915,7 @@ def test_v1_backup_is_verified_and_complete(migrated, dbpath):
     files = [p for p in bdir.iterdir() if p.is_file() and p.suffix == ".sqlite"]
     assert len(files) == 1
     b = files[0]
-    assert b.name.startswith("transcript-") and b.name.endswith("-before-v6.sqlite")
+    assert b.name.startswith("transcript-") and b.name.endswith("-before-v7.sqlite")
     assert _rows(b, "PRAGMA integrity_check")[0][0] == "ok"
     assert _rows(b, RV_SQL_V1) == original_rv
     assert _rows(b, "SELECT COUNT(*) FROM speaker_verdicts")[0][0] == 1
@@ -1212,6 +1212,10 @@ def test_master_data_logs_every_column_but_the_identity_ones():
             expected = [c for c in expected if c not in ("corpus_id", "source_id")]
         if table == "review_answers":
             expected = [c for c in expected if c not in ("corpus_id", "card_id")]
+        if table == "feeds":
+            expected = [c for c in expected if c != "feed_id"]
+        if table == "source_skips":
+            expected = [c for c in expected if c != "source_id"]
         assert sorted(logged) == sorted(expected), table
 
 
