@@ -11,6 +11,9 @@ from corpuslm.speaker_map import bee_scheme
 from corpuslm.store import Store
 
 OWNER = "Quill"
+# What a Bee-shaped source offers as protected vocabulary: its summary's section headings and one
+# conversation-specific heading. None of them is a name.
+SUMMARY_HEADINGS = ["Summary", "Key Takeaways", "Action Items", "Atmosphere", "Kiln Day"]
 BEE_SOURCE = "bee:me:2026-10-03T09:14:00-07:00"
 SECOND_BEE_SOURCE = "bee:me:2026-10-04T18:02:00-07:00"
 
@@ -85,7 +88,7 @@ def bee_speaker_map(*, unknown_status: str = "NEEDS_AUTHOR", unknown_name: str =
         unknown["anchor"] = "Ren (Ren, are you there?)"
     return {
         "source_id": BEE_SOURCE,
-        "candidates": ["Wren", "Moss"],
+        "candidates": SUMMARY_HEADINGS,
         "roles": {OWNER: {"name": OWNER, "status": "RESOLVED_FROM_METADATA"}, "Unknown": unknown},
     }
 

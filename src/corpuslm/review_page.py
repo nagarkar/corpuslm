@@ -37,6 +37,11 @@ Decisions:
   Enforced by: tests/test_review_page.py::test_a_kind_without_links_gives_time_labels_only.
 - An author's speaker name stays first in the picker and the speaker is not to-do. Enforced by:
   tests/test_review_page.py::test_an_author_named_speaker_is_not_to_do_and_is_listed_first.
+- The speaker picker offers only real names: the label's own, the names the model proposed, the
+  names the source's other labels carry, the kind's (the owner's first name) and the ones the
+  owner picked; never the map's `candidates`, which are the source's protected vocabulary (a
+  title's and a summary's capitalised words). Enforced by:
+  tests/test_review_page.py::test_summary_headings_and_vocabulary_terms_are_never_offered_as_speaker_names.
 - The page script uses the local review server only when `window.claude` is absent; with it, the
   calls are exactly the artifact database's. Enforced by:
   tests/test_review_page_script.py::test_without_window_claude_the_page_saves_to_the_local_server_and_reads_it_back.
@@ -56,12 +61,11 @@ from __future__ import annotations
 import hashlib
 import html
 import json
-import re
 from pathlib import Path
 
 from .files import write_atomic
 from .identity import normalize_span
-from .review import ReviewKind, reading_options
+from .review import ReviewKind, reading_options, speaker_names
 from .store import Store
 from .transcript import loads as transcript_loads
 from .transcript import timestamp
@@ -174,6 +178,7 @@ def page_data(db, sources_directory: Path, corpus_name: str, *, kind: ReviewKind
             g["count"] += 1
         m_path = sources_directory / vid / "speaker_map.json"
         if m_path.exists():
+            picked = store.current_speaker_names(vid)
             m = json.loads(m_path.read_text("utf-8"))
             for role, entry in (m.get("roles") or {}).items():
                 anchor_idx = entry.get("idx")
@@ -182,14 +187,7 @@ def page_data(db, sources_directory: Path, corpus_name: str, *, kind: ReviewKind
                     if isinstance(anchor_idx, int) and anchor_idx < len(segments)
                     else 0.0
                 )
-                names: list[str] = []
-                if entry.get("name"):
-                    names.append(entry["name"])
-                if entry.get("status") == "NEEDS_AUTHOR" and entry.get("anchor"):
-                    names += [n.strip() for n in re.findall(r"([^;(]+) \(", entry["anchor"])]
-                for c in [*(m.get("candidates") or []), *kind.extra_speaker_names(video)]:
-                    if c not in names:
-                        names.append(c)
+                names = speaker_names(entry, m, kind.extra_speaker_names(video), picked.values())
                 if entry.get("status") == "NEEDS_AUTHOR":
                     open_items += 1
                 speakers.append(

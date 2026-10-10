@@ -12,6 +12,7 @@ from review_kinds import (
     LINKED_KIND,
     OWNER,
     SECOND_BEE_SOURCE,
+    SUMMARY_HEADINGS,
     add_corpus_of_bee_sources,
     ambiguity,
     bee_speaker_map,
@@ -95,10 +96,31 @@ def test_the_unknown_speaker_is_an_open_card_with_the_names_heard_and_offered(
     speakers = {c["role"]: c for c in data["cards"] if c["kind"] == "speaker"}
     unknown = speakers["Unknown"]
     assert (unknown["open"], unknown["resolved"], unknown["key"]) == (True, False, "spk-1")
-    assert unknown["names"] == ["Ren", "Wren", "Moss"]
+    assert unknown["names"] == ["Ren", OWNER]
     assert speakers[OWNER]["open"] is False
     assert data["open_items"] == 3  # two ambiguities and the speaker
     assert data["open_cards"] == 2  # one card per span, plus the speaker
+
+
+def test_summary_headings_and_vocabulary_terms_are_never_offered_as_speaker_names(
+    database, sources_directory, corpus
+):
+    data = build(database, sources_directory)
+    offered = {name for c in data["cards"] if c["kind"] == "speaker" for name in c["names"]}
+    assert offered == {"Ren", OWNER}
+    assert not offered & set(SUMMARY_HEADINGS)
+
+
+def test_a_name_the_owner_already_picked_is_offered_for_the_other_labels(
+    database, sources_directory, corpus
+):
+    Store(database).append_speaker_verdict(
+        source_id=BEE_SOURCE, role="Speaker 2", name="Fern", created_by="test"
+    )
+    unknown = next(
+        c for c in build(database, sources_directory)["cards"] if c.get("role") == "Unknown"
+    )
+    assert unknown["names"] == ["Ren", OWNER, "Fern"]
 
 
 def test_a_kind_can_add_names_to_the_speaker_picker(database, sources_directory, corpus):
@@ -108,7 +130,7 @@ def test_a_kind_can_add_names_to_the_speaker_picker(database, sources_directory,
     unknown = next(
         c for c in build(database, sources_directory, kind)["cards"] if c.get("role") == "Unknown"
     )
-    assert unknown["names"] == ["Ren", "Wren", "Moss", "Fern"]
+    assert unknown["names"] == ["Ren", OWNER, "Moss", "Fern"]
 
 
 def test_an_author_named_speaker_is_not_to_do_and_is_listed_first(
