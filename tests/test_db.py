@@ -101,8 +101,8 @@ def _verdict(store: Store, vid=VID, key="amb-0001", verdict="Dharma", sha=HASH_A
 
 
 def test_fresh_file_gets_user_version(database, dbpath):
-    # storage-schema.md: "The schema version is PRAGMA user_version (db.USER_VERSION, now 7)"
-    assert db.USER_VERSION == 7
+    # storage-schema.md: "The schema version is PRAGMA user_version (db.USER_VERSION, now 8)"
+    assert db.USER_VERSION == 8
     assert database.one("PRAGMA user_version")[0] == db.USER_VERSION
     raw = sqlite3.connect(dbpath)
     try:
@@ -119,7 +119,7 @@ def test_every_table_is_strict(database):
     checked = 0
     for r in rows:
         name, sql = r[0], r[1] or ""
-        if sql.upper().startswith("CREATE VIRTUAL TABLE") or name.startswith("segments_fts"):
+        if sql.upper().startswith("CREATE VIRTUAL TABLE") or "segments_fts" in name:
             continue  # FTS5 index and its shadow tables are owned by SQLite
         assert "STRICT" in sql.upper(), f"{name} is not STRICT"
         checked += 1
@@ -143,6 +143,7 @@ def test_every_table_is_strict(database):
         "change_log",
         "locks",
         "segments",
+        "cleaned_segments",
     ):
         assert t in names, t
     assert checked >= 18
@@ -915,7 +916,7 @@ def test_v1_backup_is_verified_and_complete(migrated, dbpath):
     files = [p for p in bdir.iterdir() if p.is_file() and p.suffix == ".sqlite"]
     assert len(files) == 1
     b = files[0]
-    assert b.name.startswith("transcript-") and b.name.endswith("-before-v7.sqlite")
+    assert b.name.startswith("transcript-") and b.name.endswith("-before-v8.sqlite")
     assert _rows(b, "PRAGMA integrity_check")[0][0] == "ok"
     assert _rows(b, RV_SQL_V1) == original_rv
     assert _rows(b, "SELECT COUNT(*) FROM speaker_verdicts")[0][0] == 1
@@ -1147,7 +1148,7 @@ def test_the_schema_document_mirrors_the_code():
         name: kind
         for name, kind in conn.execute(
             "SELECT name, type FROM sqlite_master WHERE type IN ('table', 'view') "
-            "AND name NOT LIKE 'segments_fts%'"
+            "AND name NOT LIKE '%segments_fts%'"
         )
     }
     doc = _doc_sections()
@@ -1167,6 +1168,7 @@ def test_the_schema_document_mirrors_the_code():
         "model_suggestions": "derived",
         "model_suggestion_candidates": "derived",
         "segments": "derived",
+        "cleaned_segments": "derived",
         "locks": "coordination",
     }
     for name, kind in objects.items():

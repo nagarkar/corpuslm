@@ -11,7 +11,9 @@ record the artifact (`Store.record_artifact`). `canonical_sha256`, `write_if_cha
 builders too. After the model clean-up (`corpuslm.model_chain`, which calls a model) the
 deterministic builders here finish the chain: `build_speaker_map` (who each label is),
 `publish_best` (the best transcript with the speaker map applied), `build_subtitles` (the
-subtitle file) and `build_search_index` (the source's rows in the full-text index).
+subtitle file) and `build_search_index` (the source's rows in the full-text index: the table of
+searched segments, or, for a tool whose raw lines live in `segments`, the separate table of
+cleaned ones).
 
 What a tool keeps: the segments' origin (a YouTube caption file, Bee's stored segments), the
 vocabulary's origin (video metadata, a conversation's title), the names it stores
@@ -37,6 +39,10 @@ Decisions:
   hash names the transcript they were built from, an unchanged input builds nothing, and the
   stored names are the tool's. Enforced by:
   tests/test_chain.py::test_the_export_builders_build_once_and_then_nothing.
+- A tool whose raw lines live in `segments` (beelm) names `cleaned_segments` as its search table:
+  `build_search_index` then writes the cleaned rows and leaves `segments` as it found them; a
+  tool that names nothing keeps writing `segments`. Enforced by:
+  tests/test_chain.py::test_a_cleaned_search_table_is_filled_and_the_raw_segments_are_not_touched.
 - `publish_best` writes the best transcript available (the first node of the preference that
   is built, with the speaker map applied) only when its bytes change. Enforced by:
   tests/test_chain.py::test_publish_best_takes_the_first_built_node_and_applies_the_speaker_map.
@@ -68,6 +74,7 @@ from .speaker_map import SpeakerScheme
 from .store import Store
 
 __all__ = [
+    "SEARCH_TABLES",
     "Built",
     "Chain",
     "ChainShape",
@@ -80,12 +87,17 @@ __all__ = [
     "build_speaker_map",
     "build_spell_fix",
     "build_subtitles",
+    "best_transcript",
     "canonical_sha256",
     "is_current",
     "publish_best",
     "record",
+    "transcript_sha256",
     "write_if_changed",
 ]
+
+
+SEARCH_TABLES = ("segments", "cleaned_segments")
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,10 +119,20 @@ class ChainShape:
     speaker_map: str = "speaker_map"
     subtitles: str = "subtitles"
     search_index: str = "search_index"
+    # The table the search index rows go to (`SEARCH_TABLES`): `segments` when the transcript is
+    # what the tool searches (ytlm), `cleaned_segments` when the tool's raw lines live in
+    # `segments` and are never overwritten (beelm).
+    search_table: str = "segments"
     model_cleanup_step: str = "corpuslm.model_cleanup/1"
     speaker_map_step: str = "corpuslm.speaker_map/1"
     # The words the model prompt calls one source of this kind ("a Bee conversation").
     source_label: str = "a recording"
+
+    def __post_init__(self) -> None:
+        if self.search_table not in SEARCH_TABLES:
+            raise ValueError(
+                f"search_table must be one of {', '.join(SEARCH_TABLES)}, not {self.search_table!r}"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -394,6 +416,31 @@ def build_speaker_map(
     return built
 
 
+def best_transcript(
+    chain: Chain,
+    source: str,
+    speaker_map: dict | None,
+    *,
+    preference: tuple[str, ...],
+    scheme: SpeakerScheme,
+) -> dict:
+    """The best transcript available: the first node of `preference` whose artifact is built (or
+    stale) and whose file exists, with the speaker map applied. Reads only; writes nothing."""
+    for node in preference:
+        row = chain.store.artifact(source, node)
+        if row and row["state"] in ("built", "stale") and chain.path(source, node).exists():
+            document = chain.load(source, node)
+            if speaker_map:
+                document = speaker_map_module.apply_map(document, speaker_map, scheme=scheme)
+            return document
+    raise schemas.SchemaError("no transcript artifact is built for this video")
+
+
+def transcript_sha256(chain: Chain, document: dict) -> str:
+    """The sha256 of the bytes a published transcript of `document` has, without writing it."""
+    return _sha256_bytes(chain.dumps(document))
+
+
 def publish_best(
     chain: Chain,
     source: str,
@@ -402,21 +449,12 @@ def publish_best(
     preference: tuple[str, ...],
     scheme: SpeakerScheme,
 ) -> tuple[dict, str]:
-    """The best transcript available: the first node of `preference` whose artifact is built (or
-    stale) and whose file exists, with the speaker map applied. Written as the source's
-    `transcript` file only when its bytes change; the sha of those bytes is what the subtitle
-    file, the search index and a note depend on, so a rename re-fires exactly them."""
-    for node in preference:
-        row = chain.store.artifact(source, node)
-        if row and row["state"] in ("built", "stale") and chain.path(source, node).exists():
-            document = chain.load(source, node)
-            if speaker_map:
-                document = speaker_map_module.apply_map(document, speaker_map, scheme=scheme)
-            path = chain.kind.workspace_dir(source) / chain.kind.export_file_name(
-                source, "transcript"
-            )
-            return document, write_if_changed(path, chain.dumps(document))
-    raise schemas.SchemaError("no transcript artifact is built for this video")
+    """The best transcript available (`best_transcript`), written as the source's `transcript`
+    file only when its bytes change; the sha of those bytes is what the subtitle file, the search
+    index and a note depend on, so a rename re-fires exactly them."""
+    document = best_transcript(chain, source, speaker_map, preference=preference, scheme=scheme)
+    path = chain.kind.workspace_dir(source) / chain.kind.export_file_name(source, "transcript")
+    return document, write_if_changed(path, chain.dumps(document))
 
 
 def build_subtitles(
@@ -460,17 +498,24 @@ def build_search_index(
     *,
     report: Report | None = None,
 ) -> bool:
-    """The source's rows in the full-text index (`Store.replace_segments`), rebuilt whole when
-    the published transcript changed. True when this call built it.
+    """The source's rows in the full-text index, rebuilt whole when the published transcript
+    changed. True when this call built it.
 
-    The index rows are the `segments` table, which a tool whose raw segments live in that same
-    table (beelm's) must not overwrite with cleaned text; such a tool does not call this."""
+    The rows go to the table the shape names (`ChainShape.search_table`): `segments` for a tool
+    whose transcript is what it searches, `cleaned_segments` for a tool whose raw lines live in
+    `segments` and are never overwritten (beelm)."""
     shape = chain.kind.shape
     inputs = {"transcript": transcript_sha}
-    if is_current(chain.store, source, shape.search_index, inputs):
+    cleaned = shape.search_table == "cleaned_segments"
+    if is_current(chain.store, source, shape.search_index, inputs) and (
+        not cleaned or chain.store.cleaned_segment_count(source) == len(document["segments"])
+    ):
         return False
     with chain.store.transaction():
-        chain.store.replace_segments(source, document["segments"])
+        if cleaned:
+            chain.store.replace_cleaned_segments(source, document["segments"])
+        else:
+            chain.store.replace_segments(source, document["segments"])
         record(
             chain.store,
             source,
