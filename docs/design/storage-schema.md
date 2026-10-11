@@ -213,6 +213,11 @@ transaction. Neither new table is an author table, so the author counts are unch
 construction and still checked. `beelm corpus index` fills them from the transcripts already built
 (no model).
 
+Proof of the v7 → v8 step on a copy of the real database (2026-10-10): the backup was written first and
+verified, the only tables that changed were the two new ones (both appeared empty), every other
+table kept its row count (464,676 rows in all, 223,589 of them raw segments), and `integrity_check`
+read `ok`.
+
 Proof of the v6 → v7 step on a copy of the real database (2026-10-10): the backup was written first
 and verified, the only tables that changed were the two new ones (both appeared empty), every
 other table kept its row count (229,340 rows in all), and `integrity_check` read `ok`.
