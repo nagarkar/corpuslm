@@ -115,7 +115,7 @@ would invalidate every artifact hash).
 
 `corpus_members` no longer stores a status. The view `vw_corpus_members`
 derives it from the video: `added` → `queued`, `ingested` → `ingested`,
-anything else → `failed`. The video's `status` and `last_error` are the one
+`ignored` → `ignored`, anything else → `failed`. The video's `status` and `last_error` are the one
 record of what happened.
 
 **Why:** architecture.md, "Surfaces and stores": state never lives in two
@@ -167,7 +167,7 @@ keep lineage.
 
 ## Migrations: user_version, a verified backup, one transaction (2026-10-03)
 
-The schema version is `PRAGMA user_version` (`db.USER_VERSION`, now 8; a
+The schema version is `PRAGMA user_version` (`db.USER_VERSION`, now 9; a
 database made before it was tracked reads 0 and has the v1 schema, frozen
 in `tests/fixtures/schema_v1.sql`). On open, `db.migrate`:
 
@@ -212,6 +212,22 @@ sets `user_version` 8 inside it; an older additive database takes the earlier st
 transaction. Neither new table is an owner table, so the owner counts are unchanged by
 construction and still checked. `beelm corpus index` fills them from the transcripts already built
 (no model).
+
+The v8 → v9 step rebuilds `sources`, because a SQLite `CHECK` cannot be altered in place and the
+`status` check now allows `ignored`. After the verified backup, in one transaction with foreign keys
+off: every trigger and view is dropped (SQLite will not rename a table while one names it), a table
+`sources_v9` is created from `db.SOURCES_TABLE`, every row is copied by column name (so the column
+order becomes the fresh schema's), `sources` is dropped, `sources_v9` is renamed `sources`, and
+`SCHEMA` recreates the triggers and views (the copy writes no change-log rows).
+`PRAGMA foreign_key_check` runs before the commit; then `integrity_check` and the row count of
+every table (the author tables and every other table included) are compared with the counts taken
+before. An older additive database takes the earlier steps in the same transaction. No row changes
+its status: `ignored` is only ever set by a tool afterwards.
+
+Proof of the v8 → v9 step on a copy of the real database (2026-10-11, 299 sources: 197 YouTube,
+102 Bee): the backup was written first and verified, every one of the 807,544 rows in every table
+kept its table's count, `foreign_key_check` was empty, `integrity_check` read `ok`, the triggers
+and views were the same set as before, and every source kept its status (all 299 `ingested`).
 
 Proof of the v7 → v8 step on a copy of the real database (2026-10-10): the backup was written first and
 verified, the only tables that changed were the two new ones (both appeared empty), every other
@@ -280,7 +296,7 @@ History: master.
 | caption_kind | TEXT | no | one of ``, `manual`, `generated`, `none`, `unknown` |
 | metadata_source | TEXT | no | one of ``, `dataapi`, `oembed` |
 | has_caption_track | INTEGER | yes | 0 or 1; NULL when no provider said |
-| status | TEXT | no | one of `added`, `ingested`, `no_captions`, `unavailable`, `failed` |
+| status | TEXT | no | one of `added`, `ingested`, `no_captions`, `unavailable`, `failed`, `ignored` (the owner set it aside: kept whole, excluded from everything the owner works from) |
 | fetcher | TEXT | no | the caption fetcher that produced the transcript |
 | transcript_state | TEXT | no | one of ``, `RAW`, `DETERMINISTIC-ONLY`, `LLM-CLEANED` |
 | last_error | TEXT | no | the last failure, `''` after a success |
@@ -653,12 +669,13 @@ second), never the text.
 | source_id | TEXT | | |
 | reason | TEXT | | |
 | created_at | TEXT | | |
-| member_status | | | `queued`, `ingested` or `failed`, from the video's status |
+| member_status | | | `queued`, `ingested`, `failed` or `ignored`, from the video's status |
 
 ### `vw_search_segments` (view)
 
 The search read path (FTS index → segment → video) flattened; search
-joins `segments_fts` to it and filters a corpus with `EXISTS`.
+joins `segments_fts` to it and filters a corpus with `EXISTS`. A video whose status is `ignored`
+has no row here, so it has no search hits; its segments stay stored.
 
 | column | type | null | meaning |
 |---|---|---|---|

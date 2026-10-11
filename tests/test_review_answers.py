@@ -109,10 +109,10 @@ def test_a_version_4_database_gains_the_table_after_a_verified_backup(tmp_path):
 
     opened = db.Database(path)
     try:
-        assert opened.migration["from"] == 4 and opened.migration["to"] == db.USER_VERSION == 8
+        assert opened.migration["from"] == 4 and opened.migration["to"] == db.USER_VERSION == 9
         backup = opened.migration["backup"]
-        assert backup.endswith("-before-v8.sqlite")
-        assert opened.one("PRAGMA user_version")[0] == 8
+        assert backup.endswith("-before-v9.sqlite")
+        assert opened.one("PRAGMA user_version")[0] == 9
         assert opened.one("SELECT COUNT(*) FROM model_suggestions")[0] == 0
         assert opened.one("PRAGMA integrity_check")[0] == "ok"
         assert opened.one("SELECT COUNT(*) FROM review_answers")[0] == 0

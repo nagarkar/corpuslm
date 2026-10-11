@@ -103,8 +103,8 @@ def _verdict(
 
 
 def test_fresh_file_gets_user_version(database, dbpath):
-    # storage-schema.md: "The schema version is PRAGMA user_version (db.USER_VERSION, now 8)"
-    assert db.USER_VERSION == 8
+    # storage-schema.md: "The schema version is PRAGMA user_version (db.USER_VERSION, now 9)"
+    assert db.USER_VERSION == 9
     assert database.one("PRAGMA user_version")[0] == db.USER_VERSION
     raw = sqlite3.connect(dbpath)
     try:
@@ -929,7 +929,7 @@ def test_v1_backup_is_verified_and_complete(migrated, dbpath):
     files = [p for p in bdir.iterdir() if p.is_file() and p.suffix == ".sqlite"]
     assert len(files) == 1
     b = files[0]
-    assert b.name.startswith("transcript-") and b.name.endswith("-before-v8.sqlite")
+    assert b.name.startswith("transcript-") and b.name.endswith("-before-v9.sqlite")
     assert _rows(b, "PRAGMA integrity_check")[0][0] == "ok"
     assert _rows(b, RV_SQL_V1) == original_rv
     assert _rows(b, "SELECT COUNT(*) FROM speaker_verdicts")[0][0] == 1

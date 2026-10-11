@@ -40,7 +40,7 @@ from .identity import canonical_sha256  # noqa: F401  (re-exported: db.canonical
 
 # PRAGMA user_version of the schema below. 0 is a database made before the
 # version was tracked (the v1 schema, frozen in tests/fixtures/schema_v1.sql).
-USER_VERSION = 8
+USER_VERSION = 9
 
 BACKUPS_DIRNAME = "backups"
 # How many verified backups `<workspace>/backups/` keeps (owner ruling
@@ -153,8 +153,9 @@ AFTER UPDATE ON cleaned_segments BEGIN
         VALUES (new.rowid, new.text, new.source_id);
 END;"""
 
-TABLES = f"""
-CREATE TABLE IF NOT EXISTS sources (
+# The `sources` table, a constant of its own: the v8 -> v9 step rebuilds it under another name
+# (a CHECK cannot be altered in place).
+SOURCES_TABLE = f"""CREATE TABLE IF NOT EXISTS sources (
     {KNOWLEDGE_OBJECT_COLUMNS},
     kind TEXT NOT NULL DEFAULT 'youtube' CHECK (kind IN ('youtube', 'bee')),
     locator TEXT NOT NULL,
@@ -173,13 +174,17 @@ CREATE TABLE IF NOT EXISTS sources (
         CHECK (metadata_source IN ('', 'dataapi', 'oembed')),
     has_caption_track INTEGER CHECK (has_caption_track IS NULL OR has_caption_track IN (0, 1)),
     status TEXT NOT NULL DEFAULT 'added'
-        CHECK (status IN ('added', 'ingested', 'no_captions', 'unavailable', 'failed')),
+        CHECK (status IN ('added', 'ingested', 'no_captions', 'unavailable', 'failed', 'ignored')),
     fetcher TEXT NOT NULL DEFAULT '',
     transcript_state TEXT NOT NULL DEFAULT ''
         CHECK (transcript_state IN ('', 'RAW', 'DETERMINISTIC-ONLY', 'LLM-CLEANED')),
     last_error TEXT NOT NULL DEFAULT '',
     perspective TEXT
 ) STRICT;
+"""
+
+TABLES = f"""
+{SOURCES_TABLE}
 
 CREATE TABLE IF NOT EXISTS source_tags (
     {KNOWLEDGE_OBJECT_COLUMNS},
@@ -461,13 +466,14 @@ VIEWS = """
 CREATE VIEW IF NOT EXISTS vw_corpus_members AS
 SELECT m.id, m.corpus_id, m.source_id, m.reason, m.created_at,
        CASE v.status WHEN 'added' THEN 'queued' WHEN 'ingested' THEN 'ingested'
-                     ELSE 'failed' END AS member_status
+                     WHEN 'ignored' THEN 'ignored' ELSE 'failed' END AS member_status
 FROM corpus_members m JOIN sources v ON v.id = m.source_id;
 
 CREATE VIEW IF NOT EXISTS vw_search_segments AS
 SELECT s.rowid AS segment_rowid, s.source_id, s.position, s.start_seconds, s.end_seconds,
        s.speaker, s.text, v.title
-FROM segments s JOIN sources v ON v.id = s.source_id;
+FROM segments s JOIN sources v ON v.id = s.source_id
+WHERE v.status <> 'ignored';
 
 CREATE VIEW IF NOT EXISTS vw_current_review_verdicts AS
 SELECT * FROM review_verdicts
@@ -732,6 +738,40 @@ def _v7_to_v8_script() -> list[str]:
     return [*_statements(CLEANED_SEGMENTS_TABLES), *_statements(CLEANED_SEGMENTS_TRIGGERS)]
 
 
+def _v8_to_v9_script(conn: sqlite3.Connection) -> list[str]:
+    """Rebuild `sources` so its `status` CHECK allows `ignored` (a CHECK cannot be altered in
+    place): a new table under another name, every row copied by column name, the old table
+    dropped, the new one renamed. Triggers and views are dropped first and rebuilt from SCHEMA,
+    because SQLite refuses to rename while a trigger or view names a table that is gone. The
+    caller runs this inside one transaction with foreign keys off and checks `foreign_key_check`
+    before COMMIT."""
+    drops = [
+        f"DROP TRIGGER IF EXISTS {name};"
+        for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type = 'trigger'")
+    ]
+    drops += [
+        f"DROP VIEW IF EXISTS {name};"
+        for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type = 'view'")
+    ]
+    made = SOURCES_TABLE.replace(
+        "CREATE TABLE IF NOT EXISTS sources (", "CREATE TABLE sources_v9 ("
+    )
+    scratch = sqlite3.connect(":memory:")
+    try:
+        scratch.execute(made)
+        columns = ", ".join(r[1] for r in scratch.execute("PRAGMA table_info(sources_v9)"))
+    finally:
+        scratch.close()
+    return [
+        *drops,
+        made,
+        f"INSERT INTO sources_v9 ({columns}) SELECT {columns} FROM sources ORDER BY rowid;",
+        "DROP TABLE sources;",
+        "ALTER TABLE sources_v9 RENAME TO sources;",
+        *_statements(SCHEMA),
+    ]
+
+
 def _user_version(conn: sqlite3.Connection) -> int:
     return conn.execute("PRAGMA user_version").fetchone()[0]
 
@@ -917,15 +957,22 @@ def migrate(conn: sqlite3.Connection, db_path: Path) -> dict:
         return {"from": version, "to": USER_VERSION, "backup": None, "created": True}
     saved = backup(conn, db_path, label=f"before-v{USER_VERSION}")
     deleted = prune_backups(db_path)  # only after the new one verified
-    if version in (4, 5, 6, 7):
-        before = _counts(conn, OWNER_TABLES)
+    if version in (4, 5, 6, 7, 8):
+        # The v8 -> v9 step rebuilds `sources`, so it checks every table, not only the owner's.
+        watched = (
+            sorted(t for t in _tables(conn) if not t.startswith("sqlite_"))
+            if version == 8
+            else OWNER_TABLES
+        )
+        before = _counts(conn, watched)
 
         def additive(c: sqlite3.Connection) -> list[str]:
             return [
                 *(_v4_to_v5_script() if version == 4 else []),
                 *(_v5_to_v6_script() if version <= 5 else []),
                 *(_v6_to_v7_script() if version <= 6 else []),
-                *_v7_to_v8_script(),
+                *(_v7_to_v8_script() if version <= 7 else []),
+                *_v8_to_v9_script(c),
             ]
 
         if not _run_in_transaction(conn, additive, from_version=version, to_version=USER_VERSION):
@@ -937,7 +984,7 @@ def migrate(conn: sqlite3.Connection, db_path: Path) -> dict:
                 "by": "another process",
             }
         check = conn.execute("PRAGMA integrity_check").fetchone()[0]
-        after = _counts(conn, OWNER_TABLES)
+        after = _counts(conn, watched)
         if check != "ok" or any(before[t] != after[t] for t in before):
             raise MigrationFailed(
                 f"{db_path} after migration: integrity_check {check}; owner rows {before} -> "

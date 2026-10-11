@@ -22,7 +22,13 @@ Terms:
   `corpus_perspectives`). Plural `corpora`.
 - **member**: a source in a corpus, a row of `corpus_members` with a reason (`author` (stored
   name for the owner), `discovered`, `consumer`); the member's status (`discovered`, `queued`,
-  `ingested`, `failed`) is derived in the view `vw_corpus_members`.
+  `ingested`, `failed`, `ignored`) is derived in the view `vw_corpus_members`.
+- **ignored**: a source whose status is `ignored`: the owner set it aside. It stays in the catalog
+  (a feed scan never offers it again) and keeps its stored files, segments and artifacts, but is
+  excluded everywhere the owner works from: never built, never pending or billable, no review
+  cards, no open items, no search hits, no member listing, no AI cleanup; corpus boards count it
+  apart (`ignored`) and leave it out of the member total. Reversible: the tool returns it to
+  `ingested` when it has a built transcript, else `added`.
 - **segment**: one timed line of a transcript. `segments` keeps the raw lines, never overwritten;
   `cleaned_segments` keeps the cleaned lines the search index reads (view `vw_search_segments`).
 - **artifact**: a file one node of the pipeline built for a source or corpus, a row of
