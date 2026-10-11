@@ -92,6 +92,7 @@ __all__ = [
     "is_current",
     "publish_best",
     "record",
+    "search_index_current",
     "transcript_sha256",
     "write_if_changed",
 ]
@@ -490,6 +491,18 @@ def build_subtitles(
     return True
 
 
+def search_index_current(chain: Chain, source: str, document: dict, transcript_sha: str) -> bool:
+    """Whether the source's search index rows are built from this published transcript. Reads only.
+    For the cleaned table the rows themselves are counted too, so an index whose rows are gone is
+    rebuilt rather than trusted."""
+    shape = chain.kind.shape
+    if not is_current(chain.store, source, shape.search_index, {"transcript": transcript_sha}):
+        return False
+    if shape.search_table == "cleaned_segments":
+        return chain.store.cleaned_segment_count(source) == len(document["segments"])
+    return True
+
+
 def build_search_index(
     chain: Chain,
     source: str,
@@ -507,9 +520,7 @@ def build_search_index(
     shape = chain.kind.shape
     inputs = {"transcript": transcript_sha}
     cleaned = shape.search_table == "cleaned_segments"
-    if is_current(chain.store, source, shape.search_index, inputs) and (
-        not cleaned or chain.store.cleaned_segment_count(source) == len(document["segments"])
-    ):
+    if search_index_current(chain, source, document, transcript_sha):
         return False
     with chain.store.transaction():
         if cleaned:
