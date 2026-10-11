@@ -130,7 +130,10 @@ def test_a_cleaned_search_table_is_filled_and_the_raw_segments_are_not_touched(s
     assert store.cleaned_segment_count(SOURCE) == 3
     assert [s["text"] for s in store.segments(SOURCE)] == [s["text"] for s in SEGMENTS]
     assert not chain.build_search_index(c, SOURCE, document, "sha-1")  # unchanged: nothing built
+    assert chain.search_index_current(c, SOURCE, document, "sha-1")
+    assert not chain.search_index_current(c, SOURCE, document, "sha-2")
     store.delete_cleaned_segments(SOURCE)  # the rows are gone: the index is rebuilt, not trusted
+    assert not chain.search_index_current(c, SOURCE, document, "sha-1")
     assert chain.build_search_index(c, SOURCE, document, "sha-1")
     assert chain.build_search_index(c, SOURCE, {**document, "segments": CLEANED[:1]}, "sha-2")
     assert store.cleaned_segment_count(SOURCE) == 1
