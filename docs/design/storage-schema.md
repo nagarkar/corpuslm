@@ -421,6 +421,11 @@ History: master.
 client that added it, no new value, `created_by` the client that removed it) and deletes the row.
 The video and its other memberships are left alone.
 
+`Store.remove_feed` stops tracking a feed: in one transaction the feed id leaves the `feeds` list of
+every source that carries it (the list writer logs each removal), the skips made through the feed
+are deleted, and the feed row is deleted; each deleted row leaves a `change_log` row (`column_name`
+`row`, old value the row's columns, no new value). Sources, segments and memberships are kept.
+
 A merge (`Store.merge_corpora`) moves a membership by changing its `corpus_id` and
 setting `metadata.merged_from` to the folded corpus's id, so the change log records the
 move. The folded corpus's row, lists and members, whole, are appended to the target

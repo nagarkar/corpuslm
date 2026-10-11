@@ -486,6 +486,52 @@ class Store:
             )
         ]
 
+    def remove_feed(self, feed_id: str, *, created_by: str) -> dict | None:
+        """Stop tracking a feed; None when it was not tracked. In one transaction: the feed id
+        leaves the `feeds` list of every source that carries it (through the same list writer
+        `update_source` uses, so the change log records each removal), the skips made through
+        the feed are deleted, and the feed's own row is deleted. Every source, segment and
+        corpus membership is kept. The deleted rows leave their trail in the change log, one
+        row each with the old value and no new value, written by `created_by`: a deleted
+        master row is never silent. Returns the counts `sources_unstamped` and
+        `skips_removed`."""
+        with self.db.transaction():
+            feed = self.feed(feed_id)
+            if feed is None:
+                return None
+            carriers = self.sources_found_through(feed_id)
+            for source_id in carriers:
+                kept = [f for f in self._source_row(source_id)["feeds"] if f != feed_id]
+                self.update_source(source_id, {"feeds": kept}, created_by=created_by)
+            skips = self.db.all("SELECT * FROM source_skips WHERE feed_id = ?", (feed_id,))
+            for skip in skips:
+                self._log_deleted_row("source_skips", skip, created_by)
+                self.db.execute("DELETE FROM source_skips WHERE id = ?", (skip["id"],))
+            self._log_deleted_row("feeds", feed, created_by)
+            self.db.execute("DELETE FROM feeds WHERE id = ?", (feed["id"],))
+        return {"sources_unstamped": len(carriers), "skips_removed": len(skips)}
+
+    def _log_deleted_row(self, table: str, row, created_by: str) -> None:
+        """One change-log row for a master row about to be deleted: the whole row as the old
+        value (its bookkeeping columns as `added_at` and `added_by`), no new value."""
+        was = {
+            k: row[k]
+            for k in row.keys()
+            if k not in ("id", "version", "created_at", "created_by", "schema_version")
+        } | {"added_at": row["created_at"], "added_by": row["created_by"]}
+        self.db.insert(
+            "change_log",
+            standard_fields("chg", created_by=created_by)
+            | {
+                "table_name": table,
+                "row_id": row["id"],
+                "column_name": "row",
+                "old_value": json.dumps(was, sort_keys=True),
+                "new_value": None,
+                "row_version": row["version"],
+            },
+        )
+
     def skip(self, source_id: str) -> dict | None:
         """The skip in force for a video, or None (never skipped, or lifted)."""
         row = self.db.one(
