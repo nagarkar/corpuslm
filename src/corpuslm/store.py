@@ -762,6 +762,67 @@ class Store:
         args = [match] + ([corpus_id] if corpus_id else []) + ([kind] if kind else []) + [limit]
         return [dict(r) for r in self.db.all(sql, args)]
 
+    # ---- cleaned segments and their search (derived index of a kind whose raw lines stay) ----
+
+    def replace_cleaned_segments(self, source_id: str, segments: Iterable[dict]) -> None:
+        """The cleaned rows of one source, rebuilt whole in one transaction. Same shape as
+        `replace_segments` (JSON names idx, t0, t1); the raw `segments` are never touched."""
+        with self.db.transaction():
+            self.db.execute("DELETE FROM cleaned_segments WHERE source_id = ?", (source_id,))
+            for seg in segments:
+                self.db.execute(
+                    "INSERT INTO cleaned_segments(source_id, position, start_seconds, "
+                    "end_seconds, speaker, text) VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        source_id,
+                        seg["idx"],
+                        seg["t0"],
+                        seg["t1"],
+                        seg.get("speaker", ""),
+                        seg["text"],
+                    ),
+                )
+
+    def delete_cleaned_segments(self, source_id: str) -> int:
+        """Remove one source's cleaned rows (the triggers remove their FTS5 rows)."""
+        return self.db.execute(
+            "DELETE FROM cleaned_segments WHERE source_id = ?", (source_id,)
+        ).rowcount
+
+    def cleaned_segment_count(self, source_id: str | None = None) -> int:
+        """Cleaned rows of one source, or of all."""
+        if source_id is None:
+            return self._row("SELECT COUNT(*) AS n FROM cleaned_segments")["n"]
+        return self._row(
+            "SELECT COUNT(*) AS n FROM cleaned_segments WHERE source_id = ?", (source_id,)
+        )["n"]
+
+    def cleaned_source_ids(self) -> list[str]:
+        """The sources that have cleaned rows, in id order."""
+        return [
+            r["source_id"]
+            for r in self.db.all(
+                "SELECT DISTINCT source_id FROM cleaned_segments ORDER BY source_id"
+            )
+        ]
+
+    def search_cleaned(self, match: str, *, before: str | None = None, limit: int) -> list[dict]:
+        """FTS5 hits over the cleaned segments, best first, as REFERENCES only: the source's id,
+        title and date, and the second the segment starts at. The segment's text is never
+        returned. `before` ('YYYY-MM-DD') keeps sources recorded on an earlier day; a source with
+        no date is left out. Raises sqlite3.OperationalError when `match` is not valid FTS5."""
+        sql = (
+            "SELECT o.id AS source_id, o.title AS title, o.published_at AS published_at, "
+            "c.start_seconds AS start_seconds, bm25(cleaned_segments_fts) AS rank "
+            "FROM cleaned_segments_fts JOIN cleaned_segments c "
+            "ON c.rowid = cleaned_segments_fts.rowid JOIN sources o ON o.id = c.source_id "
+            "WHERE cleaned_segments_fts MATCH ? "
+            + ("AND substr(o.published_at, 1, 10) < ? " if before else "")
+            + "ORDER BY rank, o.id, c.position LIMIT ?"
+        )
+        args = [match] + ([before] if before else []) + [limit]
+        return [dict(r) for r in self.db.all(sql, args)]
+
     # ---- locks (coordination) ---------------------------------------------------
 
     def lock_holder(self, owner: str) -> dict | None:

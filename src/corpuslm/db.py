@@ -40,7 +40,7 @@ from .identity import canonical_sha256  # noqa: F401  (re-exported: db.canonical
 
 # PRAGMA user_version of the schema below. 0 is a database made before the
 # version was tracked (the v1 schema, frozen in tests/fixtures/schema_v1.sql).
-USER_VERSION = 7
+USER_VERSION = 8
 
 BACKUPS_DIRNAME = "backups"
 # How many verified backups `<workspace>/backups/` keeps (owner ruling
@@ -114,6 +114,44 @@ CREATE TABLE IF NOT EXISTS source_skips (
     lifted_at TEXT
 ) STRICT;
 """
+
+# The cleaned transcripts' segments and their full-text index (schema 8): the best transcript of a
+# source whose raw utterances live in `segments` (Bee's), searched without ever overwriting them.
+CLEANED_SEGMENTS_TABLES = """CREATE TABLE IF NOT EXISTS cleaned_segments (
+    rowid INTEGER PRIMARY KEY,
+    source_id TEXT NOT NULL REFERENCES sources(id),
+    position INTEGER NOT NULL CHECK (position >= 0),
+    start_seconds REAL NOT NULL CHECK (start_seconds >= 0),
+    end_seconds REAL NOT NULL CHECK (end_seconds >= start_seconds),
+    speaker TEXT NOT NULL DEFAULT '',
+    text TEXT NOT NULL,
+    UNIQUE (source_id, position)
+) STRICT;
+
+CREATE VIRTUAL TABLE IF NOT EXISTS cleaned_segments_fts USING fts5(
+    text, source_id UNINDEXED,
+    content='cleaned_segments', content_rowid='rowid',
+    tokenize='unicode61'
+);
+"""
+
+CLEANED_SEGMENTS_TRIGGERS = """CREATE TRIGGER IF NOT EXISTS cleaned_segments_ai
+AFTER INSERT ON cleaned_segments BEGIN
+    INSERT INTO cleaned_segments_fts(rowid, text, source_id)
+        VALUES (new.rowid, new.text, new.source_id);
+END;
+CREATE TRIGGER IF NOT EXISTS cleaned_segments_ad
+AFTER DELETE ON cleaned_segments BEGIN
+    INSERT INTO cleaned_segments_fts(cleaned_segments_fts, rowid, text, source_id)
+        VALUES ('delete', old.rowid, old.text, old.source_id);
+END;
+CREATE TRIGGER IF NOT EXISTS cleaned_segments_au
+AFTER UPDATE ON cleaned_segments BEGIN
+    INSERT INTO cleaned_segments_fts(cleaned_segments_fts, rowid, text, source_id)
+        VALUES ('delete', old.rowid, old.text, old.source_id);
+    INSERT INTO cleaned_segments_fts(rowid, text, source_id)
+        VALUES (new.rowid, new.text, new.source_id);
+END;"""
 
 TABLES = f"""
 CREATE TABLE IF NOT EXISTS sources (
@@ -268,6 +306,7 @@ CREATE TABLE IF NOT EXISTS corrections (
 {REVIEW_ANSWERS_TABLE}
 {MODEL_SUGGESTIONS_TABLES}
 {FEEDS_TABLES}
+{CLEANED_SEGMENTS_TABLES}
 CREATE TABLE IF NOT EXISTS runs (
     {KNOWLEDGE_OBJECT_COLUMNS},
     scope TEXT NOT NULL,
@@ -414,6 +453,7 @@ CREATE TRIGGER IF NOT EXISTS segments_au AFTER UPDATE ON segments BEGIN
     INSERT INTO segments_fts(rowid, text, source_id) VALUES (new.rowid, new.text, new.source_id);
 END;"""
     )
+    out.append(CLEANED_SEGMENTS_TRIGGERS)
     return "\n".join(out)
 
 
@@ -683,6 +723,12 @@ def _v6_to_v7_script() -> list[str]:
     ]
 
 
+def _v7_to_v8_script() -> list[str]:
+    """Additive: the cleaned segments table, its full-text index and its triggers (both empty;
+    `beelm corpus index` fills them from the transcripts already built)."""
+    return [*_statements(CLEANED_SEGMENTS_TABLES), *_statements(CLEANED_SEGMENTS_TRIGGERS)]
+
+
 def _user_version(conn: sqlite3.Connection) -> int:
     return conn.execute("PRAGMA user_version").fetchone()[0]
 
@@ -868,14 +914,15 @@ def migrate(conn: sqlite3.Connection, db_path: Path) -> dict:
         return {"from": version, "to": USER_VERSION, "backup": None, "created": True}
     saved = backup(conn, db_path, label=f"before-v{USER_VERSION}")
     deleted = prune_backups(db_path)  # only after the new one verified
-    if version in (4, 5, 6):
+    if version in (4, 5, 6, 7):
         before = _counts(conn, AUTHOR_TABLES)
 
         def additive(c: sqlite3.Connection) -> list[str]:
             return [
                 *(_v4_to_v5_script() if version == 4 else []),
                 *(_v5_to_v6_script() if version <= 5 else []),
-                *_v6_to_v7_script(),
+                *(_v6_to_v7_script() if version <= 6 else []),
+                *_v7_to_v8_script(),
             ]
 
         if not _run_in_transaction(conn, additive, from_version=version, to_version=USER_VERSION):
@@ -1038,7 +1085,8 @@ def inspect(db_path: Path) -> dict:
             r[0]
             for r in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table' "
-                "AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'segments_fts_%' ORDER BY name"
+                "AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'segments_fts_%' "
+                "AND name NOT LIKE 'cleaned_segments_fts_%' ORDER BY name"
             )
         ]
         return {

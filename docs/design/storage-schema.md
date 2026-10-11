@@ -131,7 +131,7 @@ places. The stored copy could disagree (a metadata failure left members
 | decisions | `review_verdicts`, `speaker_verdicts`, `corrections` | append-only (a trigger aborts UPDATE and DELETE); an answer given again or changed is a new row; the newest row per slot is in force (`vw_current_*`) |
 | evidence | `fetch_attempts`, `change_log` | append-only |
 | runs | `runs` | one row per pipeline run (`ytlm run`), opened `running` and closed once as `ok` or `error` |
-| derived state | `artifacts`, `segments`, `segments_fts`, `model_suggestions`, `model_suggestion_candidates` | rebuilt from files; no history |
+| derived state | `artifacts`, `segments`, `segments_fts`, `cleaned_segments`, `cleaned_segments_fts`, `model_suggestions`, `model_suggestion_candidates` | rebuilt from files; no history |
 | coordination | `locks` | deleted when released; no history |
 
 A verdict that lands again unchanged (a re-run `review apply`) adds no
@@ -167,7 +167,7 @@ keep lineage.
 
 ## Migrations: user_version, a verified backup, one transaction (2026-10-03)
 
-The schema version is `PRAGMA user_version` (`db.USER_VERSION`, now 7; a
+The schema version is `PRAGMA user_version` (`db.USER_VERSION`, now 8; a
 database made before it was tracked reads 0 and has the v1 schema, frozen
 in `tests/fixtures/schema_v1.sql`). On open, `db.migrate`:
 
@@ -206,6 +206,18 @@ The v6 → v7 step is additive too: after the verified backup it creates `feeds`
 it; a v4 or v5 database takes the earlier additive steps in the same transaction. Neither new table
 is an author table, so the author counts are unchanged by construction and still checked.
 
+The v7 → v8 step is additive too: after the verified backup it creates `cleaned_segments`, its FTS5 index
+`cleaned_segments_fts` and the three triggers that keep them in step (all empty) in one transaction and
+sets `user_version` 8 inside it; an older additive database takes the earlier steps in the same
+transaction. Neither new table is an author table, so the author counts are unchanged by
+construction and still checked. `beelm corpus index` fills them from the transcripts already built
+(no model).
+
+Proof of the v7 → v8 step on a copy of the real database (2026-10-10): the backup was written first and
+verified, the only tables that changed were the two new ones (both appeared empty), every other
+table kept its row count (464,676 rows in all, 223,589 of them raw segments), and `integrity_check`
+read `ok`.
+
 Proof of the v6 → v7 step on a copy of the real database (2026-10-10): the backup was written first
 and verified, the only tables that changed were the two new ones (both appeared empty), every
 other table kept its row count (229,340 rows in all), and `integrity_check` read `ok`.
@@ -240,7 +252,7 @@ no backup.
 
 ## Tables
 
-Every table but `locks`, `segments` and `segments_fts` starts with the
+Every table but `locks`, `segments`, `segments_fts`, `cleaned_segments` and `cleaned_segments_fts` starts with the
 knowledge-object base, written `(base)` below: `id TEXT` primary key,
 `version INTEGER` (from 1), `created_at TEXT` (ISO UTC), `created_by TEXT`
 (the client: cli, runner, digest, podlm, authorlm, migration, trigger),
@@ -600,6 +612,31 @@ History: derived.
 `unicode61`), kept in step by the triggers `segments_ai`, `segments_ad`,
 `segments_au`.
 
+### `cleaned_segments`
+
+History: derived.
+
+The cleaned transcript of a source whose raw lines are kept in `segments` and never overwritten
+(Bee's: the owner's rule is that raw text is never overwritten). One row per segment of the source's
+best transcript (the clean-up applied, the speaker names applied), rebuilt whole by
+`Store.replace_cleaned_segments` whenever the transcript is rebuilt. A YouTube source has none: its
+`segments` already hold the best transcript.
+
+| column | type | null | meaning |
+|---|---|---|---|
+| rowid | INTEGER | no | the FTS5 content rowid |
+| source_id | TEXT | no | the source |
+| position | INTEGER | no | the segment's `idx` in the best transcript |
+| start_seconds | REAL | no | its `t0` |
+| end_seconds | REAL | no | its `t1`, never before start_seconds |
+| speaker | TEXT | no | |
+| text | TEXT | no | |
+
+`cleaned_segments_fts` is the FTS5 index over `cleaned_segments.text` (external content,
+`unicode61`), kept in step by the triggers `cleaned_segments_ai`, `cleaned_segments_ad`,
+`cleaned_segments_au`. `Store.search_cleaned` answers with references only (source id, title, date,
+second), never the text.
+
 ## Views
 
 ### `vw_corpus_members` (view)
@@ -688,3 +725,4 @@ segment changed, so it carries the previous hash):
 - 2026-10-08: Version 4 (nagarkar/ytlm#50, seam cut 1): `videos` is `sources` with a `kind` (`youtube`, `bee`), `url` is `locator`, every `video_id` is `source_id`, the playlist/channel list is `source_feeds`; `corpus_sources` is gone (a corpus records no feed). Rows in `change_log` written before keep the old table names.
 - 2026-10-10: Version 6: `model_suggestions` and `model_suggestion_candidates` (derived): the clean-up model's top suggestion for every ambiguity, written whenever the model clean-up artifact is built and by `corpuslm suggestions record`; `corpuslm review accept-suggestions` answers open cards from them
 - 2026-10-10: Version 7 (nagarkar/ytlm#21): `feeds` (the tracked playlists and channels) and `source_skips` (videos skipped from a scan, lifted by date, never deleted), both master data; `Store.remove_member` (the removal is logged); `source_feeds.feed_id` is unchanged and still names a feed whether or not it is tracked
+- 2026-10-10: Version 8: `cleaned_segments` and `cleaned_segments_fts` (derived): the best (cleaned) transcript of a source whose raw lines stay in `segments`, searched by `beelm search`; ytlm's `segments` and `search` are unchanged

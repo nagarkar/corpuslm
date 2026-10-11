@@ -14,8 +14,8 @@ What a tool keeps: its review layer (`ReviewHooks`, the author's verdicts and th
 memory), its arbiter (corpuslm.arbiter, built with the tool's transport), the word that turns
 the step off for a source (`declined`), the prompt directories, and the report it keeps.
 
-`estimate` counts what a run would send, from the documents alone: it builds no payload to a
-vendor and calls no model.
+`estimate` counts what a run would send, from the documents and the reply cache: it sends nothing
+to a vendor and calls no model.
 
 Never imports: db, cli, clikit.
 
@@ -46,11 +46,18 @@ Decisions:
   tests/test_model_chain.py::test_building_the_model_cleanup_records_its_suggestions.
 - `estimate` calls no model and bills nothing. Enforced by:
   tests/test_model_chain.py::test_the_estimate_calls_no_model_and_counts_what_would_be_billed.
+- A landed verdict or memory rule changes a source's inputs; its batches are served from the reply
+  cache, so the rebuild makes no model call and costs nothing, and `estimate` counts that source
+  under `from_cache` with no billed batch. A batch the cache lacks is billed with every batch after
+  it. Enforced by:
+  tests/test_model_chain.py::test_a_landed_verdict_is_rebuilt_from_the_cache_and_the_estimate_says_so,
+  tests/test_model_chain.py::test_a_batch_the_cache_lacks_is_billed_with_every_batch_after_it.
 
 Terms:
 - **CONFIG input**: prompt, model, batch tokens, overlap; a change applies forward only.
 - **PATCH input**: verdicts, memory, arbiter settings; a change replays the cached calls.
 - **held build**: a built transcript kept although a CONFIG input changed.
+- **from cache**: a source whose step is not current but whose every batch the reply cache holds.
 - **spending**: the run's note of the spend cap that stopped it (`Spending`).
 """
 
@@ -594,22 +601,68 @@ def build_model_cleanup(
 
 @dataclass(frozen=True, slots=True)
 class Estimate:
-    """What the step would send for a set of sources, from the documents alone."""
+    """What the step would do for a set of sources, from the documents and the reply cache alone."""
 
     sources: int  # sources whose step is not current
-    batches: int  # the model calls that would be made, an upper bound (the cache may hold some)
-    tokens_in: int
+    from_cache: int  # of those, the sources every batch of which the cache already holds
+    batches: int  # the model calls that would be billed: batches the cache does not hold
+    tokens_in: int  # of those calls
     tokens_out: int
-    usd: float | None  # None when the model has no price row
+    usd: float | None  # None when the model has no price row; 0.0 when nothing would be billed
     model: str
 
 
-def estimate(ctx: ModelCleanup, spell_fix_shas: dict[str, str]) -> Estimate:
-    """Count the batches the step would send for `spell_fix_shas` (source -> spell-fix sha),
-    skipping every source whose step is current. Calls no model and prints no text."""
+def _walk_cache(ctx: ModelCleanup, source: str, document: dict) -> list[str]:
+    """The rendered text of each batch the cache does not hold (empty: the cache holds them all).
+
+    Walks the source's batches as `build_model_cleanup` does, applying each cached reply so the
+    next batch's payload is the one a run would send. From the first batch the cache lacks, the
+    rest are counted as billed: their payloads depend on a reply nobody has seen."""
     shape = ctx.chain.kind.shape
     settings = ctx.settings()
-    sources = batches = tokens_in = 0
+    scheme = ctx.scheme
+    prompt = ctx.prompt()
+    wins = model_cleanup.batches(
+        document,
+        batch_tokens=settings["batch_tokens"],
+        overlap_segments=settings["overlap_segments"],
+    )
+    protected = ", ".join(sorted(ctx.chain.kind.vocabulary(source).terms)) or "(none)"
+    client = ctx.client()
+    bindings: list[dict] = []
+    next_key = 1
+    for n, w in enumerate(wins):
+        variables = {
+            "source_label": shape.source_label,
+            "protected": protected,
+            "roles": model_cleanup.role_summary(
+                document, upto=w.start, bindings=bindings, scheme=scheme
+            ),
+            "batch": model_cleanup.render(document, w, scheme=scheme),
+        }
+
+        def check(obj, w=w, current=document):
+            model_cleanup.check_bounds(w, obj, scheme=scheme, t=current)
+
+        reply = client.lookup(ctx.node, prompt, variables, check=check)
+        if reply is None:
+            return [model_cleanup.render(document, later, scheme=scheme) for later in wins[n:]]
+        document, stats = model_cleanup.apply(
+            document, w, reply.parsed, next_key=next_key, scheme=scheme
+        )
+        next_key = stats["next_key"]
+        bindings += stats["bindings"]
+    return []
+
+
+def estimate(ctx: ModelCleanup, spell_fix_shas: dict[str, str]) -> Estimate:
+    """What the step would bill for `spell_fix_shas` (source -> spell-fix sha), skipping every
+    source whose step is current. A source whose batches the reply cache holds is rebuilt from the
+    cache (a landed verdict or memory rule changed its inputs): it counts under `from_cache` and
+    bills nothing. Calls no model, prints no text and writes nothing."""
+    shape = ctx.chain.kind.shape
+    settings = ctx.settings()
+    sources = from_cache = batches = tokens_in = 0
     for source, sha in sorted(spell_fix_shas.items()):
         if is_current(ctx.chain.store, source, shape.model_cleanup, ctx.inputs(source, sha)):
             continue
@@ -618,21 +671,20 @@ def estimate(ctx: ModelCleanup, spell_fix_shas: dict[str, str]) -> Estimate:
         document = ctx.chain.load(source, shape.spell_fix)
         if ctx.scheme.fixed_labels:
             model_cleanup.adopt_fixed_labels(document)
-        wins = model_cleanup.batches(
-            document,
-            batch_tokens=settings["batch_tokens"],
-            overlap_segments=settings["overlap_segments"],
-        )
+        missed = _walk_cache(ctx, source, document)
         sources += 1
-        batches += len(wins)
+        if not missed:
+            from_cache += 1
+            continue
+        batches += len(missed)
         terms = ", ".join(sorted(ctx.chain.kind.vocabulary(source).terms))
-        for w in wins:
-            tokens_in += model_cleanup.estimate_tokens(
-                ctx.prompt().body + terms + model_cleanup.render(document, w, scheme=ctx.scheme)
-            )
+        tokens_in += sum(
+            model_cleanup.estimate_tokens(ctx.prompt().body + terms + text) for text in missed
+        )
     tokens_out = int(tokens_in * ASSUMED_OUTPUT_PER_INPUT)
     return Estimate(
         sources,
+        from_cache,
         batches,
         tokens_in,
         tokens_out,
