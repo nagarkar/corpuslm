@@ -24,7 +24,7 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-from . import clikit, db, usage, usage_page, usage_server
+from . import clikit, db, review_rebuilders, usage, usage_page, usage_server
 from .model_suggestions import backfill
 from .review_accept_suggestions import accept, parse_cutoff
 from .review_apply import apply as apply_answers
@@ -63,9 +63,11 @@ DESCRIPTIONS = {
     ),
     "review apply": (
         "Land the answers saved on the review page as verdicts, for every source kind (or one "
-        "with --kind), then delete the landed answers. Calls no model. A speaker answer "
-        "rebuilds the speaker map where the tool's own `review apply` is used; other "
-        "answers wait for the next AI clean-up run. `--dry-run` counts and writes nothing.",
+        "with --kind), then delete the landed answers. Calls no model. A kind whose tool must "
+        "rebuild what an answer changes (Bee: `./beelm.sh review apply`) lands only where that "
+        "tool's rebuilder is installed in this environment; otherwise its answers stay unlanded "
+        "and the board names the tool's verb. Other answers wait for the next AI clean-up run. "
+        "`--dry-run` counts and writes nothing.",
         "corpuslm review apply --config /path/to/review.toml --dry-run",
     ),
     "review accept-suggestions": (
@@ -381,15 +383,27 @@ def review_apply_board(settings: ReviewSettings, kind: str | None, dry_run: bool
         )
     database = _open_existing(settings)
     try:
+        wanted = {
+            name: settings.kinds[name].directory
+            for name in setups
+            if setups[name].kind.rebuilt_by and (kind is None or name == kind)
+        }
+        rebuilders, unavailable = review_rebuilders.discover(database, wanted)
         report = apply_answers(
             database,
             setups,
             created_by="corpuslm",
             only_kinds=None if kind is None else [kind],
             dry_run=dry_run,
+            rebuilders=rebuilders,
         )
     finally:
         database.close()
+    left = [
+        f"{name}: {count} verdicts left unlanded; run {setups[name].kind.rebuilt_by} "
+        f"(its rebuilder is not available here: {unavailable.get(name, 'unknown')})"
+        for name, count in sorted(report.verdicts_left_unlanded.items())
+    ]
     return {
         "verb": "review apply",
         "ok": True,
@@ -400,12 +414,22 @@ def review_apply_board(settings: ReviewSettings, kind: str | None, dry_run: bool
         "answers_cleared": report.answers_cleared,
         "unknown_cards": report.unknown_cards,
         "sources_waiting_for_ai_cleanup": report.sources_waiting_for_ai_cleanup,
+        "left_unlanded": left,
         "note": "dry run: nothing was written"
         if dry_run
-        else "a speaker answer takes effect when its tool rebuilds the speaker map "
-        "(beelm review apply does); other answers wait for the next AI clean-up run",
-        "next": "ytlm run --now / beelm corpus ai-cleanup --dry-run",
+        else "a speaker answer takes effect when its tool rebuilds the speaker map; other "
+        "answers wait for the next AI clean-up run",
+        "next": (
+            report_next(setups, report.verdicts_left_unlanded)
+            if left
+            else "ytlm run --now / ./beelm.sh corpus ai-cleanup --dry-run"
+        ),
     }
+
+
+def report_next(setups: dict, left: dict[str, int]) -> str:
+    """The verb of the tool that lands what this process left, one per kind."""
+    return " / ".join(setups[name].kind.rebuilt_by + " --dry-run" for name in sorted(left))
 
 
 def review_accept_suggestions_board(

@@ -5,9 +5,12 @@ rows through the Store, maps them to per-key verdicts by recomputing the page's 
 (`review_page.decisions_to_verdicts_by_kind`, each source read with its own kind), lands each as a
 verdict row with provenance (`review_page.land_page_verdicts`) and deletes the answers it landed,
 in one transaction, so the table only ever holds answers not yet landed. A tool that can rebuild
-what a speaker answer changes passes `rebuilders`: a speaker answer then rebuilds that source's
-speaker map at once (no model); every other answer waits for the tool's next AI clean-up run, and
-the report says how many sources wait.
+what a speaker answer changes passes `rebuilders` (`corpuslm.review_rebuilders` finds the ones
+registered in this environment): a speaker answer then rebuilds that source's speaker map at once
+(no model); every other answer waits for the tool's next AI clean-up run, and the report says how
+many sources wait. A source kind whose answers need such a rebuilder (`ReviewKind.rebuilt_by`) and
+has none here lands nothing: its answers stay where they are and the report counts them per kind,
+so the verb names the tool's own verb to run.
 
 Never imports: cli, clikit, any model transport.
 
@@ -23,6 +26,10 @@ Decisions:
   was. Enforced by: tests/test_review_apply.py::test_a_failed_landing_leaves_every_answer.
 - `--dry-run` counts and writes nothing. Enforced by:
   tests/test_review_apply.py::test_a_dry_run_counts_and_writes_nothing.
+- A kind that names a rebuilding verb (`ReviewKind.rebuilt_by`) lands its answers only when its
+  rebuilder is available in this process; otherwise its answers stay, its verdicts count as left
+  unlanded, and a card that spans kinds keeps its answer too. Enforced by:
+  tests/test_review_apply.py::test_a_kind_without_its_rebuilder_leaves_its_answers_unlanded.
 - A source kind's `stale_nodes` are marked stale for each source a verdict landed on, so the
   tool's next run rebuilds them. Enforced by:
   tests/test_review_apply.py::test_a_landed_answer_marks_the_kinds_stale_nodes.
@@ -33,9 +40,10 @@ Terms:
 
 from __future__ import annotations
 
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 
+from . import review_rebuilders
 from .review_page import (
     KindSetup,
     decisions_document,
@@ -44,8 +52,7 @@ from .review_page import (
 )
 from .store import Store
 
-# A tool's rebuild of what a speaker answer changes: the source ids -> how many it rebuilt.
-Rebuilder = Callable[[set[str]], int]
+Rebuilder = review_rebuilders.Rebuilder
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +66,8 @@ class ApplyReport:
     sources_waiting_for_ai_cleanup: int = 0
     corpora: int = 0
     landed_keys: list[str] = field(default_factory=list)
+    # Verdicts a kind's answers would land that were left, by kind: the kind has no rebuilder here.
+    verdicts_left_unlanded: dict[str, int] = field(default_factory=dict)
 
 
 def _kind_of(store: Store, source_id: str) -> str:
@@ -83,6 +92,12 @@ def apply(
     every kind in `kinds`). Returns counts only."""
     store = Store(db)
     allowed = {name for name in kinds if only_kinds is None or name in set(only_kinds)}
+    # Kinds whose answers need the tool's rebuilder, and it is not here: nothing of theirs lands.
+    needing = {
+        name for name in allowed if kinds[name].kind.rebuilt_by and name not in (rebuilders or {})
+    }
+    landing = allowed - needing
+    left_unlanded: dict[str, int] = {}
     totals = {
         "answers_saved": 0,
         "verdicts_to_land": 0,
@@ -104,12 +119,16 @@ def apply(
         # the allowed kinds land, and a card with a source of another kind keeps its answer for
         # that kind's own apply.
         everything, unknown = decisions_to_verdicts_by_kind(db, kinds, corpus["name"], decisions)
-        verdicts = [v for v in everything if _kind_of(store, v["video_id"]) in allowed]
+        verdicts = [v for v in everything if _kind_of(store, v["video_id"]) in landing]
         held_back = {
             v["card_id"]
             for v in everything
-            if _kind_of(store, v["video_id"]) not in allowed and not _already_in_force(store, v)
+            if _kind_of(store, v["video_id"]) not in landing and not _already_in_force(store, v)
         }
+        for v in everything:
+            kind_name = _kind_of(store, v["video_id"])
+            if kind_name in needing and not _already_in_force(store, v):
+                left_unlanded[kind_name] = left_unlanded.get(kind_name, 0) + 1
         fresh = [v for v in verdicts if not _already_in_force(store, v)]
         landed_cards = {v["card_id"] for v in verdicts} - held_back
         empty_cards = {
@@ -151,6 +170,7 @@ def apply(
         speaker_maps_rebuilt=rebuilt,
         sources_waiting_for_ai_cleanup=len(waiting),
         landed_keys=landed_keys,
+        verdicts_left_unlanded=left_unlanded,
     )
 
 

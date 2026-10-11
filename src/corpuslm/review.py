@@ -93,6 +93,11 @@ class ReviewKind:
     # The artifact node holding the model clean-up's document (`transcript.json`'s ambiguities
     # before any later step), where its suggestions are read from.
     model_cleanup_node: str = "model_cleanup"
+    # The verb of the tool that carries this kind's landed answers into its files (a speaker
+    # name rebuilds a map the tool owns). Empty when marking `stale_nodes` is all it takes.
+    # `corpuslm review apply` lands the kind's answers only where the tool registered a rebuilder
+    # (`corpuslm.review_rebuilders`); otherwise it leaves them unlanded and names this verb.
+    rebuilt_by: str = ""
 
 
 def item_pattern(review_key_prefix: str = "spk") -> re.Pattern[str]:
