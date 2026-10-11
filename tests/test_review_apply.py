@@ -4,6 +4,8 @@ fixtures."""
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 from review_kinds import (
     BEE_KIND,
@@ -204,3 +206,57 @@ def test_the_owner_name_is_offered_for_the_unnamed_label(database, kinds, corpus
         c for c in cards(database, kinds) if c["kind"] == "speaker" and c["video_id"] == BEE_SOURCE
     )
     assert OWNER in speaker["names"]
+
+
+def test_a_kind_without_its_rebuilder_leaves_its_answers_unlanded(database, kinds, corpus_id):
+    """A Bee answer lands only where beelm's rebuilder is available: otherwise the answer stays on
+    the page's table, nothing of it lands, and the report counts what was left."""
+    store = Store(database)
+    needing = {
+        "youtube": kinds["youtube"],
+        "bee": KindSetup(
+            dataclasses.replace(BEE_KIND, rebuilt_by="./beelm.sh review apply"),
+            kinds["bee"].sources_directory,
+        ),
+    }
+    ambiguity = next(c for c in cards(database, needing) if c["kind"] == "ambiguity")
+    speaker = next(
+        c
+        for c in cards(database, needing)
+        if c["kind"] == "speaker" and c["video_id"] == BEE_SOURCE
+    )
+    answer(database, corpus_id, ambiguity, "Wren")
+    answer(database, corpus_id, speaker, "Fern")
+    report = apply(database, needing)
+    assert report.verdicts_left_unlanded == {"bee": 2}
+    assert report.verdicts_landed == 1  # the YouTube place of the shared ambiguity card
+    assert store.current_review_verdicts(BEE_SOURCE) == {}
+    assert store.current_speaker_names(BEE_SOURCE) == {}
+    # both cards keep their answers: the shared card has a Bee place, the speaker card is Bee's
+    assert len(store.review_answers(corpus_id)) == 2
+    # the tool's own apply, with its rebuilder, lands them
+    rebuilt: list[set[str]] = []
+    report = apply(
+        database,
+        needing,
+        rebuilders={"bee": lambda sources: rebuilt.append(set(sources)) or len(sources)},
+    )
+    assert report.verdicts_left_unlanded == {}
+    assert store.current_review_verdicts(BEE_SOURCE)["amb-0001"]["verdict"] == "Wren"
+    assert rebuilt == [{BEE_SOURCE}] and report.speaker_maps_rebuilt == 1
+    assert store.review_answers(corpus_id) == []
+
+
+def test_a_dry_run_counts_what_a_kind_without_its_rebuilder_would_leave(database, kinds, corpus_id):
+    needing = {
+        "youtube": kinds["youtube"],
+        "bee": KindSetup(
+            dataclasses.replace(BEE_KIND, rebuilt_by="./beelm.sh review apply"),
+            kinds["bee"].sources_directory,
+        ),
+    }
+    ambiguity = next(c for c in cards(database, needing) if c["kind"] == "ambiguity")
+    answer(database, corpus_id, ambiguity, "Wren")
+    report = apply(database, needing, dry_run=True, only_kinds=["bee"])
+    assert report.verdicts_left_unlanded == {"bee": 1} and report.verdicts_to_land == 0
+    assert len(Store(database).review_answers(corpus_id)) == 1

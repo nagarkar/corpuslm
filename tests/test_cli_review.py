@@ -18,7 +18,7 @@ from review_kinds import (
     youtube_transcript,
 )
 
-from corpuslm import cli, db, review_page, review_server, review_settings
+from corpuslm import cli, db, review_page, review_rebuilders, review_server, review_settings
 from corpuslm.store import Store
 
 BEE_ID = "bee:101"
@@ -83,23 +83,56 @@ def test_review_serve_dry_run_starts_nothing_and_names_the_url(config, capsys):
         probe.bind(("127.0.0.1", port))
 
 
-def test_review_apply_lands_a_saved_answer_and_clears_it(config, tmp_path, capsys):
+def save_ambiguity_answer(config) -> None:
     settings = review_settings.load(config)
     database = db.Database(settings.database)
-    store = Store(database)
     data = review_page.workspace_data_by_kind(database, review_settings.kind_setups(settings))
     card = next(c for c in data["corpora"][0]["cards"] if c["kind"] == "ambiguity")
-    store.save_review_answer(
+    Store(database).save_review_answer(
         data["corpora"][0]["corpus_id"], card["id"], "Wren", "2026-10-09T10:00:00Z", created_by="t"
     )
     database.close()
+
+
+class FakeEntry:
+    """An installed tool's entry point: loading it gives the factory."""
+
+    def __init__(self, factory):
+        self.factory = factory
+
+    def load(self):
+        return self.factory
+
+
+def test_review_apply_lands_the_youtube_answer_and_leaves_bee_to_beelm(config, capsys):
+    save_ambiguity_answer(config)
     code, board = run(capsys, "review", "apply", "--config", str(config), "--dry-run")
-    assert (code, board["verdicts_to_land"], board["verdicts_landed"]) == (0, 2, 0)
+    assert (code, board["verdicts_to_land"], board["verdicts_landed"]) == (0, 1, 0)
+    assert (
+        len(board["left_unlanded"]) == 1 and "./beelm.sh review apply" in board["left_unlanded"][0]
+    )
+    assert board["next"] == "./beelm.sh review apply --dry-run"
     code, board = run(capsys, "review", "apply", "--config", str(config))
-    assert (code, board["verdicts_landed"], board["answers_cleared"]) == (0, 2, 1)
-    assert board["sources_waiting_for_ai_cleanup"] == 2
+    assert (code, board["verdicts_landed"], board["answers_cleared"]) == (0, 1, 0)
+    assert board["sources_waiting_for_ai_cleanup"] == 1
     code, board = run(capsys, "review", "apply", "--config", str(config), "--kind", "audio")
     assert code == 1 and "audio" in board["error"]
+
+
+def test_review_apply_lands_bee_where_beelms_rebuilder_is_registered(config, monkeypatch, capsys):
+    save_ambiguity_answer(config)
+    rebuilt: list[set[str]] = []
+    directories = []
+
+    def factory(database, directory):
+        directories.append(directory)
+        return lambda sources: rebuilt.append(set(sources)) or len(sources)
+
+    monkeypatch.setattr(review_rebuilders, "registered", lambda: {"bee": FakeEntry(factory)})
+    code, board = run(capsys, "review", "apply", "--config", str(config))
+    assert (code, board["verdicts_landed"], board["answers_cleared"]) == (0, 2, 1)
+    assert board["left_unlanded"] == []
+    assert directories == [review_settings.load(config).kinds["bee"].directory]
 
 
 def test_a_missing_settings_file_or_database_creates_nothing(tmp_path, capsys):

@@ -18,6 +18,10 @@ Decisions:
 - Bee's transcript documents are read with Bee's refinement of the transcript schema: its source
   ids are `bee:<number>` and a segment's label is Bee's own speaker label. Enforced by:
   tests/test_review_kinds.py::test_bee_transcripts_are_read_with_free_speaker_labels.
+- A Bee answer lands only through a process that can rebuild what it changes: the kind names
+  its tool's verb (`rebuilt_by`), and `corpuslm review apply` leaves a Bee answer unlanded where
+  beelm's rebuilder is not registered. Enforced by:
+  tests/test_review_apply.py::test_a_kind_without_its_rebuilder_leaves_its_answers_unlanded.
 - A source kind outside the two has no review kind; the settings file may not name it. Enforced
   by: tests/test_review_settings.py::test_an_unknown_source_kind_is_named_and_declined.
 
@@ -43,6 +47,9 @@ YOUTUBE_LINKS_NOTE = (
 )
 # Source kinds a review kind exists for.
 KINDS = ("youtube", "bee")
+# The verb that carries a Bee answer into the files (a speaker name rebuilds the map, the
+# transcript and the subtitles), which only beelm can do.
+BEE_REBUILT_BY = "./beelm.sh review apply"
 # The artifacts of a YouTube source that go stale when the owner answers one of its cards: the
 # next run rebuilds them (the clean-up pass patches the transcript at the answer).
 YOUTUBE_STALE_NODES = ("pass3", "speaker_map")
@@ -106,6 +113,7 @@ def bee_review(owner_first_name: str = "") -> ReviewKind:
         extra_speaker_names=lambda source: [owner_first_name] if owner_first_name else [],
         role_pattern=r"[A-Za-z_0-9 ]+",
         refined_schema=bee_refined_schema(),
+        rebuilt_by=BEE_REBUILT_BY,
     )
 
 
@@ -125,6 +133,7 @@ def kinds_for_settings(owner_first_names: Mapping[str, str]) -> dict[str, Review
 
 __all__ = [
     "BEE_LINKS_NOTE",
+    "BEE_REBUILT_BY",
     "BEE_SCHEMA_ID",
     "KINDS",
     "YOUTUBE_LINKS_NOTE",
