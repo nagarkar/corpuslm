@@ -274,22 +274,17 @@ def test_the_estimate_calls_no_model_and_counts_what_would_be_billed(world):
     ctx = world.context()
     result = model_chain.estimate(ctx, {SOURCE: world.spell_fix})
     assert result.sources == 1 and result.batches == len(world.batches())
+    assert result.from_cache == 0
     assert result.tokens_in > 0 and result.usd is not None and result.usd > 0
     assert result.model == MODEL
-    assert world.clients == []
+    assert sum(client.calls for client in world.clients) == 0
     script_all(world)
     world.build()
     done = model_chain.estimate(world.context(), {SOURCE: world.spell_fix})
     assert done.sources == 0 and done.batches == 0 and done.usd == 0
 
 
-def test_a_recorded_verdict_changes_the_inputs_and_a_term_rule_is_applied(world):
-    script_all(world)
-    reviewing = model_chain.DatabaseReview(world.store)
-    assert reviewing.memory_vocabulary().terms == []
-    world.build(review=reviewing)
-    before = json.loads(world.row()["inputs"])
-    asked = sum(client.calls for client in world.clients)
+def land_a_verdict(world):
     review.record_verdict(
         world.database,
         source_id=SOURCE,
@@ -299,12 +294,41 @@ def test_a_recorded_verdict_changes_the_inputs_and_a_term_rule_is_applied(world)
         span="quill feather",
         created_by="test",
     )
-    assert reviewing.memory_vocabulary().terms == ["Quillfeather"]
+
+
+def test_a_landed_verdict_is_rebuilt_from_the_cache_and_the_estimate_says_so(world):
+    """A verdict changes the step's inputs; the replies are cached, so the rebuild is free: the
+    estimate counts the source under `from_cache`, bills nothing, and the rebuild makes no call."""
+    script_all(world)
+    reviewing = model_chain.DatabaseReview(world.store)
+    first = world.build(review=reviewing)
+    land_a_verdict(world)
+    before = model_chain.estimate(world.context(review=reviewing), {SOURCE: world.spell_fix})
+    assert before.sources == 1 and before.from_cache == 1
+    assert (before.batches, before.tokens_in, before.tokens_out, before.usd) == (0, 0, 0, 0.0)
+    clients = len(world.clients)
+    rebuilt = world.build(review=reviewing)
+    assert rebuilt != first  # the transcript changed
+    assert [c.calls for c in world.clients[clients:]] == [0]  # the transport was never called
+    after = model_chain.estimate(world.context(review=reviewing), {SOURCE: world.spell_fix})
+    assert after.sources == 0
+
+
+def test_a_batch_the_cache_lacks_is_billed_with_every_batch_after_it(world):
+    script_all(world)
+    reviewing = model_chain.DatabaseReview(world.store)
     world.build(review=reviewing)
-    after = json.loads(world.row()["inputs"])
-    assert after["verdicts"] != before["verdicts"] and after["memory"] != before["memory"]
-    assert after["prompt"] == before["prompt"]
-    assert sum(client.calls for client in world.clients) == asked  # served from the cache
+    calls = json.loads(world.row()["provenance"])["calls"]
+    assert len(calls) == 2
+    land_a_verdict(world)
+    cache = world.root / llm.CACHE_DIR
+    (cache / f"{calls[1]['payload_sha256']}.json").unlink()
+    result = model_chain.estimate(world.context(review=reviewing), {SOURCE: world.spell_fix})
+    assert (result.sources, result.from_cache, result.batches) == (1, 0, 1)
+    assert result.usd is not None and result.usd > 0
+    (cache / f"{calls[0]['payload_sha256']}.json").unlink()
+    result = model_chain.estimate(world.context(review=reviewing), {SOURCE: world.spell_fix})
+    assert (result.sources, result.from_cache, result.batches) == (1, 0, 2)
 
 
 def ambiguous_reply(index):

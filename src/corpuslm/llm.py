@@ -528,6 +528,58 @@ class Client:
             raise NotConfigured(f"[{prompt.config_section}].model is not set")
         return section
 
+    def _payload(
+        self, prompt: Prompt, variables: dict[str, str], model: str | None
+    ) -> tuple[str, ModelProfile, float | None, list[dict], str]:
+        """(model, profile, temperature, messages, payload hash) of a call: what `complete` sends
+        and what the cache is keyed by."""
+        section = self.stage_config(prompt)
+        model = model or section["model"]
+        profile = model_profile(model)
+        temperature = section.get("temperature", 0.2)
+        if profile.temperature == VENDOR_DEFAULT_ONLY:
+            temperature = None
+        messages = [{"role": "user", "content": prompt.render(variables)}]
+        return model, profile, temperature, messages, payload_sha256(model, temperature, messages)
+
+    def lookup(
+        self,
+        stage: str,
+        prompt: Prompt,
+        variables: dict[str, str],
+        *,
+        check=None,
+    ) -> Reply | None:
+        """The cached reply `complete` would serve for these variables, or None when the call
+        would reach the model. Reads the cache only: no call, no ledger entry, no file written. A
+        cached reply that fails `check` or the schema is None too: a run would not serve it."""
+        model, profile, _temperature, _messages, payload_hash = self._payload(
+            prompt, variables, None
+        )
+        cache_path = self.cache_dir / f"{payload_hash}.json"
+        if not cache_path.exists():
+            return None
+        cached = json.loads(cache_path.read_text(encoding="utf-8"))
+        try:
+            parsed = self._parse(
+                prompt, cached["reply"], stage, payload_hash, attempts=1, check=check
+            )
+        except BadReply:
+            return None
+        return Reply(
+            parsed=parsed,
+            raw=cached["reply"],
+            prompt=prompt,
+            model=model,
+            profile=profile.name,
+            payload_sha256=payload_hash,
+            requested_at="",
+            tokens_in=int(cached.get("tokens_in", 0)),
+            tokens_out=int(cached.get("tokens_out", 0)),
+            cost_usd=0.0,
+            cached=True,
+        )
+
     # -- the call --
     def complete(
         self,
@@ -543,14 +595,9 @@ class Client:
         matches the schema but is wrong for this call (an index outside the
         batch); it runs BEFORE the reply is cached, so a bad reply is never
         served from cache."""
-        section = self.stage_config(prompt)
-        model = model or section["model"]
-        profile = model_profile(model)
-        temperature = section.get("temperature", 0.2)
-        if profile.temperature == VENDOR_DEFAULT_ONLY:
-            temperature = None
-        messages = [{"role": "user", "content": prompt.render(variables)}]
-        payload_hash = payload_sha256(model, temperature, messages)
+        model, profile, temperature, messages, payload_hash = self._payload(
+            prompt, variables, model
+        )
         requested_at = clock_mod.iso(self.clock())
         cache_path = self.cache_dir / f"{payload_hash}.json"
         if cache_path.exists():
