@@ -160,3 +160,41 @@ def test_a_version_6_database_gains_the_feed_tables_after_a_verified_backup(tmp_
     copy = sqlite3.connect(opened.migration["backup"])
     assert copy.execute("PRAGMA user_version").fetchone()[0] == 6
     copy.close()
+
+
+def test_remove_feed_unstamps_its_sources_drops_its_skips_and_keeps_everything_else(
+    store, database
+):
+    corpus = store.add_corpus({"name": "Physics"}, created_by="cli")
+    store.add_feed(FEED, "playlist", "Inbox", created_by="cli")
+    store.add_feed("PLelse", "playlist", "Other", created_by="cli")
+    for video_id in (VIDEO, OTHER):
+        store.add_source(video_id, "u", created_by="cli")
+        store.add_member(corpus, video_id, "author", created_by="cli")
+    store.update_source(VIDEO, {"feeds": [FEED, "PLelse"]})
+    store.update_source(OTHER, {"feeds": [FEED]})
+    store.skip_source("vidCCCCCCC3", "off topic", feed_id=FEED, created_by="cli")
+    store.skip_source("vidDDDDDDD4", "elsewhere", feed_id="PLelse", created_by="cli")
+    feed_row = store.feed(FEED)
+    assert feed_row is not None
+    sources_before = database.one("SELECT COUNT(*) FROM sources")[0]
+
+    counts = store.remove_feed(FEED, created_by="untrack")
+
+    assert counts == {"sources_unstamped": 2, "skips_removed": 1}
+    assert store.remove_feed(FEED, created_by="untrack") is None
+    assert store.feed(FEED) is None and store.feed("PLelse") is not None
+    assert store.source(VIDEO)["feeds"] == ["PLelse"]  # type: ignore[index]
+    assert store.source(OTHER)["feeds"] == []  # type: ignore[index]
+    assert store.skip("vidCCCCCCC3") is None and store.skip("vidDDDDDDD4") is not None
+    assert database.one("SELECT COUNT(*) FROM sources")[0] == sources_before
+    assert store.member_source_ids(corpus) == [VIDEO, OTHER]
+    (trail,) = store.changes_of("feeds", feed_row["id"])
+    assert trail["column_name"] == "row" and trail["new_value"] is None
+    old = json.loads(trail["old_value"])
+    assert old["feed_id"] == FEED and old["title"] == "Inbox" and old["added_by"] == "cli"
+    removed = database.one(
+        "SELECT COUNT(*) FROM change_log WHERE table_name = 'source_feeds' "
+        "AND old_value IS NOT NULL AND new_value IS NULL"
+    )
+    assert removed[0] >= 2  # the list writer logs the feed leaving each source
