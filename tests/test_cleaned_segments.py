@@ -153,8 +153,8 @@ def test_the_best_transcript_is_read_without_writing_a_file(store, tmp_path):
         c, SOURCE, None, preference=("normalize",), scheme=bee_scheme("Quill")
     )
     assert document["segments"] and not (tmp_path / "t" / SOURCE / "transcript.json").exists()
-    published, sha = chain.publish_best(
+    published, sha256 = chain.publish_best(
         c, SOURCE, None, preference=("normalize",), scheme=bee_scheme("Quill")
     )
-    assert published == document and sha == chain.transcript_sha256(c, document)
+    assert published == document and sha256 == chain.transcript_sha256(c, document)
     assert first.built

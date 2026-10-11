@@ -10,8 +10,8 @@ import corpuslm
 
 # name → why it stays mutable (or keeps a __dict__)
 ALLOWED: dict[str, str] = {
-    "corpuslm.model_chain.Spending": "one run's note of the spend cap that stopped it, set by "
-    "whichever source hits the cap first and read by every later one",
+    "corpuslm.ai_cleanup_chain.SpendCapStop": "one run's note of the spend cap that stopped it, "
+    "set by whichever source hits the cap first and read by every later one",
 }
 
 

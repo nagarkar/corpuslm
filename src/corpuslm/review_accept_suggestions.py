@@ -1,4 +1,4 @@
-"""Accept suggestions: answer open review cards with the clean-up model's recorded suggestion.
+"""Accept suggestions: answer open review cards with the cleanup model's recorded suggestion.
 
 For the older recordings of one source kind, the owner may be content to take the model's own top
 suggestion (recorded in the database by corpuslm.model_suggestions) for every ambiguity card still
@@ -8,7 +8,7 @@ change it. It lands nothing: `review apply` is still the owner's step. It calls 
 
 A card is answered only when every source behind it is of the chosen kind and recorded before the
 cutoff date, every one of its places has a recorded suggestion for the card's words, and those
-suggestions are the same reading. A card that already holds an answer (even one the owner undid)
+suggestions are the same candidate. A card that already holds an answer (even one the owner undid)
 is never touched, and a speaker card is never touched.
 
 Never imports: cli, clikit, any model transport.
@@ -115,7 +115,7 @@ def accept(
             if not all(recorded_before(sources[source_id], before) for source_id in places):
                 counts["cards_skipped_a_source_not_before_the_cutoff"] += 1
                 continue
-            readings: set[str] = set()
+            picked_candidates: set[str] = set()
             spelling = ""
             missing = False
             for item in card["items"]:
@@ -126,12 +126,12 @@ def accept(
                 if found is None or found["span_norm"] != card["span_norm"]:
                     missing = True
                     break
-                readings.add(found["suggestion"])
+                picked_candidates.add(found["suggestion"])
                 spelling = spelling or found["suggestion"]
             if missing:
                 counts["cards_skipped_no_recorded_suggestion"] += 1
                 continue
-            if len(readings) > 1:
+            if len(picked_candidates) > 1:
                 counts["cards_skipped_suggestions_differ"] += 1
                 continue
             counts["cards_to_answer"] += 1

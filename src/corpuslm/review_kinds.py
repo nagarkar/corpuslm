@@ -26,7 +26,8 @@ Decisions:
   by: tests/test_review_settings.py::test_an_unknown_source_kind_is_named_and_declined.
 
 Terms:
-- **review kind**: see `corpuslm.review`.
+- **review kind**: how one source kind links, labels and names speakers on review surfaces;
+  `youtube_review()` and `bee_review()` build them.
 """
 
 from __future__ import annotations
@@ -51,10 +52,10 @@ KINDS = ("youtube", "bee")
 # transcript and the subtitles), which only beelm can do.
 BEE_REBUILT_BY = "./beelm.sh review apply"
 # The artifacts of a YouTube source that go stale when the owner answers one of its cards: the
-# next run rebuilds them (the clean-up pass patches the transcript at the answer).
+# next run rebuilds them (the cleanup pass patches the transcript at the answer).
 YOUTUBE_STALE_NODES = ("pass3", "speaker_map")
-# ytlm stores the model clean-up under its first name (`pass3`); beelm's is `model_cleanup`.
-YOUTUBE_MODEL_CLEANUP_NODE = "pass3"
+# ytlm stores the AI cleanup under its first name (`pass3`); beelm's is `model_cleanup`.
+YOUTUBE_AI_CLEANUP_NODE = "pass3"
 
 
 def youtube_anchor_url(video: dict, seconds: float) -> str:
@@ -73,7 +74,7 @@ def youtube_review() -> ReviewKind:
         scheme=YOUTUBE,
         links_note=YOUTUBE_LINKS_NOTE,
         stale_nodes=YOUTUBE_STALE_NODES,
-        model_cleanup_node=YOUTUBE_MODEL_CLEANUP_NODE,
+        ai_cleanup_node=YOUTUBE_AI_CLEANUP_NODE,
     )
 
 
@@ -137,7 +138,7 @@ __all__ = [
     "BEE_SCHEMA_ID",
     "KINDS",
     "YOUTUBE_LINKS_NOTE",
-    "YOUTUBE_MODEL_CLEANUP_NODE",
+    "YOUTUBE_AI_CLEANUP_NODE",
     "YOUTUBE_STALE_NODES",
     "bee_refined_schema",
     "bee_review",

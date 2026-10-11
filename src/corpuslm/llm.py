@@ -1,4 +1,4 @@
-"""LLM: the model transport, reply cache, usage ledger lines and spend guard.
+"""LLM: the model transport, reply cache, usage ledger lines and spend cap.
 
 LiteLLM runs in-process; the vendor is the model string's prefix and reads its own key from the
 environment. Needs the `llm` extra (`litellm`, `jsonschema`); importing this module does not
@@ -9,8 +9,8 @@ Every call: renders a prompt (`corpuslm.prompts`), consults the cache
 only on a miss, parses the reply strictly against the prompt's declared schema (two attempts,
 then BadReply with the raw reply in the invocation's log), writes one `usage.jsonl` line
 (`corpuslm.ledger`), and returns a Reply whose `provenance()` carries prompt id and sha, model,
-profile, payload sha, time, tokens, cost and whether it was cached. The spend guard sums cost
-across the run and raises BudgetExceeded BEFORE the call that would exceed
+profile, payload sha, time, tokens, cost and whether it was cached. The spend cap sums cost
+across the run and raises SpendCapReached BEFORE the call that would exceed
 `[llm].max_usd_per_run`, or `[llm].max_usd_per_day` counting today's (UTC) billed lines already
 in `<root>/logs/usage.jsonl`.
 
@@ -41,6 +41,9 @@ Never imports: db, store, clikit.
 Terms:
 - **payload**: the rendered messages of one model call; its sha256 with the model and
   temperature is the cache key.
+- **spend cap**: `[llm].max_usd_per_run` (per run) or `[llm].max_usd_per_day` (per day) in a
+  tool's settings: the client raises `SpendCapReached` before a call that would exceed it. A source
+  it stops is recorded failed with a reason that starts `budget` (the stored name).
 - **provenance**: what an artifact records about how it was made: prompt, model, cost, time.
 """
 
@@ -96,7 +99,7 @@ RUN_CAP = "[llm].max_usd_per_run"
 DAY_CAP = "[llm].max_usd_per_day"
 
 
-class BudgetExceeded(RuntimeError):
+class SpendCapReached(RuntimeError):
     """A spend cap was reached; no further calls. `cap` names which one
     (RUN_CAP or DAY_CAP), so the board can say."""
 
@@ -268,11 +271,11 @@ class LiteLLMTransport:
             completion = completion or litellm.completion
             cost_of = cost_of or (lambda r: litellm.completion_cost(completion_response=r))
         params = {"timeout": REQUEST_TIMEOUT_S, **params}
-        resp: Any = None
+        response: Any = None
         attempt = 1
         while attempt <= MAX_ATTEMPTS:
             try:
-                resp = completion(model=model, messages=messages, **params)
+                response = completion(model=model, messages=messages, **params)
                 break
             except Exception as e:  # noqa: BLE001 - vendor errors are many; classify by status
                 text = str(e).splitlines()[0][:200] if str(e) else type(e).__name__
@@ -292,19 +295,19 @@ class LiteLLMTransport:
                         f"row in src/corpuslm/llm.py: {profile_row(model, params, rejected)}"
                     ) from e
                 raise VendorError(f"{model}: {text}") from e
-        if resp is None:
+        if response is None:
             raise VendorError(f"{model}: no reply after {MAX_ATTEMPTS} attempts")
-        usage = getattr(resp, "usage", None)
-        finish = getattr(resp.choices[0], "finish_reason", None)
+        usage = getattr(response, "usage", None)
+        finish = getattr(response.choices[0], "finish_reason", None)
         if finish == "length":
             # A reply cut off by the token limit is a failure, never a partial artifact.
             raise TruncatedReply("reply cut off by the token limit (finish_reason=length)")
         try:
-            cost = float(cost_of(resp))
+            cost = float(cost_of(response))
         except Exception:  # noqa: BLE001 - unknown price table → null, never an estimate
             cost = None
         return RawReply(
-            text=resp.choices[0].message.content or "",
+            text=response.choices[0].message.content or "",
             tokens_in=int(getattr(usage, "prompt_tokens", 0) or 0),
             tokens_out=int(getattr(usage, "completion_tokens", 0) or 0),
             cost_usd=cost,
@@ -314,7 +317,7 @@ class LiteLLMTransport:
 class ScriptedTransport:
     """Scripted tier (docs/design/testing.md): `<dir>/<stage>/<tag>.json` =
     {"reply": str, "tokens_in", "tokens_out"}.
-    Cost is computed from the price table so the spend guard is exercised."""
+    Cost is computed from the price table so the spend cap is exercised."""
 
     name = "scripted"
 
@@ -366,7 +369,7 @@ _PRICES_PER_M = {
     "gemini/gemini-2.5-flash": (0.30, 2.50),
     "gemini/gemini-3.1-flash-lite": (0.25, 1.50),
     # The arbiter (ytlm's TypeSafe adapter). TypeSafe bills input tokens only; verified
-    # 2026-09-29 at docs.typesafe.ai/models. Keyed on the alias the author
+    # 2026-09-29 at docs.typesafe.ai/models. Keyed on the alias the owner
     # chose to follow.
     "jev-latest": (0.042, 0.0),
 }
@@ -487,11 +490,11 @@ class Client:
             self._spent_before_today = total
         return self._spent_before_today + self.spent_usd
 
-    def check_budget(self, stage: str, tag: str) -> None:
-        """Raise BudgetExceeded, naming the cap, before a billed call that a
+    def check_spend_cap(self, stage: str, tag: str) -> None:
+        """Raise SpendCapReached, naming the cap, before a billed call that a
         cap no longer allows."""
         if self.max_usd is not None and self.spent_usd >= float(self.max_usd):
-            raise BudgetExceeded(
+            raise SpendCapReached(
                 f"spent ${self.spent_usd:.4f} of the ${float(self.max_usd):.2f} "
                 f"per-run cap ({RUN_CAP}); {stage} for {tag} not attempted",
                 RUN_CAP,
@@ -499,14 +502,14 @@ class Client:
         if self.max_usd_day is None:
             return
         if not self.ledger.enabled.get("usage", False):
-            raise BudgetExceeded(
+            raise SpendCapReached(
                 f"the per-day cap ({DAY_CAP}) is counted from logs/usage.jsonl, and "
                 f"[logs].usage is false in config.toml; {stage} for {tag} not attempted",
                 DAY_CAP,
             )
         today = self.spent_today()
         if today >= float(self.max_usd_day):
-            raise BudgetExceeded(
+            raise SpendCapReached(
                 f"spent ${today:.4f} today (UTC) of the ${float(self.max_usd_day):.2f} "
                 f"per-day cap ({DAY_CAP}); {stage} for {tag} not attempted",
                 DAY_CAP,
@@ -626,7 +629,7 @@ class Client:
             # miss with no key means the stage is skipped, recorded as such,
             # never attempted against the vendor.
             raise NotConfigured(f"{key_env} is not set; {stage} is off")
-        self.check_budget(stage, tag)
+        self.check_spend_cap(stage, tag)
         params: dict = {"_stage": stage}
         if temperature is not None:
             params["temperature"] = temperature
@@ -658,7 +661,7 @@ class Client:
                 # an unpriced model under a cap stops here.
                 self._ledger_raw(stage, prompt, model, raw, tag, "bad_reply")
                 cap = RUN_CAP if self.max_usd is not None else DAY_CAP
-                raise BudgetExceeded(
+                raise SpendCapReached(
                     f"{model} has no price in the table, so the spend caps cannot "
                     f"be enforced; add a row to _PRICES_PER_M or remove {cap}",
                     cap,
@@ -714,7 +717,7 @@ class Client:
         self, stage: str, prompt: Prompt, payload_hash: str, *, tag: str, check=None
     ) -> Reply:
         """Serve the reply behind a recorded payload hash from the cache without
-        rebuilding the payload: the road a held (stale-on-config) pass 3 takes
+        rebuilding the payload: the road a held (stale-on-config) AI cleanup takes
         when a verdict or a memory rule lands on it (a held pass). The model is
         never asked; `check` runs as it does on any cached reply. CacheMiss
         when the entry is gone."""
@@ -849,7 +852,7 @@ __all__ = [
     "Client",
     "Reply",
     "BadReply",
-    "BudgetExceeded",
+    "SpendCapReached",
     "CacheMiss",
     "TruncatedReply",
     "VendorError",

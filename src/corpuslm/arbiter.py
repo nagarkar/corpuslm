@@ -1,21 +1,21 @@
-"""Arbiter: a second opinion on the ambiguities the model clean-up left pending.
+"""Arbiter: a second opinion on the ambiguities the AI cleanup left pending.
 
 The arbiter (corpuslm.arbiter): a second opinion from an outside judge (ytlm asks Jev, TypeSafe's
-System One model) on review items the model clean-up left pending, for every source kind.
+System One model) on review items the AI cleanup left pending, for every source kind.
 
-Each pending ambiguity is one Choice question whose options are exactly the card's choices: the
-words as heard plus the candidates. The judge's probability for each option is multiplied by the
-clean-up model's and rescaled (Bayes' rule, independent sources, no prior preference between
-options). When the judge's option reaches `Settings.min_probability` it is applied as
-`auto_resolved` with an `arbiter` origin; otherwise the item stays pending for the author. An
-arbiter pick never enters the correction memory: only the author's word is precedent.
+Each pending ambiguity is one Choice question whose candidates are exactly the card's: the
+words as heard plus the candidates. The judge's probability for each candidate is multiplied by the
+AI cleanup's and rescaled (Bayes' rule, independent sources, no prior preference between
+candidates). When the judge's candidate reaches `Settings.min_probability` it is applied as
+`auto_resolved` with an `arbiter` origin; otherwise the item stays pending for the owner. An
+arbiter pick never enters the correction memory: only the owner's word is precedent.
 
 Every request is cached by payload in the client's cache, so a rebuild never re-bills; spend
 counts toward the client's caps through its guard and price table.
 
 What a tool injects: the transport that reaches the judge (a `Transport`; ytlm's wraps its
 TypeSafe adapter and keeps the key), the prompt, and the validator of the judge's reply. The
-card's options, the span key and the writing of a resolution are `corpuslm.review`'s, the same
+card's candidates, the span key and the writing of a resolution are `corpuslm.review`'s, the same
 ones the review page uses.
 
 Never imports: db, store, cli, clikit, any outside service.
@@ -24,11 +24,11 @@ Decisions:
 - The adapter that reaches the judge is the tool's, injected as a `Transport`; this module holds
   no vendor name, key or URL. Enforced by:
   tests/test_arbiter.py::test_the_arbiter_asks_through_the_transport_it_is_given.
-- Per option, the clean-up model's probability is multiplied by the judge's and rescaled to sum
+- Per candidate, the AI cleanup's probability is multiplied by the judge's and rescaled to sum
   to 1; an older item's single confidence goes to its pick and the rest is spread evenly.
   Enforced by:
   tests/test_arbiter.py::test_an_older_item_with_one_confidence_spreads_the_rest_evenly.
-- When the judge's option reaches the threshold it is applied as `auto_resolved` with an arbiter
+- When the judge's candidate reaches the threshold it is applied as `auto_resolved` with an arbiter
   origin; otherwise the item stays pending. One threshold serves agreement and disagreement
   alike. Enforced by:
   tests/test_arbiter.py::test_a_pick_that_clears_the_threshold_is_applied_with_an_arbiter_origin,
@@ -36,13 +36,14 @@ Decisions:
 - Replies are cached by payload; a reply that fails its check is never cached and skips only its
   item. Enforced by:
   tests/test_arbiter.py::test_a_bad_reply_is_never_cached_and_skips_only_its_item.
-- A failed or budget-stopped arbiter leaves its items pending and says why in its counts, so the
+- A failed or spend-capped arbiter leaves its items pending and says why in its counts, so the
   next run asks again. Enforced by:
   tests/test_arbiter.py::test_the_spend_cap_stops_the_arbiter_and_leaves_the_rest_pending.
 
 Terms:
-- **arbiter**: the step inside the model clean-up that asks the judge about each still-pending
-  ambiguity and applies an option whose combined probability reaches the threshold.
+- **judge**: the outside model the arbiter asks (ytlm: Jev, TypeSafe's System One model).
+- **arbiter**: the step inside the AI cleanup that asks the judge about each still-pending
+  ambiguity and applies a candidate whose combined probability reaches the threshold.
 """
 
 from __future__ import annotations
@@ -96,18 +97,18 @@ def _key(text: str) -> str:
     return normalize_span(text) or text
 
 
-def clean_up_probabilities(a: dict, opts: list[str]) -> dict[str, float]:
-    """The clean-up model's probability per option. Prompt v2 gives one per
+def clean_up_probabilities(a: dict, offered_candidates: list[str]) -> dict[str, float]:
+    """The AI cleanup's probability per candidate. Prompt v2 gives one per
     candidate; an older item's single confidence goes to its pick and the
-    rest is spread evenly over the other options."""
-    by_key = {_key(o): o for o in opts}
+    rest is spread evenly over the other candidates."""
+    by_key = {_key(o): o for o in offered_candidates}
     if a.get("probabilities") is not None:
-        out = dict.fromkeys(opts, 0.0)
+        out = dict.fromkeys(offered_candidates, 0.0)
         for c, p in zip(a["candidates"], a["probabilities"], strict=True):
             out[by_key[_key(c)]] += float(p)
         return out
     pick = by_key[_key(a["pick"])]
-    others = [o for o in opts if o != pick]
+    others = [o for o in offered_candidates if o != pick]
     conf = float(a["confidence"])
     out = {o: (1 - conf) / len(others) for o in others} if others else {}
     out[pick] = conf if others else 1.0
@@ -115,16 +116,16 @@ def clean_up_probabilities(a: dict, opts: list[str]) -> dict[str, float]:
 
 
 def combine(p_clean_up: dict[str, float], p_judge: dict[str, float]) -> dict[str, float]:
-    """Multiply per option and rescale to sum to 1; all zeros → all zeros."""
+    """Multiply per candidate and rescale to sum to 1; all zeros → all zeros."""
     raw = {o: p_clean_up.get(o, 0.0) * p_judge.get(o, 0.0) for o in p_clean_up}
     total = sum(raw.values())
     return {o: (v / total if total else 0.0) for o, v in raw.items()}
 
 
-def precedent(a: dict, opts: list[str], memory: dict[str, dict]) -> list[dict]:
+def precedent(a: dict, offered_candidates: list[str], memory: dict[str, dict]) -> list[dict]:
     """Correction-memory rules whose span or verdict shares a word (three
-    letters or more) with the item's span or options."""
-    words = {w for text in (a["span"], *opts) for w in _words(text)}
+    letters or more) with the item's span or candidates."""
+    words = {w for text in (a["span"], *offered_candidates) for w in _words(text)}
     hits = []
     for span_norm, rule in sorted(memory.items()):
         if words & (_words(span_norm) | _words(rule["verdict"])):
@@ -145,8 +146,8 @@ def request(
     memory: dict[str, dict],
     instructions: str,
 ) -> dict:
-    opts = review.reading_options(a)
-    # The sentence as the recognizer produced it: the clean-up's pick is put
+    offered_candidates = review.candidates_offered(a)
+    # The sentence as the recognizer produced it: the cleanup's pick is put
     # back to the words heard, bracketed. No separate "heard" field: given a
     # blank and the heard words, Jev copied the mis-hearing (2026-09-29).
     marked = sentence
@@ -159,13 +160,13 @@ def request(
         "state": {
             "sentence": marked,
             "protected_names": sorted(protected),
-            "author_precedent": precedent(a, opts, memory),
+            "author_precedent": precedent(a, offered_candidates, memory),
         },
         "questions": {
             QUESTION: {
                 "type": "choice",
                 "instructions": instructions,
-                "criteria": dict.fromkeys(opts),
+                "criteria": dict.fromkeys(offered_candidates),
             }
         },
     }
@@ -234,17 +235,19 @@ class Arbiter:
 
     def fingerprint(self) -> dict:
         """The arbiter's settings that, when changed, decide again from the cache without a call
-        (they are a PATCH input of the model clean-up)."""
+        (they are a PATCH input of the AI cleanup)."""
         return {
             "prompt": self.prompt.sha256,
             "model": self.settings.model,
             "min_probability": self.settings.min_probability,
         }
 
-    def run(self, t: dict, *, source: str, protected: list[str], memory: dict[str, dict]) -> dict:
+    def run(
+        self, document: dict, *, source: str, protected: list[str], memory: dict[str, dict]
+    ) -> dict:
         """Ask about every pending ambiguity in `t` and apply the picks that
         clear the threshold, in place. Returns counts; a failure stops the
-        pass and is returned as `error` (with `budget` when the spend cap
+        pass and is returned as `error` (with `spend_cap_reached` when the spend cap
         stopped it). Items already decided stay decided; the rest stay
         pending, and the next run asks again."""
         stats: dict = {
@@ -256,16 +259,18 @@ class Arbiter:
             "cost_usd": 0.0,
             "cached": 0,
             "error": "",
-            "budget": False,
+            "spend_cap_reached": False,
             "calls": [],
         }
-        for a in t.get("ambiguities") or []:
+        for a in document.get("ambiguities") or []:
             if a["status"] != "pending":
                 continue
             try:
-                self._decide(t, a, source=source, protected=protected, memory=memory, stats=stats)
-            except llm.BudgetExceeded as e:
-                stats["error"], stats["budget"] = f"budget: {e}", True
+                self._decide(
+                    document, a, source=source, protected=protected, memory=memory, stats=stats
+                )
+            except llm.SpendCapReached as e:
+                stats["error"], stats["spend_cap_reached"] = f"budget: {e}", True
                 stats["cap"] = e.cap
                 break
             except ArbiterError as e:
@@ -279,7 +284,7 @@ class Arbiter:
 
     def _decide(
         self,
-        t: dict,
+        document: dict,
         a: dict,
         *,
         source: str,
@@ -287,10 +292,10 @@ class Arbiter:
         memory: dict[str, dict],
         stats: dict,
     ) -> None:
-        opts = review.reading_options(a)
+        offered_candidates = review.candidates_offered(a)
         body = request(
             a,
-            t["segments"][a["idx"]]["text"],
+            document["segments"][a["idx"]]["text"],
             model=self.settings.model,
             protected=protected,
             memory=memory,
@@ -298,7 +303,9 @@ class Arbiter:
         )
         tag = f"{source}-{a['key']}"
         reply, call = self._ask(
-            body, tag=tag, check=lambda r: _check(r, opts, tag, self.validate_reply, self.judge)
+            body,
+            tag=tag,
+            check=lambda r: _check(r, offered_candidates, tag, self.validate_reply, self.judge),
         )
         stats["asked"] += 1
         stats["cached"] += call["cached"]
@@ -306,7 +313,7 @@ class Arbiter:
         stats["calls"].append(call)
         answer = reply["answers"][QUESTION]
         choice, p_judge = answer["choice"], answer["probabilities"]
-        p = combine(clean_up_probabilities(a, opts), p_judge)[choice]
+        p = combine(clean_up_probabilities(a, offered_candidates), p_judge)[choice]
         if p < self.settings.min_probability:
             stats["deferred"] += 1
             return
@@ -321,7 +328,7 @@ class Arbiter:
             "p_combined": round(p, 3),
             "overrode": choice != a["pick"],
         }
-        review.apply_resolution(t, a, choice)
+        review.apply_resolution(document, a, choice)
         stats["applied"] += 1
         stats["overrode"] += choice != a["pick"]
 
@@ -329,8 +336,8 @@ class Arbiter:
         """One question: from the cache, else from the judge. `check` runs before
         the reply is cached (ytlm.llm), so a bad reply is never served again."""
         key = json.dumps(body, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
-        sha = hashlib.sha256(key.encode("utf-8")).hexdigest()
-        path = self.client.cache_dir / f"{sha}.json"
+        sha256 = hashlib.sha256(key.encode("utf-8")).hexdigest()
+        path = self.client.cache_dir / f"{sha256}.json"
         requested_at = self._now()
         if path.exists():
             reply = json.loads(path.read_text(encoding="utf-8"))["response"]
@@ -338,15 +345,15 @@ class Arbiter:
             self._ledger(reply, tag, cost=0.0, cached=True)
             return reply, {
                 "tag": tag,
-                "payload_sha256": sha,
+                "payload_sha256": sha256,
                 "requested_at": requested_at,
                 "cached": True,
                 "cost_usd": 0.0,
             }
         c = self.client
-        c.check_budget(STAGE, tag)
+        c.check_spend_cap(STAGE, tag)
         reply = self.transport.send(body, tag=tag)
-        self._log(tag, sha, body, reply)
+        self._log(tag, sha256, body, reply)
         c.calls += 1
         tokens_in = int((reply.get("usage") or {}).get("input_tokens", 0) or 0)
         cost = llm.price_usd(
@@ -374,7 +381,7 @@ class Arbiter:
         self._ledger(reply, tag, cost=cost, cached=False)
         return reply, {
             "tag": tag,
-            "payload_sha256": sha,
+            "payload_sha256": sha256,
             "requested_at": requested_at,
             "cached": False,
             "cost_usd": cost,
@@ -402,24 +409,30 @@ class Arbiter:
             }
         )
 
-    def _log(self, tag: str, sha: str, body: dict, reply: dict) -> None:
+    def _log(self, tag: str, sha256: str, body: dict, reply: dict) -> None:
         """Into the invocation's log, tagged with the stage (ytlm.llm)."""
         self.client.log_block(
             STAGE,
-            f"{tag} payload={sha[:12]}",
+            f"{tag} payload={sha256[:12]}",
             json.dumps(body, ensure_ascii=False),
             json.dumps(reply, ensure_ascii=False),
         )
 
 
 def _check(
-    reply: dict, opts: list[str], tag: str, validate: Callable[[dict], None], judge: str
+    reply: dict,
+    offered_candidates: list[str],
+    tag: str,
+    validate: Callable[[dict], None],
+    judge: str,
 ) -> None:
-    """The reply matches its schema and answers inside the card's options."""
+    """The reply matches its schema and answers inside the card's candidates."""
     try:
         validate(reply)
     except ValueError as e:
         raise ArbiterError(f"{tag}: {e}") from e
     answer = reply["answers"][QUESTION]
-    if answer["choice"] not in opts or not set(answer["probabilities"]) <= set(opts):
-        raise ArbiterError(f"{tag}: {judge} answered outside the card's options")
+    if answer["choice"] not in offered_candidates or not set(answer["probabilities"]) <= set(
+        offered_candidates
+    ):
+        raise ArbiterError(f"{tag}: {judge} answered outside the card's candidates")

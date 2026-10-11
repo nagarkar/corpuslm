@@ -322,7 +322,7 @@ def test_the_run_cap_stops_after_the_call_that_crossed_it(prompt, tmp_path):
     caller = client(tmp_path, config=config)
     caller.complete("greet", prompt, {"word": "a"}, tag="t0")
     assert caller.spent_usd > 0.5
-    with pytest.raises(llm.BudgetExceeded) as error:
+    with pytest.raises(llm.SpendCapReached) as error:
         caller.complete("greet", prompt, {"word": "b"}, tag="t1")
     assert error.value.cap == llm.RUN_CAP and "per-run" in str(error.value)
     assert len(usage_lines(tmp_path)) == 1  # the declined call never happened
@@ -356,7 +356,7 @@ def test_the_day_cap_counts_todays_billed_lines_and_names_itself(prompt, tmp_pat
     write_usage(tmp_path, 50.0, kind="chat")  # a chat-road line is never summed
     write_usage(tmp_path, 50.0, cached=True)  # a cache hit was not billed
     config = {**CONFIG, "llm": {"max_usd_per_day": 10.0}}
-    with pytest.raises(llm.BudgetExceeded) as error:
+    with pytest.raises(llm.SpendCapReached) as error:
         client(tmp_path, config=config).complete("greet", prompt, {"word": "x"}, tag="t0")
     assert error.value.cap == llm.DAY_CAP and "per-day" in str(error.value)
 
@@ -373,7 +373,7 @@ def test_yesterdays_spend_does_not_count_today(prompt, tmp_path):
 def test_a_day_cap_without_the_usage_ledger_declines_to_spend(prompt, tmp_path):
     script(tmp_path, "t0", json.dumps({"greeting": "hi"}))
     config = {**CONFIG, "llm": {"max_usd_per_day": 10.0}, "logs": {"usage": False}}
-    with pytest.raises(llm.BudgetExceeded, match=r"\[logs\]\.usage") as error:
+    with pytest.raises(llm.SpendCapReached, match=r"\[logs\]\.usage") as error:
         client(tmp_path, config=config).complete("greet", prompt, {"word": "x"}, tag="t0")
     assert error.value.cap == llm.DAY_CAP
 
@@ -385,7 +385,7 @@ def test_an_unpriced_model_under_a_cap_stops_instead_of_guessing(prompt, tmp_pat
         "llm": {"max_usd_per_run": 1.0},
         "logs": {},
     }
-    with pytest.raises(llm.BudgetExceeded, match="no price in the table"):
+    with pytest.raises(llm.SpendCapReached, match="no price in the table"):
         client(tmp_path, config=config).complete("greet", prompt, {"word": "x"}, tag="t0")
 
 

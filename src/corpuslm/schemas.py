@@ -67,35 +67,39 @@ def undescribed(node, path: str = "") -> list[str]:
     return out
 
 
-def validate_against(name: str, schema_document: dict, doc) -> None:
+def validate_against(name: str, schema_document: dict, document) -> None:
     """The schema errors only; the first one, by property path, named in the message."""
     import jsonschema  # the `clean` extra
 
     validator = jsonschema.Draft202012Validator(schema_document)
-    errors = sorted(validator.iter_errors(doc), key=lambda e: list(e.absolute_path))
+    errors = sorted(validator.iter_errors(document), key=lambda e: list(e.absolute_path))
     if errors:
         e = errors[0]
         where = ".".join(str(p) for p in e.absolute_path) or "(root)"
         raise SchemaError(f"{name}: {where}: {e.message}")
 
 
-def validate(name: str, doc, *, refined_schema: dict | None = None) -> None:
+def validate(name: str, document, *, refined_schema: dict | None = None) -> None:
     """Schema, then the semantic checks for that kind. `refined_schema` replaces the stored
     schema with a tool's refinement of it."""
-    validate_against(name, refined_schema if refined_schema is not None else schema(name), doc)
+    validate_against(name, refined_schema if refined_schema is not None else schema(name), document)
     checker = _SEMANTIC.get(name)
     if checker:
-        checker(doc)
+        checker(document)
 
 
 def _check_transcript(t: dict) -> None:
     segments = t["segments"]
-    for i, seg in enumerate(segments):
-        if seg["idx"] != i:
-            raise SchemaError(f"transcript: segments[{i}].idx is {seg['idx']}, not its position")
-        if seg["t1"] < seg["t0"]:
-            raise SchemaError(f"transcript: segments[{i}].t1 {seg['t1']} is before t0 {seg['t0']}")
-        if i and seg["t0"] < segments[i - 1]["t0"]:
+    for i, segment in enumerate(segments):
+        if segment["idx"] != i:
+            raise SchemaError(
+                f"transcript: segments[{i}].idx is {segment['idx']}, not its position"
+            )
+        if segment["t1"] < segment["t0"]:
+            raise SchemaError(
+                f"transcript: segments[{i}].t1 {segment['t1']} is before t0 {segment['t0']}"
+            )
+        if i and segment["t0"] < segments[i - 1]["t0"]:
             raise SchemaError(f"transcript: segments are not sorted by t0 at index {i}")
     seen: set[str] = set()
     for a in t.get("ambiguities") or []:

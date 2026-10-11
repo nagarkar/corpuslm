@@ -17,7 +17,7 @@ from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from typing import Any
 
-from .db import Database, ko_fields, loads, now_iso
+from .db import Database, loads, now_iso, standard_fields
 
 # A master row's lists: list name → (table, parent column, element columns).
 SOURCE_LISTS: dict[str, tuple[str, tuple[str, ...]]] = {
@@ -117,7 +117,7 @@ class Store:
                 if position < len(new):
                     self.db.insert(
                         table,
-                        ko_fields(_LIST_PREFIX[table], created_by=created_by)
+                        standard_fields(_LIST_PREFIX[table], created_by=created_by)
                         | {parent: parent_id, "position": position}
                         | element(after),
                     )
@@ -170,7 +170,8 @@ class Store:
             return False
         self.db.insert(
             "sources",
-            ko_fields(id=source_id, created_by=created_by) | {"kind": kind, "locator": locator},
+            standard_fields(id=source_id, created_by=created_by)
+            | {"kind": kind, "locator": locator},
         )
         return True
 
@@ -228,7 +229,7 @@ class Store:
     def add_corpus(self, fields: dict[str, Any], *, created_by: str) -> str:
         scalar, listed = self._split(fields, CORPUS_LISTS)
         with self.db.transaction():
-            cid = self.db.insert("corpora", ko_fields("cor", created_by=created_by) | scalar)
+            cid = self.db.insert("corpora", standard_fields("cor", created_by=created_by) | scalar)
             for name, values in listed.items():
                 table, columns = CORPUS_LISTS[name]
                 self._write_list(table, "corpus_id", cid, columns, values, created_by)
@@ -271,7 +272,7 @@ class Store:
     def add_member(self, corpus_id: str, source_id: str, reason: str, *, created_by: str) -> str:
         return self.db.insert(
             "corpus_members",
-            ko_fields("mem", created_by=created_by)
+            standard_fields("mem", created_by=created_by)
             | {"corpus_id": corpus_id, "source_id": source_id, "reason": reason},
         )
 
@@ -307,7 +308,7 @@ class Store:
             }
             self.db.insert(
                 "change_log",
-                ko_fields("chg", created_by=created_by)
+                standard_fields("chg", created_by=created_by)
                 | {
                     "table_name": "corpus_members",
                     "row_id": row["id"],
@@ -464,7 +465,7 @@ class Store:
             return False
         self.db.insert(
             "feeds",
-            ko_fields("fed", created_by=created_by)
+            standard_fields("fed", created_by=created_by)
             | {"feed_id": feed_id, "kind": kind, "title": title},
         )
         return True
@@ -524,7 +525,7 @@ class Store:
             if row is None:
                 self.db.insert(
                     "source_skips",
-                    ko_fields("skp", created_by=created_by)
+                    standard_fields("skp", created_by=created_by)
                     | {
                         "source_id": source_id,
                         "feed_id": feed_id,
@@ -562,7 +563,7 @@ class Store:
     ) -> str:
         return self.db.insert(
             "fetch_attempts",
-            ko_fields("fet", created_by=created_by)
+            standard_fields("fet", created_by=created_by)
             | {"source_id": source_id, "fetcher": fetcher, "outcome": outcome, "detail": detail},
         )
 
@@ -580,20 +581,22 @@ class Store:
 
     # ---- artifact index (derived state) ------------------------------------------
 
-    def _owner_column(self, owner: str) -> str:
-        if self.has_source(owner):
+    def _id_column_for(self, source_or_corpus_id: str) -> str:
+        if self.has_source(source_or_corpus_id):
             return "source_id"
-        if self.db.one("SELECT 1 FROM corpora WHERE id = ?", (owner,)):
+        if self.db.one("SELECT 1 FROM corpora WHERE id = ?", (source_or_corpus_id,)):
             return "corpus_id"
-        raise KeyError(f"artifact owner {owner!r} is neither a source nor a corpus")
+        raise KeyError(f"artifact {source_or_corpus_id!r} belongs to neither a source nor a corpus")
 
-    def artifact(self, owner: str, node: str) -> dict | None:
-        row = self.db.one("SELECT * FROM artifacts WHERE owner = ? AND node = ?", (owner, node))
+    def artifact(self, source_or_corpus_id: str, node: str) -> dict | None:
+        row = self.db.one(
+            "SELECT * FROM artifacts WHERE owner = ? AND node = ?", (source_or_corpus_id, node)
+        )
         return None if row is None else dict(row)
 
     def record_artifact(
         self,
-        owner: str,
+        source_or_corpus_id: str,
         node: str,
         *,
         path: str,
@@ -610,45 +613,48 @@ class Store:
             "inputs": json.dumps(inputs, sort_keys=True),
             "provenance": json.dumps(provenance, sort_keys=True),
         }
-        row = self.artifact(owner, node)
+        row = self.artifact(source_or_corpus_id, node)
         if row:
             self.db.update("artifacts", row["id"], changes)
         else:
             self.db.insert(
                 "artifacts",
-                ko_fields("art", created_by=created_by)
-                | {self._owner_column(owner): owner, "node": node}
+                standard_fields("art", created_by=created_by)
+                | {self._id_column_for(source_or_corpus_id): source_or_corpus_id, "node": node}
                 | changes,
             )
 
-    def mark_stale(self, owner: str, node: str) -> bool:
-        row = self.artifact(owner, node)
+    def mark_stale(self, source_or_corpus_id: str, node: str) -> bool:
+        row = self.artifact(source_or_corpus_id, node)
         if not row:
             return False
         self.db.update("artifacts", row["id"], {"state": "stale"})
         return True
 
-    def artifacts_of(self, owner: str) -> list[dict]:
+    def artifacts_of(self, source_or_corpus_id: str) -> list[dict]:
         """Every artifact row of one source or corpus, by node name."""
         return [
             dict(r)
-            for r in self.db.all("SELECT * FROM artifacts WHERE owner = ? ORDER BY node", (owner,))
+            for r in self.db.all(
+                "SELECT * FROM artifacts WHERE owner = ? ORDER BY node", (source_or_corpus_id,)
+            )
         ]
 
-    def delete_artifacts(self, owner: str, nodes: Sequence[str]) -> int:
-        """Remove the artifact rows of `nodes` for one owner (derived state, no
+    def delete_artifacts(self, source_or_corpus_id: str, nodes: Sequence[str]) -> int:
+        """Remove the artifact rows of `nodes` for one source or corpus (derived state, no
         history); the runner then finds them missing and builds them. Returns
         the rows removed."""
         if not nodes:
             return 0
         marks = ", ".join("?" * len(nodes))
         cur = self.db.execute(
-            f"DELETE FROM artifacts WHERE owner = ? AND node IN ({marks})", (owner, *nodes)
+            f"DELETE FROM artifacts WHERE owner = ? AND node IN ({marks})",
+            (source_or_corpus_id, *nodes),
         )
         return cur.rowcount
 
     def artifact_health(self) -> dict:
-        """Counts for `status`: built per node, stale, pass 3 drops, and
+        """Counts for `status`: built per node, stale, AI cleanup drops, and
         provisional transcripts."""
         built = {
             r["node"]: r["n"]
@@ -684,17 +690,17 @@ class Store:
         start_seconds and end_seconds."""
         with self.db.transaction():
             self.db.execute("DELETE FROM segments WHERE source_id = ?", (source_id,))
-            for seg in segments:
+            for segment in segments:
                 self.db.execute(
                     "INSERT INTO segments(source_id, position, start_seconds, end_seconds, "
                     "speaker, text) VALUES (?, ?, ?, ?, ?, ?)",
                     (
                         source_id,
-                        seg["idx"],
-                        seg["t0"],
-                        seg["t1"],
-                        seg.get("speaker", ""),
-                        seg["text"],
+                        segment["idx"],
+                        segment["t0"],
+                        segment["t1"],
+                        segment.get("speaker", ""),
+                        segment["text"],
                     ),
                 )
 
@@ -769,17 +775,17 @@ class Store:
         `replace_segments` (JSON names idx, t0, t1); the raw `segments` are never touched."""
         with self.db.transaction():
             self.db.execute("DELETE FROM cleaned_segments WHERE source_id = ?", (source_id,))
-            for seg in segments:
+            for segment in segments:
                 self.db.execute(
                     "INSERT INTO cleaned_segments(source_id, position, start_seconds, "
                     "end_seconds, speaker, text) VALUES (?, ?, ?, ?, ?, ?)",
                     (
                         source_id,
-                        seg["idx"],
-                        seg["t0"],
-                        seg["t1"],
-                        seg.get("speaker", ""),
-                        seg["text"],
+                        segment["idx"],
+                        segment["t0"],
+                        segment["t1"],
+                        segment.get("speaker", ""),
+                        segment["text"],
                     ),
                 )
 
@@ -825,16 +831,16 @@ class Store:
 
     # ---- locks (coordination) ---------------------------------------------------
 
-    def lock_holder(self, owner: str) -> dict | None:
-        row = self.db.one("SELECT holder, expires_at FROM locks WHERE owner = ?", (owner,))
+    def lock_holder(self, locked_id: str) -> dict | None:
+        row = self.db.one("SELECT holder, expires_at FROM locks WHERE owner = ?", (locked_id,))
         return None if row is None else dict(row)
 
-    def take_lock(self, owner: str, holder: str, *, acquired_at: str, expires_at: str) -> None:
+    def take_lock(self, locked_id: str, holder: str, *, acquired_at: str, expires_at: str) -> None:
         self.db.execute(
             "INSERT INTO locks(owner, holder, acquired_at, expires_at) VALUES (?, ?, ?, ?) "
             "ON CONFLICT(owner) DO UPDATE SET holder = excluded.holder, "
             "acquired_at = excluded.acquired_at, expires_at = excluded.expires_at",
-            (owner, holder, acquired_at, expires_at),
+            (locked_id, holder, acquired_at, expires_at),
         )
 
     def refresh_locks(self, holder: str, *, expires_at: str) -> int:
@@ -844,8 +850,8 @@ class Store:
         )
         return cur.rowcount
 
-    def release_lock(self, owner: str, holder: str) -> None:
-        self.db.execute("DELETE FROM locks WHERE owner = ? AND holder = ?", (owner, holder))
+    def release_lock(self, locked_id: str, holder: str) -> None:
+        self.db.execute("DELETE FROM locks WHERE owner = ? AND holder = ?", (locked_id, holder))
 
     # ---- review verdicts, speaker verdicts, correction memory (decisions) -------------
 
@@ -875,7 +881,7 @@ class Store:
             if current and current["subject_sha256"] != subject_sha256
             else None
         )
-        row = ko_fields("ver", created_by=created_by) | {
+        row = standard_fields("ver", created_by=created_by) | {
             "source_id": source_id,
             "key": key,
             "kind": kind,
@@ -916,12 +922,12 @@ class Store:
     ) -> str:
         return self.db.insert(
             "speaker_verdicts",
-            ko_fields("spk", created_by=created_by)
+            standard_fields("spk", created_by=created_by)
             | {"source_id": source_id, "role": role, "name": name},
         )
 
     def current_speaker_names(self, source_id: str) -> dict[str, str]:
-        """role → the author's name in force for that role."""
+        """role → the owner's name in force for that role."""
         return {
             r["role"]: r["name"]
             for r in self.db.all(
@@ -943,7 +949,7 @@ class Store:
     ) -> str:
         return self.db.insert(
             "corrections",
-            ko_fields("crr", created_by=created_by)
+            standard_fields("crr", created_by=created_by)
             | {
                 "span_norm": span_norm,
                 "verdict": verdict,
@@ -971,7 +977,7 @@ class Store:
     def open_run(self, scope: str, *, created_by: str) -> str:
         return self.db.insert(
             "runs",
-            ko_fields("run", created_by=created_by)
+            standard_fields("run", created_by=created_by)
             | {"scope": scope, "status": "running", "started_at": now_iso()},
         )
 
@@ -1043,7 +1049,7 @@ class Store:
             if existing is None:
                 self.db.insert(
                     "review_answers",
-                    ko_fields("ans", created_by=created_by)
+                    standard_fields("ans", created_by=created_by)
                     | {
                         "corpus_id": corpus_id,
                         "card_id": card_id,
@@ -1064,7 +1070,7 @@ class Store:
         )
         return cursor.rowcount > 0
 
-    # ---- model suggestions (derived state: the clean-up model's top suggestions) -------
+    # ---- model suggestions (derived state: the cleanup model's top suggestions) -------
 
     def model_suggestions(self, source_id: str) -> dict[str, dict]:
         """The recorded suggestions of one source by review key (`amb-0001`): `span_norm`,
@@ -1102,7 +1108,7 @@ class Store:
     ) -> bool:
         """Make the source's recorded suggestions exactly `suggestions` (each: `key`,
         `span_norm`, `suggestion`, `suggestion_probability`, `candidates`, `probabilities`), read
-        from the model clean-up artifact with `artifact_sha256`. A rebuilt artifact replaces the
+        from the AI cleanup artifact with `artifact_sha256`. A rebuilt artifact replaces the
         rows of the one before. Nothing is written, and False returned, when the rows already come
         from this artifact. An unknown source is a KeyError."""
         if not self.has_source(source_id):
@@ -1127,7 +1133,7 @@ class Store:
             )
             self.db.execute("DELETE FROM model_suggestions WHERE source_id = ?", (source_id,))
             for item in suggestions:
-                fields = ko_fields("sug", created_by=created_by)
+                fields = standard_fields("sug", created_by=created_by)
                 self.db.insert(
                     "model_suggestions",
                     fields
@@ -1146,7 +1152,7 @@ class Store:
                 ):
                     self.db.insert(
                         "model_suggestion_candidates",
-                        ko_fields("sgc", created_by=created_by)
+                        standard_fields("sgc", created_by=created_by)
                         | {
                             "suggestion_id": fields["id"],
                             "position": position,

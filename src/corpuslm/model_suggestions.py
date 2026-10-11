@@ -1,15 +1,15 @@
-"""Model suggestions: the clean-up model's top suggestion for every ambiguity, kept in the database.
+"""Model suggestions: the cleanup model's top suggestion for every ambiguity, kept in the database.
 
-The model clean-up (corpuslm.model_chain) returns, per ambiguity, the words as heard, its
-candidates, the reading it picked and a probability per candidate. Those lived only inside each
-source's model clean-up artifact file. This module copies them into the `model_suggestions` table
+The AI cleanup (corpuslm.ai_cleanup_chain) returns, per ambiguity, the words as heard, its
+candidates, the pick it made and a probability per candidate. Those lived only inside each
+source's AI cleanup artifact file. This module copies them into the `model_suggestions` table
 (through the Store, one row per source and review key, its candidates beside it), so a later step
 can use the model's suggestion without rerunning the model: faster and free.
 
-Two ways in, both with no model call. `record` is the builder's: whenever the model clean-up step
+Two ways in, both with no model call. `record` is the builder's: whenever the AI cleanup step
 builds or rebuilds a source's artifact, the rows of that source are replaced by the new
 document's. `backfill` is the verb's (`corpuslm suggestions record`): it reads every source's
-existing model clean-up artifact file and writes the same rows.
+existing AI cleanup artifact file and writes the same rows.
 
 Never imports: cli, clikit, db, any model transport.
 
@@ -31,10 +31,11 @@ Decisions:
   tests/test_model_suggestions.py::test_a_dry_run_counts_and_writes_nothing.
 - The builder records the suggestions with the artifact in one transaction, so the rows and the
   artifact never disagree. Enforced by:
-  tests/test_model_chain.py::test_building_the_model_cleanup_records_its_suggestions.
+  tests/test_ai_cleanup_chain.py::test_building_the_ai_cleanup_records_its_suggestions.
 
 Terms:
-- **suggestion**: the reading the model picked for an ambiguity (`pick` in the artifact).
+- **suggestion**: the pick the AI cleanup made for an ambiguity, recorded with its candidates
+  (the artifact calls the same choice `pick`).
 - **review key**: `amb-NNNN`, the ambiguity's name inside one source.
 """
 
@@ -90,7 +91,7 @@ def model_of(document: dict) -> str:
 def record(
     store: Store, source_id: str, document: dict, *, artifact_sha256: str, created_by: str
 ) -> bool:
-    """Make the source's recorded suggestions those of `document`, the model clean-up artifact
+    """Make the source's recorded suggestions those of `document`, the AI cleanup artifact
     with `artifact_sha256`. False when the rows already come from that artifact."""
     return store.replace_model_suggestions(
         source_id,
@@ -104,7 +105,7 @@ def record(
 @dataclass(frozen=True, slots=True)
 class BackfillReport:
     sources_checked: int = 0
-    sources_without_model_cleanup: int = 0
+    sources_without_ai_cleanup: int = 0
     sources_file_changed_since_built: int = 0
     sources_unreadable: int = 0  # not valid as a transcript, or its suggestions cannot be kept
     sources_read: int = 0
@@ -124,22 +125,22 @@ def backfill(
     dry_run: bool = False,
 ) -> BackfillReport:
     """Record the suggestions of every source of the kinds in `kinds` from its existing model
-    clean-up artifact (the file beside the source's other documents, named by the artifact's
+    cleanup artifact (the file beside the source's other documents, named by the artifact's
     recorded path), with no model call. Counts only: no document text is returned."""
     counts = dict.fromkeys(BackfillReport.__slots__, 0)  # type: ignore[attr-defined]
     for kind_name, setup in kinds.items():
-        node = setup.kind.model_cleanup_node
+        node = setup.kind.ai_cleanup_node
         for source_id in store.source_ids(kind_name):
             counts["sources_checked"] += 1
             row = store.artifact(source_id, node)
             if row is None or row["state"] not in ("built", "stale") or not row["path"]:
-                counts["sources_without_model_cleanup"] += 1
+                counts["sources_without_ai_cleanup"] += 1
                 continue
             path = Path(setup.sources_directory) / source_id / Path(row["path"]).name
             try:
                 data = path.read_bytes()
             except OSError:
-                counts["sources_without_model_cleanup"] += 1
+                counts["sources_without_ai_cleanup"] += 1
                 continue
             if hashlib.sha256(data).hexdigest() != row["sha256"]:
                 counts["sources_file_changed_since_built"] += 1
@@ -184,10 +185,12 @@ def backfill(
     return BackfillReport(**counts)
 
 
-def _already_recorded(held: dict[str, dict], ambiguities: list[dict], sha: str) -> bool:
+def _already_recorded(held: dict[str, dict], ambiguities: list[dict], sha256: str) -> bool:
     if not ambiguities:
         return not held
-    return len(held) == len(ambiguities) and all(h["artifact_sha256"] == sha for h in held.values())
+    return len(held) == len(ambiguities) and all(
+        h["artifact_sha256"] == sha256 for h in held.values()
+    )
 
 
 __all__ = ["BackfillReport", "backfill", "model_of", "record", "suggestions_of"]

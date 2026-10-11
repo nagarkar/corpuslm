@@ -31,14 +31,14 @@ flowchart LR
 - The module only builds pages and notes. Serving a kind's recordings on a phone page over Tailscale needs the owner's confirmation per kind, and nothing here serves anything.
 - The page keeps the stored key names `video_id` and `title` for a source's id and label: they are the page script's and the decisions file's format, and a page of linked cards is byte-identical to the one ytlm generated before the move.
 
-**Why:** nagarkar/ytlm#50 step 6: beelm shows Bee speaker picks and clean-up ambiguities on the same page without copying code.
+**Why:** nagarkar/ytlm#50 step 6: beelm shows Bee speaker picks and cleanup ambiguities on the same page without copying code.
 
 **Rules out:** a branch on the kind's name inside these modules; a `file://` link on a page; ytlm and beelm each keeping a copy of the page builder.
 
 ## One review server and one answers table for every kind (2026-10-09)
 
 - The review page is served by one process, `corpuslm review serve --config FILE`, for every corpus of every source kind, with the corpus dropdown. The answers the owner taps are rows of `review_answers` in the shared database, written through the Store ([`src/corpuslm/review_server.py`](../../src/corpuslm/review_server.py)). The page no longer needs an Artifact's database; its script keeps that path working and ytlm no longer documents it.
-- `corpuslm review apply` reads the answers table, lands them as verdicts and deletes them, with no model. A kind with a speaker rebuild (Bee) lands only where its tool's rebuilder is registered (entry-point group `corpuslm.review_rebuilders`): there it rebuilds the speaker map at once; where it is not (corpuslm's own venv), the kind's answers stay unlanded and the board names the tool's verb (`./beelm.sh review apply`). The other answers wait for the next AI clean-up run, and the board says so. A kind's `stale_nodes` (YouTube: the clean-up and the speaker map) are marked stale instead.
+- `corpuslm review apply` reads the answers table, lands them as verdicts and deletes them, with no model. A kind with a speaker rebuild (Bee) lands only where its tool's rebuilder is registered (entry-point group `corpuslm.review_rebuilders`): there it rebuilds the speaker map at once; where it is not (corpuslm's own venv), the kind's answers stay unlanded and the board names the tool's verb (`./beelm.sh review apply`). The other answers wait for the next AI cleanup run, and the board says so. A kind's `stale_nodes` (YouTube: the cleanup and the speaker map) are marked stale instead.
 - Both review kinds live here ([`src/corpuslm/review_kinds.py`](../../src/corpuslm/review_kinds.py)), and so does YouTube's speaker scheme, so the server imports neither ytlm nor beelm. Each source is read with the kind and folder of ITS source kind.
 - Per-kind settings (the database path, the port, the folder of each kind's per-source documents, the owner's first name) are one `review.toml` beside the database ([`scripts/review.example.toml`](../../scripts/review.example.toml)), strictly read. The database path is never on a command line.
 - `scripts/com.nagarkar.corpuslm.review.plist` keeps the server running; the owner installs it. `corpuslm review check` fails when the running server is older than the newest commit touching `src/`.
@@ -49,7 +49,7 @@ flowchart LR
 
 ## The model's suggestions, recorded and used (2026-10-10)
 
-- The clean-up model's top suggestion for every ambiguity is a row of `model_suggestions` (schema 6, [`src/corpuslm/model_suggestions.py`](../../src/corpuslm/model_suggestions.py)), written by the model clean-up builder with the artifact, for ytlm and beelm alike. `corpuslm suggestions record --config FILE` writes the rows from the artifacts already on disk, with no model call, and a second run writes nothing.
+- The cleanup model's top suggestion for every ambiguity is a row of `model_suggestions` (schema 6, [`src/corpuslm/model_suggestions.py`](../../src/corpuslm/model_suggestions.py)), written by the AI cleanup builder with the artifact, for ytlm and beelm alike. `corpuslm suggestions record --config FILE` writes the rows from the artifacts already on disk, with no model call, and a second run writes nothing.
 - `corpuslm review accept-suggestions --config FILE --kind NAME --before YYYY-MM-DD` saves an answer equal to the suggestion on every open ambiguity card whose sources are all of that kind and recorded before the date, through the Store method the review server uses. The owner sees the answers on the page and can change them; nothing is landed. It never overwrites an answer and never touches a speaker card. `--dry-run` counts only.
 
 **Why:** the owner wants the model's suggestion kept so older conversations can be answered without rerunning the model, faster and free.
@@ -71,7 +71,7 @@ flowchart LR
 
 - 2026-10-09 One review server and one `review_answers` table for every kind (schema 5); both review kinds and YouTube's speaker scheme moved here; `review page|serve|apply|check`.
 
-- 2026-10-03 Created (nagarkar/ytlm#50, slice 1).
+- 2026-10-03 Created (nagarkar/ytlm#50, build step 1).
 - 2026-10-08 Review machinery moved here with per-kind hooks (nagarkar/ytlm#50 step 6).
 - 2026-10-10 Model suggestions recorded (schema 6); `suggestions record` and `review accept-suggestions`.
 - 2026-10-10 One usage dashboard (`usage show|serve`); ytlm's own dashboard retired.

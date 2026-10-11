@@ -66,12 +66,12 @@ DESCRIPTIONS = {
         "with --kind), then delete the landed answers. Calls no model. A kind whose tool must "
         "rebuild what an answer changes (Bee: `./beelm.sh review apply`) lands only where that "
         "tool's rebuilder is installed in this environment; otherwise its answers stay unlanded "
-        "and the board names the tool's verb. Other answers wait for the next AI clean-up run. "
+        "and the board names the tool's verb. Other answers wait for the next AI cleanup run. "
         "`--dry-run` counts and writes nothing.",
         "corpuslm review apply --config /path/to/review.toml --dry-run",
     ),
     "review accept-suggestions": (
-        "Answer the open ambiguity cards of one source kind with the clean-up model's recorded "
+        "Answer the open ambiguity cards of one source kind with the cleanup model's recorded "
         "suggestion, for sources recorded before a date (--before): each answer is saved as the "
         "review page would save it, so it shows on the page for the owner to change; nothing "
         "is landed. A card that already has an answer, a speaker card, a card with a source "
@@ -82,8 +82,8 @@ DESCRIPTIONS = {
         "--before 2026-07-01 --dry-run",
     ),
     "suggestions record": (
-        "Record the clean-up model's top suggestion for every ambiguity in the database, read "
-        "from each source's existing model clean-up file (no model is called, nothing is "
+        "Record the cleanup model's top suggestion for every ambiguity in the database, read "
+        "from each source's existing AI cleanup file (no model is called, nothing is "
         "billed). Safe to run again: sources already recorded are left alone. `--dry-run` "
         "counts and writes nothing.",
         "corpuslm suggestions record --config /path/to/review.toml --dry-run",
@@ -231,7 +231,7 @@ def build_parser() -> argparse.ArgumentParser:
     record_parser = leaf(
         suggestions_verbs,
         "record",
-        "record the model's suggestions from the existing clean-up files",
+        "record the model's suggestions from the existing cleanup files",
         "suggestions record",
     )
     record_parser.add_argument(
@@ -418,7 +418,7 @@ def review_apply_board(settings: ReviewSettings, kind: str | None, dry_run: bool
         "note": "dry run: nothing was written"
         if dry_run
         else "a speaker answer takes effect when its tool rebuilds the speaker map; other "
-        "answers wait for the next AI clean-up run",
+        "answers wait for the next AI cleanup run",
         "next": (
             report_next(setups, report.verdicts_left_unlanded)
             if left
@@ -483,7 +483,7 @@ def suggestions_record_board(settings: ReviewSettings, dry_run: bool) -> dict:
         "verb": "suggestions record",
         "ok": True,
         "sources_checked": report.sources_checked,
-        "sources_without_model_cleanup": report.sources_without_model_cleanup,
+        "sources_without_ai_cleanup": report.sources_without_ai_cleanup,
         "sources_file_changed_since_built": report.sources_file_changed_since_built,
         "sources_unreadable": report.sources_unreadable,
         "sources_read": report.sources_read,

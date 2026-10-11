@@ -102,9 +102,9 @@ def test_unskip_lifts_the_skip_without_deleting_the_row_and_a_new_skip_reuses_it
 def test_remove_member_deletes_one_membership_and_logs_who_removed_it_and_what_it_was(store):
     corpus = store.add_corpus({"name": "Physics"}, created_by="cli")
     other = store.add_corpus({"name": "Maths"}, created_by="cli")
-    for vid in (VIDEO, OTHER):
-        store.add_source(vid, "u", created_by="cli")
-        store.add_member(corpus, vid, "author", created_by="cli")
+    for video_id in (VIDEO, OTHER):
+        store.add_source(video_id, "u", created_by="cli")
+        store.add_member(corpus, video_id, "author", created_by="cli")
     store.add_member(other, VIDEO, "author", created_by="cli")
     member = store.member_rows(corpus)[0]
     assert member["source_id"] == VIDEO

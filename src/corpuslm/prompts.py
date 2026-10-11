@@ -76,19 +76,19 @@ def _parse(path: Path) -> Prompt:
     if not raw.startswith("---\n"):
         raise PromptError(f"{path}: no TOML front matter")
     _, front, body = raw.split("---\n", 2)
-    meta = tomllib.loads(front)
-    missing = [k for k in _REQUIRED if k not in meta]
+    metadata = tomllib.loads(front)
+    missing = [k for k in _REQUIRED if k not in metadata]
     if missing:
         raise PromptError(f"{path}: front matter missing {missing}")
-    unknown = sorted(set(meta) - set(_REQUIRED))
+    unknown = sorted(set(metadata) - set(_REQUIRED))
     if unknown:
         raise PromptError(f"{path}: unknown front matter keys {unknown}")
     return Prompt(
-        id=str(meta["id"]),
-        version=int(meta["version"]),
-        stage=str(meta["stage"]),
-        output_schema=str(meta["output_schema"]),
-        config_section=str(meta["config_section"]),
+        id=str(metadata["id"]),
+        version=int(metadata["version"]),
+        stage=str(metadata["stage"]),
+        output_schema=str(metadata["output_schema"]),
+        config_section=str(metadata["config_section"]),
         body=body.lstrip("\n"),
         path=path,
         sha256=hashlib.sha256(raw.encode("utf-8")).hexdigest(),
