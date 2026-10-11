@@ -11,8 +11,8 @@ Terms:
 - **source**: one transcribed item, a row of `sources` of a kind: `youtube` (a video, id the
   YouTube id) or `bee` (a conversation, id `bee:<conversation id>`). Its tags, topics and people
   are rows of `source_tags`, `source_topics` and `source_people`. In code `source_id` is the id
-  and `source_row` the row. ytlm says "video" for a `youtube` source. The stored `video_id` keys in documents and
-  some columns name a source id.
+  and `source_row` the row. ytlm says "video" for a `youtube` source. The stored `video_id` keys
+  in documents and some columns name a source id.
 - **feed**: a YouTube playlist or channel the owner tracks as an inbox, a row of `feeds` of kind
   `playlist` or `channel`. A feed is never a corpus. The `source_feeds` rows of a source say which
   feeds it was found through.
