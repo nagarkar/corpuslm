@@ -37,7 +37,7 @@ class VideoMetadata:
     thumbnail_url: str = ""
     language: str = ""
     has_caption_track: bool | None = None
-    source: str = ""  # dataapi | oembed
+    metadata_source: str = ""  # dataapi | oembed
     raw: dict = field(default_factory=dict, compare=False)
 
 

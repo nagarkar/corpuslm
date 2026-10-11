@@ -138,15 +138,15 @@ def speaker_names(
     return names
 
 
-def moment_label(kind: ReviewKind, source: dict, seconds: float) -> str:
+def moment_label(kind: ReviewKind, source_row: dict, seconds: float) -> str:
     """A time label, linked to the moment when the kind can link to it (`[00:12](url)`),
     else the label alone."""
-    link = kind.anchor_url(source, seconds)
+    link = kind.anchor_url(source_row, seconds)
     return f"[{timestamp(seconds)}]({link})" if link else timestamp(seconds)
 
 
 def render_review(
-    document: dict | None, speaker_map: dict | None, *, source: dict, kind: ReviewKind
+    document: dict | None, speaker_map: dict | None, *, source_row: dict, kind: ReviewKind
 ) -> list[str]:
     """Markdown lines for the note's Review section (Live Preview shape)."""
     lines: list[str] = []
@@ -157,7 +157,7 @@ def render_review(
         segment = segments[a["idx"]] if a["idx"] < len(segments) else {"t0": 0, "text": ""}
         if a["status"] == "pending":
             context = segment["text"].replace(a["pick"], f"**{a['pick']}**", 1)
-            moment = moment_label(kind, source, segment["t0"])
+            moment = moment_label(kind, source_row, segment["t0"])
             pending += [
                 f'> [!question] {a["key"]} · {moment} · heard "{a["span"]}"',
                 f"> {context}",
@@ -184,7 +184,7 @@ def render_review(
             heard = f" Heard: {entry['anchor']}" if entry.get("anchor") else ""
             pending += [f"> [!question] {entry['key']} · who is {role}?{heard}"]
             for name in speaker_names(
-                entry, speaker_map or {}, kind.extra_speaker_names(source), ()
+                entry, speaker_map or {}, kind.extra_speaker_names(source_row), ()
             ):
                 pending.append(f"> - [ ] {name}")
             pending += [f"> - [ ] {OTHER}", f"> - [ ] {SKIP}", ""]
@@ -295,7 +295,7 @@ def record_verdict(
     span: str = "",
     role: str = "",
     created_by: str = "cli",
-    source: str = "review file",
+    answered_through: str = "review file",
     index: int | None = None,
 ) -> None:
     """Append the owner's verdict (decisions are append-only: an answer
@@ -306,7 +306,7 @@ def record_verdict(
     if not (
         current
         and (current["verdict"], current["subject_sha256"], current["source"])
-        == (verdict, subject, source)
+        == (verdict, subject, answered_through)
     ):
         # The same answer landing again (a re-run apply) adds no row.
         store.append_review_verdict(
@@ -316,7 +316,7 @@ def record_verdict(
             verdict=verdict,
             span=span,
             role=role,
-            source=source,
+            answered_through=answered_through,
             subject_sha256=subject,
             metadata=None if index is None else {"idx": int(index)},
             created_by=created_by,

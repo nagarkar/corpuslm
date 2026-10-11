@@ -69,11 +69,11 @@ def parse_cutoff(text: str) -> date:
         raise ValueError(f"--before must be a date like 2026-07-01, not {text!r}") from error
 
 
-def recorded_before(source: dict, cutoff: date) -> bool:
+def recorded_before(source_row: dict, cutoff: date) -> bool:
     """Whether the source's recording date is before `cutoff`; a source with no usable date is
     not."""
     try:
-        return date.fromisoformat(str(source.get("published_at") or "")[:10]) < cutoff
+        return date.fromisoformat(str(source_row.get("published_at") or "")[:10]) < cutoff
     except ValueError:
         return False
 

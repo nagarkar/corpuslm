@@ -93,7 +93,7 @@ def _verdict(
         verdict=verdict,
         span="darma",
         role="",
-        source="review file",
+        answered_through="review file",
         subject_sha256=sha256,
         created_by="cli",
     )

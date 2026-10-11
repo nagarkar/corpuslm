@@ -10,8 +10,9 @@ Terms:
   row belongs to; code calls it `source_or_corpus_id` or `locked_id`.)
 - **source**: one transcribed item, a row of `sources` of a kind: `youtube` (a video, id the
   YouTube id) or `bee` (a conversation, id `bee:<conversation id>`). Its tags, topics and people
-  are rows of `source_tags`, `source_topics` and `source_people`. ytlm says "video" for a
-  `youtube` source. The stored `video_id` keys in documents and some columns name a source id.
+  are rows of `source_tags`, `source_topics` and `source_people`. In code `source_id` is the id
+  and `source_row` the row. ytlm says "video" for a `youtube` source. The stored `video_id` keys
+  in documents and some columns name a source id.
 - **feed**: a YouTube playlist or channel the owner tracks as an inbox, a row of `feeds` of kind
   `playlist` or `channel`. A feed is never a corpus. The `source_feeds` rows of a source say which
   feeds it was found through.
@@ -27,6 +28,8 @@ Terms:
 - **artifact**: a file one node of the pipeline built for a source or corpus, a row of
   `artifacts` with its path, sha256, state (`built`, `stale`, `failed`, `skipped`), the hashes of
   its inputs and its provenance.
+- **answered through**: where a verdict was answered: a vault note (stored as `review file`) or
+  the review page (stored as `phone page`), column `review_verdicts.source`.
 - **review verdict**: the owner's answer to one review item, an append-only row of
   `review_verdicts`; the view `vw_current_review_verdicts` holds the newest per item.
 - **speaker verdict**: the owner's name for one speaker label of a source, an append-only row of

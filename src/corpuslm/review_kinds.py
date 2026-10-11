@@ -101,9 +101,11 @@ def bee_review(owner_first_name: str = "") -> ReviewKind:
     """No link to a moment, the recording's title and day as the label, the owner's first name
     offered in the speaker picker."""
 
-    def label(source: dict) -> str:
-        day = str(source.get("published_at") or "")[:10]
-        return " · ".join(part for part in (source.get("title") or source["id"], day) if part)
+    def label(source_row: dict) -> str:
+        day = str(source_row.get("published_at") or "")[:10]
+        return " · ".join(
+            part for part in (source_row.get("title") or source_row["id"], day) if part
+        )
 
     return ReviewKind(
         name="bee",

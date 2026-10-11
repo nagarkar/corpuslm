@@ -60,13 +60,13 @@ def speaker_properties(speaker_map: dict | None) -> list[str]:
 
 
 def transcript_lines(
-    transcript: dict, source: dict, anchor_url: Callable[[dict, float], str | None]
+    transcript: dict, source_row: dict, anchor_url: Callable[[dict, float], str | None]
 ) -> list[str]:
     """One bullet per segment: the time (linked when `anchor_url` gives a link), the speaker
     in bold, the text."""
     lines = []
     for segment in transcript["segments"]:
-        link = anchor_url(source, segment["t0"])
+        link = anchor_url(source_row, segment["t0"])
         moment = f"[{timestamp(segment['t0'])}]({link})" if link else timestamp(segment["t0"])
         speaker = f"**{segment['speaker']}**: " if segment.get("speaker") else ""
         lines.append(f"- {moment} {speaker}{segment['text']}")

@@ -102,7 +102,7 @@ ASSUMED_OUTPUT_PER_INPUT = 0.25
 class ReviewHooks(Protocol):
     """A tool's review layer: what the owner already said, applied to a fresh build."""
 
-    def verdicts(self, source: str) -> dict[str, dict]:
+    def verdicts(self, source_id: str) -> dict[str, dict]:
         """The owner's current verdicts on the source, by review key."""
         ...
 
@@ -125,7 +125,7 @@ class ReviewHooks(Protocol):
 class NoReview:
     """A tool with no review layer yet: no verdicts, no memory, nothing carried."""
 
-    def verdicts(self, source: str) -> dict[str, dict]:
+    def verdicts(self, source_id: str) -> dict[str, dict]:
         return {}
 
     def corrections(self) -> dict[str, dict]:
@@ -153,8 +153,8 @@ class DatabaseReview:
     def __init__(self, store: Store):
         self.store = store
 
-    def verdicts(self, source: str) -> dict[str, dict]:
-        return review.verdicts_for(self.store.db, source)
+    def verdicts(self, source_id: str) -> dict[str, dict]:
+        return review.verdicts_for(self.store.db, source_id)
 
     def corrections(self) -> dict[str, dict]:
         return review.corrections(self.store.db)
@@ -178,7 +178,9 @@ class ArbiterLike(Protocol):
 
     def fingerprint(self) -> dict: ...
 
-    def run(self, document: dict, *, source: str, protected: list[str], memory: dict) -> dict: ...
+    def run(
+        self, document: dict, *, source_id: str, protected: list[str], memory: dict
+    ) -> dict: ...
 
 
 @dataclass(slots=True)
@@ -198,7 +200,7 @@ class SpendCapStop:
         return f"budget: the {which} spend cap ({self.cap}) was reached earlier in this run"
 
 
-def _never_declined(source: str) -> str | None:
+def _never_declined(source_id: str) -> str | None:
     return None
 
 
@@ -243,9 +245,9 @@ class AiCleanupSetup:
             "max_new_ambiguities": int(section.get("max_new_ambiguities", 40)),
         }
 
-    def off_reason(self, source: str) -> str | None:
+    def off_reason(self, source_id: str) -> str | None:
         """Why the step does not run for this source, or None. On by default."""
-        reason = self.declined(source)
+        reason = self.declined(source_id)
         if reason:
             return reason
         if not self.config.get("cleanup"):
@@ -254,11 +256,11 @@ class AiCleanupSetup:
             return self.spend_cap_stop.note()
         return None
 
-    def inputs(self, source: str, spell_fix_sha256: str) -> dict:
+    def inputs(self, source_id: str, spell_fix_sha256: str) -> dict:
         """The hashes this build depends on."""
         shape = self.chain.kind.shape
         settings = self.settings()
-        verdicts = self.review.verdicts(source)
+        verdicts = self.review.verdicts(source_id)
         memory = self.review.corrections()
         arbiter, _ = self.arbiter()
         return {
@@ -276,7 +278,7 @@ class AiCleanupSetup:
 
 def _run_arbiter(
     ai_cleanup_setup: AiCleanupSetup,
-    source: str,
+    source_id: str,
     document: dict,
     terms: list[str],
     memory: dict,
@@ -290,9 +292,9 @@ def _run_arbiter(
     if ai_cleanup_setup.spend_cap_stop.cap:
         stats = {"error": ai_cleanup_setup.spend_cap_stop.note(), "spend_cap_reached": True}
         report.count("arbiter_spend_cap")
-        report.errors[source] = f"arbiter: {stats['error']}"
+        report.errors[source_id] = f"arbiter: {stats['error']}"
         return stats
-    stats = arbiter.run(document, source=source, protected=terms, memory=memory)
+    stats = arbiter.run(document, source_id=source_id, protected=terms, memory=memory)
     for key in ("asked", "applied", "overrode", "deferred", "bad"):
         if stats[key]:
             report.count(f"arbiter_{key}", stats[key])
@@ -300,12 +302,12 @@ def _run_arbiter(
         ai_cleanup_setup.spend_cap_stop.stop(stats.get("cap", llm.RUN_CAP), report)
         report.count("arbiter_spend_cap")
     if stats["error"]:
-        report.errors[source] = f"arbiter: {stats['error']}"
+        report.errors[source_id] = f"arbiter: {stats['error']}"
     return stats
 
 
 def build_ai_cleanup(
-    ai_cleanup_setup: AiCleanupSetup, source: str, spell_fix_sha256: str, report: Report
+    ai_cleanup_setup: AiCleanupSetup, source_id: str, spell_fix_sha256: str, report: Report
 ) -> str | None:
     """The AI cleanup of one source over its spell-fix artifact. Returns the artifact's
     sha256, or None when the step did not produce one (skipped, failed, stopped by a spend cap)."""
@@ -318,12 +320,12 @@ def build_ai_cleanup(
     batch_tokens = settings["batch_tokens"]
     overlap = settings["overlap_segments"]
     max_new = settings["max_new_ambiguities"]
-    verdicts = ai_cleanup_setup.review.verdicts(source)
+    verdicts = ai_cleanup_setup.review.verdicts(source_id)
     memory = ai_cleanup_setup.review.corrections()
-    inputs = ai_cleanup_setup.inputs(source, spell_fix_sha256)
-    path = chain.path(source, node)
+    inputs = ai_cleanup_setup.inputs(source_id, spell_fix_sha256)
+    path = chain.path(source_id, node)
     store = chain.store
-    row = store.artifact(source, node)
+    row = store.artifact(source_id, node)
     if row and row["state"] == "built" and loads(row["inputs"], {}) == inputs and path.exists():
         return row["sha256"]
 
@@ -337,7 +339,7 @@ def build_ai_cleanup(
     ) -> None:
         record(
             store,
-            source,
+            source_id,
             node,
             root=chain.root,
             path=path,
@@ -389,11 +391,11 @@ def build_ai_cleanup(
             held = {k: old_inputs.get(k) for k in CONFIG_INPUTS}
             if not replay:
                 report.count(f"{node}_held")
-                report.errors[source] = f"{node}: held build has no recorded calls to replay"
+                report.errors[source_id] = f"{node}: held build has no recorded calls to replay"
                 return row["sha256"]
             batch_tokens = int(held.get("batch_tokens") or batch_tokens)
             overlap = int(held.get("overlap_segments") or overlap)
-    reason = ai_cleanup_setup.off_reason(source)
+    reason = ai_cleanup_setup.off_reason(source_id)
     if reason:
         state = "failed" if reason.startswith("budget") else "skipped"
         put(
@@ -405,16 +407,16 @@ def build_ai_cleanup(
         )
         if state == "failed":
             report.count(f"{node}_spend_cap")
-            report.errors[source] = f"{node}: {reason}"
+            report.errors[source_id] = f"{node}: {reason}"
         return None
-    document = chain.load(source, shape.spell_fix)
+    document = chain.load(source_id, shape.spell_fix)
     if ai_cleanup_setup.scheme.fixed_labels:
         ai_cleanup.adopt_fixed_labels(document)
     # Source names only in the prompt: the correction memory's terms are already applied by
     # protected vocabulary and marked protected in the segments, so apply() keeps them; leaving
     # them out of the prompt keeps every batch payload stable and the cache warm (a new verdict
     # must not re-bill the corpus).
-    terms = sorted(chain.kind.vocabulary(source).terms)
+    terms = sorted(chain.kind.vocabulary(source_id).terms)
     protected = ", ".join(terms) or "(none)"
     scheme = ai_cleanup_setup.scheme
     batches_to_run = ai_cleanup.batches(
@@ -448,7 +450,7 @@ def build_ai_cleanup(
             ),
             "batch": ai_cleanup.render(document, batch, scheme=scheme),
         }
-        tag = f"{source}-{batch.tag_suffix}"
+        tag = f"{source_id}-{batch.tag_suffix}"
 
         def check(obj, batch=batch, current=document):
             ai_cleanup.check_bounds(batch, obj, scheme=scheme, document=current)
@@ -467,7 +469,7 @@ def build_ai_cleanup(
         except llm.CacheMiss as e:
             # the held build stays as it is; the verdict waits in the database
             report.count(f"{node}_held")
-            report.errors[source] = f"{node}: {e}"
+            report.errors[source_id] = f"{node}: {e}"
             return row["sha256"] if row else None
         except llm.NotConfigured as e:
             put(path=None, sha256="", inputs=inputs, state="skipped", provenance={"reason": str(e)})
@@ -486,7 +488,7 @@ def build_ai_cleanup(
                 },
             )
             report.count(f"{node}_spend_cap")
-            report.errors[source] = f"{node}: budget: {e}"
+            report.errors[source_id] = f"{node}: budget: {e}"
             return None
         except llm.VendorError as e:
             # transient by definition: recorded, the run goes on
@@ -498,7 +500,7 @@ def build_ai_cleanup(
                 provenance={"reason": f"vendor: {e}", "transient": True, "batch": batch.number},
             )
             report.count(f"{node}_failed")
-            report.errors[source] = f"{node} batch {batch.number}: vendor: {e}"
+            report.errors[source_id] = f"{node} batch {batch.number}: vendor: {e}"
             return None
         except (llm.BadReply, llm.TruncatedReply, ai_cleanup.BatchError) as e:
             put(
@@ -509,7 +511,7 @@ def build_ai_cleanup(
                 provenance={"reason": f"bad_reply: {e}", "transient": True, "batch": batch.number},
             )
             report.count(f"{node}_failed")
-            report.errors[source] = f"{node} batch {batch.number}: {e}"
+            report.errors[source_id] = f"{node} batch {batch.number}: {e}"
             return None
         next_key = stats["next_key"]
         bindings += stats["bindings"]
@@ -555,7 +557,7 @@ def build_ai_cleanup(
         document, verdicts, memory, now=ai_cleanup_setup.clock()
     )
     dropped_after_memory = ai_cleanup.drop_unanchored(document)
-    arbiter_stats = _run_arbiter(ai_cleanup_setup, source, document, terms, memory, report)
+    arbiter_stats = _run_arbiter(ai_cleanup_setup, source_id, document, terms, memory, report)
     if arbiter_stats.get("error"):
         # asked again on the next run: the recorded input no longer matches
         inputs = inputs | {"arbiter": "incomplete"}
@@ -610,7 +612,7 @@ def build_ai_cleanup(
             },
         )
         model_suggestions.record(
-            store, source, document, artifact_sha256=sha256, created_by=chain.created_by
+            store, source_id, document, artifact_sha256=sha256, created_by=chain.created_by
         )
     report.count(f"{node}_replayed" if held else node)
     return sha256
@@ -632,7 +634,7 @@ class Estimate:
     model: str
 
 
-def _walk_cache(ai_cleanup_setup: AiCleanupSetup, source: str, document: dict) -> list[str]:
+def _walk_cache(ai_cleanup_setup: AiCleanupSetup, source_id: str, document: dict) -> list[str]:
     """The rendered text of each batch the cache does not hold (empty: the cache holds them all).
 
     Walks the source's batches as `build_ai_cleanup` does, applying each cached reply so the
@@ -647,7 +649,9 @@ def _walk_cache(ai_cleanup_setup: AiCleanupSetup, source: str, document: dict) -
         batch_tokens=settings["batch_tokens"],
         overlap_segments=settings["overlap_segments"],
     )
-    protected = ", ".join(sorted(ai_cleanup_setup.chain.kind.vocabulary(source).terms)) or "(none)"
+    protected = (
+        ", ".join(sorted(ai_cleanup_setup.chain.kind.vocabulary(source_id).terms)) or "(none)"
+    )
     client = ai_cleanup_setup.client()
     bindings: list[dict] = []
     next_key = 1

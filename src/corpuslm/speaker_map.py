@@ -76,7 +76,7 @@ def labels_present(document: dict, *, scheme: SpeakerScheme) -> list[str]:
 
 
 def build_map(
-    source: dict,
+    source_row: dict,
     document: dict,
     bindings: list[dict],
     *,
@@ -110,7 +110,7 @@ def build_map(
                 continue
             # a weak binding is a question for the owner, not a fact
         if len(names) == 0:
-            default = scheme.resolve_default(role, source)
+            default = scheme.resolve_default(role, source_row)
             if default:
                 roles[role] = {"name": default, "status": "RESOLVED_FROM_METADATA"}
                 continue
@@ -120,7 +120,7 @@ def build_map(
             entry["anchor"] = "; ".join(f"{n} ({b.get('anchor', '')})" for n, b in names.items())
         roles[role] = entry
     return {
-        scheme.source_id_key: source["id"],
+        scheme.source_id_key: source_row["id"],
         "candidates": list(dict.fromkeys(candidates)),
         "roles": roles,
     }
@@ -155,7 +155,7 @@ def bee_scheme(owner_first_name: str) -> SpeakerScheme:
     owner's first name resolves to that name; every other label ('Unknown', 'Speaker 2', ...)
     is unresolved and becomes a review item for the owner."""
 
-    def resolve_default(label: str, source: dict) -> str | None:
+    def resolve_default(label: str, source_row: dict) -> str | None:
         return owner_first_name if owner_first_name and label == owner_first_name else None
 
     return SpeakerScheme(
@@ -168,8 +168,8 @@ def bee_scheme(owner_first_name: str) -> SpeakerScheme:
     )
 
 
-def _host_is_the_channel(label: str, source: dict) -> str | None:
-    return source.get("channel_title") if label == "HOST" else None
+def _host_is_the_channel(label: str, source_row: dict) -> str | None:
+    return source_row.get("channel_title") if label == "HOST" else None
 
 
 # YouTube's labels: HOST, GUEST_1 to GUEST_6 and UNKNOWN; HOST resolves to the channel title.

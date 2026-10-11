@@ -29,7 +29,9 @@ def database(tmp_path):
 
 
 def test_a_kind_without_links_renders_time_labels_only():
-    lines = review.render_review(bee_transcript(), bee_speaker_map(), source=SOURCE, kind=BEE_KIND)
+    lines = review.render_review(
+        bee_transcript(), bee_speaker_map(), source_row=SOURCE, kind=BEE_KIND
+    )
     text = "\n".join(lines)
     assert '> [!question] amb-0001 · 0:05 · heard "wren"' in text
     assert "](" not in text and "file://" not in text
@@ -44,7 +46,7 @@ def test_a_kind_without_links_renders_time_labels_only():
 
 def test_a_kind_with_links_links_the_time_label():
     lines = review.render_review(
-        bee_transcript(), bee_speaker_map(), source=SOURCE, kind=LINKED_KIND
+        bee_transcript(), bee_speaker_map(), source_row=SOURCE, kind=LINKED_KIND
     )
     assert f"[0:05](https://example.test/{BEE_SOURCE}?t=5s)" in "\n".join(lines)
 
@@ -54,7 +56,7 @@ def test_resolved_items_move_to_a_collapsed_callout():
     lines = review.render_review(
         bee_transcript(ambiguities=[done]),
         bee_speaker_map(unknown_status="AUTHOR", unknown_name="Wren"),
-        source=SOURCE,
+        source_row=SOURCE,
         kind=BEE_KIND,
     )
     text = "\n".join(lines)
@@ -63,7 +65,7 @@ def test_resolved_items_move_to_a_collapsed_callout():
 
 
 def test_nothing_to_review_says_so():
-    assert review.render_review(None, None, source=SOURCE, kind=BEE_KIND) == [
+    assert review.render_review(None, None, source_row=SOURCE, kind=BEE_KIND) == [
         "_No review items._",
         "",
     ]

@@ -713,7 +713,7 @@ def decisions_to_verdicts_by_kind(
 
 
 def land_page_verdicts(
-    db, verdicts: list[dict], *, created_by: str, source: str = "phone page"
+    db, verdicts: list[dict], *, created_by: str, answered_through: str = "phone page"
 ) -> list[str]:
     """Record each verdict `decisions_to_verdicts` returned as a row with provenance
     (corpuslm.review.record_verdict), through the Store; returns `<source id>:<key>` for each.
@@ -731,7 +731,7 @@ def land_page_verdicts(
             span=v.get("span", ""),
             role=v.get("role", ""),
             created_by=created_by,
-            source=source,
+            answered_through=answered_through,
             index=v.get("idx"),
         )
         landed.append(f"{v['video_id']}:{v['key']}")
