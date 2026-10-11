@@ -1,5 +1,5 @@
 """Accept suggestions (corpuslm.review_accept_suggestions): open ambiguity cards answered with
-the cleanup model's recorded suggestion, saved as the review page would save them, never over an
+the AI cleanup's recorded suggestion, saved as the review page would save them, never over an
 existing answer. Sanitized synthetic text only."""
 
 from __future__ import annotations

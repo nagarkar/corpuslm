@@ -1,4 +1,4 @@
-"""Accept suggestions: answer open review cards with the cleanup model's recorded suggestion.
+"""Accept suggestions: answer open review cards with the AI cleanup's recorded suggestion.
 
 For the older recordings of one source kind, the owner may be content to take the model's own top
 suggestion (recorded in the database by corpuslm.model_suggestions) for every ambiguity card still

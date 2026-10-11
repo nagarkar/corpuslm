@@ -1070,7 +1070,7 @@ class Store:
         )
         return cursor.rowcount > 0
 
-    # ---- model suggestions (derived state: the cleanup model's top suggestions) -------
+    # ---- model suggestions (derived state: the AI cleanup's top suggestions) -------
 
     def model_suggestions(self, source_id: str) -> dict[str, dict]:
         """The recorded suggestions of one source by review key (`amb-0001`): `span_norm`,

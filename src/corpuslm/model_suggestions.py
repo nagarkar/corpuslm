@@ -1,4 +1,4 @@
-"""Model suggestions: the cleanup model's top suggestion for every ambiguity, kept in the database.
+"""Model suggestions: the AI cleanup's top suggestion for every ambiguity, kept in the database.
 
 The AI cleanup (corpuslm.ai_cleanup_chain) returns, per ambiguity, the words as heard, its
 candidates, the pick it made and a probability per candidate. Those lived only inside each

@@ -71,7 +71,7 @@ DESCRIPTIONS = {
         "corpuslm review apply --config /path/to/review.toml --dry-run",
     ),
     "review accept-suggestions": (
-        "Answer the open ambiguity cards of one source kind with the cleanup model's recorded "
+        "Answer the open ambiguity cards of one source kind with the AI cleanup's recorded "
         "suggestion, for sources recorded before a date (--before): each answer is saved as the "
         "review page would save it, so it shows on the page for the owner to change; nothing "
         "is landed. A card that already has an answer, a speaker card, a card with a source "
@@ -82,7 +82,7 @@ DESCRIPTIONS = {
         "--before 2026-07-01 --dry-run",
     ),
     "suggestions record": (
-        "Record the cleanup model's top suggestion for every ambiguity in the database, read "
+        "Record the AI cleanup's top suggestion for every ambiguity in the database, read "
         "from each source's existing AI cleanup file (no model is called, nothing is "
         "billed). Safe to run again: sources already recorded are left alone. `--dry-run` "
         "counts and writes nothing.",
