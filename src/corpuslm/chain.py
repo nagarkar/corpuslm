@@ -151,19 +151,19 @@ class SourceKind(Protocol):
 
     shape: ChainShape
 
-    def load_segments(self, source: str) -> RawTranscript:
+    def load_segments(self, source_id: str) -> RawTranscript:
         """The source's raw segments, as the normalize step's inputs and builder."""
         ...
 
-    def vocabulary(self, source: str) -> basic_cleanup.Vocabulary:
+    def vocabulary(self, source_id: str) -> basic_cleanup.Vocabulary:
         """The protected vocabulary of the source."""
         ...
 
-    def language(self, source: str) -> str:
+    def language(self, source_id: str) -> str:
         """The language spell fix runs in; anything but English skips it."""
         ...
 
-    def workspace_dir(self, source: str) -> Path:
+    def workspace_dir(self, source_id: str) -> Path:
         """The folder the source's transcript files go in."""
         ...
 
@@ -175,11 +175,11 @@ class SourceKind(Protocol):
         """The tool's refinement of the transcript schema, or None for the shared one."""
         ...
 
-    def row(self, source: str) -> dict:
+    def row(self, source_id: str) -> dict:
         """The source's database row (what a speaker scheme resolves default names from)."""
         ...
 
-    def export_file_name(self, source: str, node: str) -> str:
+    def export_file_name(self, source_id: str, node: str) -> str:
         """The file name inside `workspace_dir` of a node that is not a transcript document:
         the speaker map, the published transcript (`transcript`), the subtitle file."""
         ...
@@ -219,11 +219,11 @@ class Chain:
     root: Path
     created_by: str
 
-    def path(self, source: str, node: str) -> Path:
-        return self.kind.workspace_dir(source) / self.kind.file_name(node)
+    def path(self, source_id: str, node: str) -> Path:
+        return self.kind.workspace_dir(source_id) / self.kind.file_name(node)
 
-    def load(self, source: str, node: str) -> dict:
-        text = self.path(source, node).read_text("utf-8")
+    def load(self, source_id: str, node: str) -> dict:
+        text = self.path(source_id, node).read_text("utf-8")
         return transcript.loads(text, refined_schema=self.kind.refined_schema())
 
     def dumps(self, document: dict) -> bytes:
@@ -243,15 +243,15 @@ def _sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def is_current(store: Store, source: str, node: str, inputs: dict) -> bool:
+def is_current(store: Store, source_id: str, node: str, inputs: dict) -> bool:
     """Whether the source's artifact for `node` is built from exactly these inputs."""
-    row = store.artifact(source, node)
+    row = store.artifact(source_id, node)
     return bool(row) and row["state"] == "built" and loads(row["inputs"], {}) == inputs
 
 
 def record(
     store: Store,
-    source: str,
+    source_id: str,
     node: str,
     *,
     root: Path,
@@ -264,7 +264,7 @@ def record(
 ) -> None:
     """Record one artifact of `source`; the path is stored relative to `root`."""
     store.record_artifact(
-        source,
+        source_id,
         node,
         path=str(path.relative_to(root)) if path else "",
         sha256=sha256,
@@ -275,22 +275,22 @@ def record(
     )
 
 
-def _current_sha256(chain: Chain, source: str, node: str, inputs: dict) -> str | None:
+def _current_sha256(chain: Chain, source_id: str, node: str, inputs: dict) -> str | None:
     """The recorded sha256 when the artifact is current and its file exists."""
-    if is_current(chain.store, source, node, inputs) and chain.path(source, node).exists():
-        row = chain.store.artifact(source, node)
+    if is_current(chain.store, source_id, node, inputs) and chain.path(source_id, node).exists():
+        row = chain.store.artifact(source_id, node)
         return row["sha256"] if row else None
     return None
 
 
 def _finish(
-    chain: Chain, source: str, node: str, inputs: dict, document: dict, provenance: dict
+    chain: Chain, source_id: str, node: str, inputs: dict, document: dict, provenance: dict
 ) -> Built:
-    path = chain.path(source, node)
+    path = chain.path(source_id, node)
     sha256 = write_if_changed(path, chain.dumps(document))
     record(
         chain.store,
-        source,
+        source_id,
         node,
         root=chain.root,
         path=path,
@@ -302,57 +302,57 @@ def _finish(
     return Built(sha256, True)
 
 
-def build_normalize(chain: Chain, source: str) -> Built:
+def build_normalize(chain: Chain, source_id: str) -> Built:
     """The RAW transcript document of the source, from its raw segments."""
     shape = chain.kind.shape
-    raw = chain.kind.load_segments(source)
-    current = _current_sha256(chain, source, shape.normalize, raw.inputs)
+    raw = chain.kind.load_segments(source_id)
+    current = _current_sha256(chain, source_id, shape.normalize, raw.inputs)
     if current is not None:
         return Built(current, False)
     document, provenance = raw.build()
-    return _finish(chain, source, shape.normalize, raw.inputs, document, provenance)
+    return _finish(chain, source_id, shape.normalize, raw.inputs, document, provenance)
 
 
-def build_protected_vocabulary(chain: Chain, source: str, normalize_sha256: str) -> Built:
+def build_protected_vocabulary(chain: Chain, source_id: str, normalize_sha256: str) -> Built:
     """Protected vocabulary (corpuslm.basic_cleanup.protect_vocabulary) over the normalize
     artifact."""
     shape = chain.kind.shape
-    vocabulary = chain.kind.vocabulary(source)
+    vocabulary = chain.kind.vocabulary(source_id)
     inputs = {
         shape.normalize: normalize_sha256,
         "vocabulary": canonical_sha256(vocabulary.fingerprint()),
         shape.step_key: shape.protected_vocabulary_step,
     }
-    current = _current_sha256(chain, source, shape.protected_vocabulary, inputs)
+    current = _current_sha256(chain, source_id, shape.protected_vocabulary, inputs)
     if current is not None:
         return Built(current, False)
     document, report = basic_cleanup.protect_vocabulary(
-        chain.load(source, shape.normalize), vocabulary
+        chain.load(source_id, shape.normalize), vocabulary
     )
     provenance = (
         report | {"sources": vocabulary.sources}
         if (shape.vocabulary_sources_in_provenance)
         else report
     )
-    return _finish(chain, source, shape.protected_vocabulary, inputs, document, provenance)
+    return _finish(chain, source_id, shape.protected_vocabulary, inputs, document, provenance)
 
 
-def build_spell_fix(chain: Chain, source: str, protected_vocabulary_sha256: str) -> Built:
+def build_spell_fix(chain: Chain, source_id: str, protected_vocabulary_sha256: str) -> Built:
     """Spell fix (corpuslm.basic_cleanup.spell_fix) over the protected-vocabulary artifact."""
     shape = chain.kind.shape
-    language = chain.kind.language(source)
+    language = chain.kind.language(source_id)
     inputs = {
         shape.protected_vocabulary: protected_vocabulary_sha256,
         "language": language,
         shape.step_key: shape.spell_fix_step,
     }
-    current = _current_sha256(chain, source, shape.spell_fix, inputs)
+    current = _current_sha256(chain, source_id, shape.spell_fix, inputs)
     if current is not None:
         return Built(current, False)
     document, report = basic_cleanup.spell_fix(
-        chain.load(source, shape.protected_vocabulary), language=language
+        chain.load(source_id, shape.protected_vocabulary), language=language
     )
-    return _finish(chain, source, shape.spell_fix, inputs, document, report)
+    return _finish(chain, source_id, shape.spell_fix, inputs, document, report)
 
 
 # ---- the steps after the AI cleanup -----------------------------------------------------
@@ -360,7 +360,7 @@ def build_spell_fix(chain: Chain, source: str, protected_vocabulary_sha256: str)
 
 def build_speaker_map(
     chain: Chain,
-    source: str,
+    source_id: str,
     ai_cleanup_sha256: str,
     *,
     scheme: SpeakerScheme,
@@ -374,25 +374,27 @@ def build_speaker_map(
     metadata). The owner's verdicts (`Store.current_speaker_names`) are an input: a rename
     rebuilds the map."""
     shape = chain.kind.shape
-    owner_names = chain.store.current_speaker_names(source)
+    owner_names = chain.store.current_speaker_names(source_id)
     inputs = {
         shape.ai_cleanup: ai_cleanup_sha256,
         **(extra_inputs or {}),
         "verdicts": canonical_sha256(owner_names),
         shape.step_key: shape.speaker_map_step,
     }
-    path = chain.kind.workspace_dir(source) / chain.kind.export_file_name(source, shape.speaker_map)
-    if is_current(chain.store, source, shape.speaker_map, inputs) and path.exists():
+    path = chain.kind.workspace_dir(source_id) / chain.kind.export_file_name(
+        source_id, shape.speaker_map
+    )
+    if is_current(chain.store, source_id, shape.speaker_map, inputs) and path.exists():
         existing = json.loads(path.read_text("utf-8"))
         chain.kind.validate("speaker_map", existing)
         return existing
-    document = chain.load(source, shape.ai_cleanup)
+    document = chain.load(source_id, shape.ai_cleanup)
     bindings = (document.get("passes", {}).get("pass3", {}) or {}).get("bindings", [])
     built = speaker_map_module.build_map(
-        chain.kind.row(source),
+        chain.kind.row(source_id),
         document,
         bindings,
-        candidates=chain.kind.vocabulary(source).terms,
+        candidates=chain.kind.vocabulary(source_id).terms,
         scheme=scheme,
         owner_names=owner_names,
     )
@@ -403,7 +405,7 @@ def build_speaker_map(
     )
     record(
         chain.store,
-        source,
+        source_id,
         shape.speaker_map,
         root=chain.root,
         path=path,
@@ -422,7 +424,7 @@ def build_speaker_map(
 
 def best_transcript(
     chain: Chain,
-    source: str,
+    source_id: str,
     speaker_map: dict | None,
     *,
     preference: tuple[str, ...],
@@ -431,9 +433,9 @@ def best_transcript(
     """The best transcript available: the first node of `preference` whose artifact is built (or
     stale) and whose file exists, with the speaker map applied. Reads only; writes nothing."""
     for node in preference:
-        row = chain.store.artifact(source, node)
-        if row and row["state"] in ("built", "stale") and chain.path(source, node).exists():
-            document = chain.load(source, node)
+        row = chain.store.artifact(source_id, node)
+        if row and row["state"] in ("built", "stale") and chain.path(source_id, node).exists():
+            document = chain.load(source_id, node)
             if speaker_map:
                 document = speaker_map_module.apply_map(document, speaker_map, scheme=scheme)
             return document
@@ -447,7 +449,7 @@ def transcript_sha256(chain: Chain, document: dict) -> str:
 
 def publish_best(
     chain: Chain,
-    source: str,
+    source_id: str,
     speaker_map: dict | None,
     *,
     preference: tuple[str, ...],
@@ -456,14 +458,16 @@ def publish_best(
     """The best transcript available (`best_transcript`), written as the source's `transcript`
     file only when its bytes change; the sha of those bytes is what the subtitle file, the search
     index and a note depend on, so a rename re-fires exactly them."""
-    document = best_transcript(chain, source, speaker_map, preference=preference, scheme=scheme)
-    path = chain.kind.workspace_dir(source) / chain.kind.export_file_name(source, "transcript")
+    document = best_transcript(chain, source_id, speaker_map, preference=preference, scheme=scheme)
+    path = chain.kind.workspace_dir(source_id) / chain.kind.export_file_name(
+        source_id, "transcript"
+    )
     return document, write_if_changed(path, chain.dumps(document))
 
 
 def build_subtitles(
     chain: Chain,
-    source: str,
+    source_id: str,
     document: dict,
     transcript_sha256: str,
     *,
@@ -473,14 +477,16 @@ def build_subtitles(
     """The subtitle (SRT) file of the published transcript. True when this call built it."""
     shape = chain.kind.shape
     inputs = {"transcript": transcript_sha256, "max_line_chars": max_line_chars}
-    path = chain.kind.workspace_dir(source) / chain.kind.export_file_name(source, shape.subtitles)
-    if is_current(chain.store, source, shape.subtitles, inputs) and path.exists():
+    path = chain.kind.workspace_dir(source_id) / chain.kind.export_file_name(
+        source_id, shape.subtitles
+    )
+    if is_current(chain.store, source_id, shape.subtitles, inputs) and path.exists():
         return False
     text = transcript.to_srt(document, max_line_chars=max_line_chars)
     sha256 = write_if_changed(path, text.encode("utf-8"))
     record(
         chain.store,
-        source,
+        source_id,
         shape.subtitles,
         root=chain.root,
         path=path,
@@ -494,21 +500,25 @@ def build_subtitles(
     return True
 
 
-def search_index_current(chain: Chain, source: str, document: dict, transcript_sha256: str) -> bool:
+def search_index_current(
+    chain: Chain, source_id: str, document: dict, transcript_sha256: str
+) -> bool:
     """Whether the source's search index rows are built from this published transcript. Reads only.
     For the cleaned table the rows themselves are counted too, so an index whose rows are gone is
     rebuilt rather than trusted."""
     shape = chain.kind.shape
-    if not is_current(chain.store, source, shape.search_index, {"transcript": transcript_sha256}):
+    if not is_current(
+        chain.store, source_id, shape.search_index, {"transcript": transcript_sha256}
+    ):
         return False
     if shape.search_table == "cleaned_segments":
-        return chain.store.cleaned_segment_count(source) == len(document["segments"])
+        return chain.store.cleaned_segment_count(source_id) == len(document["segments"])
     return True
 
 
 def build_search_index(
     chain: Chain,
-    source: str,
+    source_id: str,
     document: dict,
     transcript_sha256: str,
     *,
@@ -523,16 +533,16 @@ def build_search_index(
     shape = chain.kind.shape
     inputs = {"transcript": transcript_sha256}
     cleaned = shape.search_table == "cleaned_segments"
-    if search_index_current(chain, source, document, transcript_sha256):
+    if search_index_current(chain, source_id, document, transcript_sha256):
         return False
     with chain.store.transaction():
         if cleaned:
-            chain.store.replace_cleaned_segments(source, document["segments"])
+            chain.store.replace_cleaned_segments(source_id, document["segments"])
         else:
-            chain.store.replace_segments(source, document["segments"])
+            chain.store.replace_segments(source_id, document["segments"])
         record(
             chain.store,
-            source,
+            source_id,
             shape.search_index,
             root=chain.root,
             path=None,

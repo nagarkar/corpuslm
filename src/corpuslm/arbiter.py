@@ -97,7 +97,7 @@ def _key(text: str) -> str:
     return normalize_span(text) or text
 
 
-def clean_up_probabilities(a: dict, offered_candidates: list[str]) -> dict[str, float]:
+def ai_cleanup_probabilities(a: dict, offered_candidates: list[str]) -> dict[str, float]:
     """The AI cleanup's probability per candidate. Prompt v2 gives one per
     candidate; an older item's single confidence goes to its pick and the
     rest is spread evenly over the other candidates."""
@@ -243,7 +243,7 @@ class Arbiter:
         }
 
     def run(
-        self, document: dict, *, source: str, protected: list[str], memory: dict[str, dict]
+        self, document: dict, *, source_id: str, protected: list[str], memory: dict[str, dict]
     ) -> dict:
         """Ask about every pending ambiguity in `t` and apply the picks that
         clear the threshold, in place. Returns counts; a failure stops the
@@ -267,7 +267,12 @@ class Arbiter:
                 continue
             try:
                 self._decide(
-                    document, a, source=source, protected=protected, memory=memory, stats=stats
+                    document,
+                    a,
+                    source_id=source_id,
+                    protected=protected,
+                    memory=memory,
+                    stats=stats,
                 )
             except llm.SpendCapReached as e:
                 stats["error"], stats["spend_cap_reached"] = f"budget: {e}", True
@@ -287,7 +292,7 @@ class Arbiter:
         document: dict,
         a: dict,
         *,
-        source: str,
+        source_id: str,
         protected: list[str],
         memory: dict[str, dict],
         stats: dict,
@@ -301,7 +306,7 @@ class Arbiter:
             memory=memory,
             instructions=self.instructions,
         )
-        tag = f"{source}-{a['key']}"
+        tag = f"{source_id}-{a['key']}"
         reply, call = self._ask(
             body,
             tag=tag,
@@ -313,7 +318,7 @@ class Arbiter:
         stats["calls"].append(call)
         answer = reply["answers"][QUESTION]
         choice, p_judge = answer["choice"], answer["probabilities"]
-        p = combine(clean_up_probabilities(a, offered_candidates), p_judge)[choice]
+        p = combine(ai_cleanup_probabilities(a, offered_candidates), p_judge)[choice]
         if p < self.settings.min_probability:
             stats["deferred"] += 1
             return
