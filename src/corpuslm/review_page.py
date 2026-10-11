@@ -40,8 +40,8 @@ Decisions:
   tests/test_review_page.py::test_a_resolved_item_never_rejoins_an_open_card.
 - A source with no link gets a card with a time label and no link, and the page script says so.
   Enforced by: tests/test_review_page.py::test_a_kind_without_links_gives_time_labels_only.
-- An author's speaker name stays first in the picker and the speaker is not to-do. Enforced by:
-  tests/test_review_page.py::test_an_author_named_speaker_is_not_to_do_and_is_listed_first.
+- An owner's speaker name stays first in the picker and the speaker is not to-do. Enforced by:
+  tests/test_review_page.py::test_an_owner_named_speaker_is_not_to_do_and_is_listed_first.
 - The speaker picker offers only real names: the label's own, the names the model proposed, the
   names the source's other labels carry, the kind's (the owner's first name) and the ones the
   owner picked; never the map's `candidates`, which are the source's protected vocabulary (a
@@ -72,28 +72,28 @@ from pathlib import Path
 
 from .files import write_atomic
 from .identity import normalize_span
-from .review import ReviewKind, reading_options, speaker_names
+from .review import ReviewKind, candidates_offered, speaker_names
 from .review_kinds import KINDS as SOURCE_KINDS
 from .store import Store
 from .transcript import loads as transcript_loads
 from .transcript import timestamp
 
-DEFAULT_PAGE_BYTES = 5 * 1024 * 1024  # 5 MB opened on the author's phone
+DEFAULT_PAGE_BYTES = 5 * 1024 * 1024  # 5 MB opened on the owner's phone
 
 
 def _card_id(*parts: str) -> str:
     return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()[:16]
 
 
-def _context(seg: dict, span: str, applied: str) -> str:
+def _context(segment: dict, span: str, applied: str) -> str:
     """The line as the recognizer wrote it, the heard words in bold: the
-    author judges what was heard, not the clean-up model's edit (a card once
+    owner judges what was heard, not the AI cleanup's edit (a card once
     read "Causal Set Theory" where "causal set" was heard, 2026-09-29).
-    `applied` is the reading now in the text (the pick or a resolution)."""
-    raw = seg.get("raw", "")
+    `applied` is the candidate now in the text (the pick or a resolution)."""
+    raw = segment.get("raw", "")
     if span and span in raw:
         return raw.replace(span, f"**{span}**", 1)
-    text = seg["text"]
+    text = segment["text"]
     for needle in (applied, span):
         if needle and needle in text:
             return text.replace(needle, f"**{span or needle}**", 1)
@@ -130,12 +130,12 @@ def page_data_by_kind(db, kinds: Mapping[str, KindSetup], corpus_name: str) -> d
     speakers: list[dict] = []
     open_items = 0
     for order, video in enumerate(videos):
-        vid = video["id"]
+        video_id = video["id"]
         setup = kinds.get(video["kind"])
         if setup is None:
             continue
         kind, sources_directory = setup.kind, setup.sources_directory
-        t_path = sources_directory / vid / "transcript.json"
+        t_path = sources_directory / video_id / "transcript.json"
         if not t_path.exists():
             continue
         t = transcript_loads(t_path.read_text("utf-8"), refined_schema=kind.refined_schema)
@@ -143,19 +143,19 @@ def page_data_by_kind(db, kinds: Mapping[str, KindSetup], corpus_name: str) -> d
         for a in t.get("ambiguities") or []:
             if a["status"] in ("capped", "expired"):
                 continue
-            # A pick the arbiter applied stays answerable until the author
+            # A pick the arbiter applied stays answerable until the owner
             # answers it (ytlm.arbiter), but is not to-do.
             jev = a.get("arbiter") if a["status"] == "auto_resolved" else None
             resolved = a["status"] != "pending" and not jev
             if a["status"] == "pending":
                 open_items += 1
-            seg = segments[a["idx"]]
+            segment = segments[a["idx"]]
             norm = normalize_span(a["span"])
             # A resolved item never joins an open card (ytlm.review: never re-asked). A
             # Jev-picked item groups like a pending one, so its card keeps the
             # id it had while pending and an answer saved on the page before
             # Jev ran still lands on it.
-            gkey = norm if not resolved else f"{norm}\x1f{vid}\x1f{a['key']}"
+            gkey = norm if not resolved else f"{norm}\x1f{video_id}\x1f{a['key']}"
             g = groups.get(gkey)
             if g is None:
                 g = groups[gkey] = {
@@ -167,12 +167,12 @@ def page_data_by_kind(db, kinds: Mapping[str, KindSetup], corpus_name: str) -> d
                     "resolution": a.get("resolution", "") if resolved else "",
                     "candidates": list(dict.fromkeys(a["candidates"])),
                     "pick": a["pick"],
-                    "context": _context(seg, a["span"], a.get("resolution") or a["pick"]),
+                    "context": _context(segment, a["span"], a.get("resolution") or a["pick"]),
                     "first": {
-                        "video_id": vid,
+                        "video_id": video_id,
                         "title": kind.source_label(video),
-                        "at": timestamp(seg["t0"]),
-                        "url": kind.anchor_url(video, seg["t0"]),
+                        "at": timestamp(segment["t0"]),
+                        "url": kind.anchor_url(video, segment["t0"]),
                         "order": order,
                     },
                     "items": [],
@@ -180,12 +180,12 @@ def page_data_by_kind(db, kinds: Mapping[str, KindSetup], corpus_name: str) -> d
                 }
                 if jev:
                     g["jev"] = {
-                        "option": a["resolution"],
+                        "candidate": a["resolution"],
                         "p": jev["p_combined"],
                         "overrode": jev["overrode"],
                     }
             if jev:
-                for o in reading_options(a):
+                for o in candidates_offered(a):
                     if o not in g["candidates"]:
                         g["candidates"].append(o)
             elif g.get("jev"):
@@ -196,22 +196,22 @@ def page_data_by_kind(db, kinds: Mapping[str, KindSetup], corpus_name: str) -> d
                     g["candidates"].append(c)
             g["items"].append(
                 {
-                    "video_id": vid,
+                    "video_id": video_id,
                     "key": a["key"],
                     "idx": a["idx"],
-                    "at": timestamp(seg["t0"]),
-                    "url": kind.anchor_url(video, seg["t0"]),
+                    "at": timestamp(segment["t0"]),
+                    "url": kind.anchor_url(video, segment["t0"]),
                     "title": kind.source_label(video),
                 }
             )
             g["count"] += 1
-        m_path = sources_directory / vid / "speaker_map.json"
+        m_path = sources_directory / video_id / "speaker_map.json"
         if m_path.exists():
-            picked = store.current_speaker_names(vid)
+            picked = store.current_speaker_names(video_id)
             m = json.loads(m_path.read_text("utf-8"))
             for role, entry in (m.get("roles") or {}).items():
                 anchor_idx = entry.get("idx")
-                t0 = (
+                start_seconds = (
                     segments[anchor_idx]["t0"]
                     if isinstance(anchor_idx, int) and anchor_idx < len(segments)
                     else 0.0
@@ -221,9 +221,9 @@ def page_data_by_kind(db, kinds: Mapping[str, KindSetup], corpus_name: str) -> d
                     open_items += 1
                 speakers.append(
                     {
-                        "id": _card_id("spk", corpus["id"], vid, role),
+                        "id": _card_id("spk", corpus["id"], video_id, role),
                         "kind": "speaker",
-                        "video_id": vid,
+                        "video_id": video_id,
                         "title": kind.source_label(video),
                         "role": role,
                         "status": entry.get("status", ""),
@@ -231,8 +231,8 @@ def page_data_by_kind(db, kinds: Mapping[str, KindSetup], corpus_name: str) -> d
                         "key": entry.get("key", f"spk:{role}"),
                         "names": names,
                         "anchor": entry.get("anchor", ""),
-                        "at": timestamp(t0),
-                        "url": kind.anchor_url(video, t0),
+                        "at": timestamp(start_seconds),
+                        "url": kind.anchor_url(video, start_seconds),
                         "open": entry.get("status") == "NEEDS_AUTHOR",
                         "resolved": entry.get("status") == "AUTHOR",
                         "order": order,
@@ -324,14 +324,14 @@ article[hidden]{display:none}
 .state.done{background:var(--good-soft);color:var(--good)}
 .ctx{margin:8px 0;font-size:17px}.ctx b{background:var(--chip);padding:0 3px;border-radius:4px}
 .where{font-size:13px;color:var(--muted);margin-bottom:8px}.where a{color:inherit}
-.opts{display:grid;gap:8px}
-.opts button{font:inherit;font-weight:600;font-size:15px;padding:11px 10px;border-radius:9px;border:1.5px solid var(--line);
+.candidate-buttons{display:grid;gap:8px}
+.candidate-buttons button{font:inherit;font-weight:600;font-size:15px;padding:11px 10px;border-radius:9px;border:1.5px solid var(--line);
 background:transparent;color:var(--ink);min-height:44px;text-align:left}
-.opts button[aria-pressed="true"]{background:var(--good);border-color:var(--good);color:#fff}
-.opts button.jev{border:2px solid var(--good)}
-.opts button.jev::before{content:"✓";display:inline-grid;place-items:center;width:20px;height:20px;margin-right:10px;border-radius:5px;background:var(--good);color:#fff;font-size:14px;line-height:1;vertical-align:-2px}
-.opts button.jev[aria-pressed="true"]::before{background:#fff;color:var(--good)}
-.opts button.skip[aria-pressed="true"]{background:var(--muted);border-color:var(--muted)}
+.candidate-buttons button[aria-pressed="true"]{background:var(--good);border-color:var(--good);color:#fff}
+.candidate-buttons button.jev{border:2px solid var(--good)}
+.candidate-buttons button.jev::before{content:"✓";display:inline-grid;place-items:center;width:20px;height:20px;margin-right:10px;border-radius:5px;background:var(--good);color:#fff;font-size:14px;line-height:1;vertical-align:-2px}
+.candidate-buttons button.jev[aria-pressed="true"]::before{background:#fff;color:var(--good)}
+.candidate-buttons button.skip[aria-pressed="true"]{background:var(--muted);border-color:var(--muted)}
 input[type=text]{width:100%;font:inherit;font-size:15px;padding:9px 10px;border-radius:8px;border:1.5px solid var(--line);
 background:var(--ground);color:var(--ink);min-height:44px}
 details{margin-top:8px}summary{font-size:13px;color:var(--muted);cursor:pointer}
@@ -351,7 +351,7 @@ _JS = r"""
   // (read once for the corpora not on screen, live for the one that is)
   const answered = {};
   // A tapped pick leaves the To-do view at once (no scrolling back); a typed
-  // reading keeps its card on screen until the field loses focus, so the
+  // answer keeps its card on screen until the field loses focus, so the
   // input is never rebuilt mid-phrase. `shown` holds the cards pinned that way.
   let shown = new Set();
   let query = '';
@@ -380,25 +380,25 @@ _JS = r"""
   }
   function relabel(){
     // the dropdown counts what is left after the answers saved on this page
-    const opts = $('#corpus').options;
+    const corpusChoices = $('#corpus').options;
     DOC.corpora.forEach((c, i) => {
       const left = todoCards(c).length - doneCount(i); const done = doneCount(i);
-      opts[i].textContent = `${c.corpus} · ${left} to do` + (done ? ` · ${done} answered` : '');
+      corpusChoices[i].textContent = `${c.corpus} · ${left} to do` + (done ? ` · ${done} answered` : '');
     });
   }
-  function options(c){
+  function candidateButtons(c){
     const d = decisions[c.id] || {}; const list = c.kind==='ambiguity' ? c.candidates : c.names;
     const btn = (label, value, cls='') => `<button class="${cls}" data-v="${esc(value)}" aria-pressed="${d.verdict===value}"${cls==='jev'?` aria-label="${esc(label)}, Jev's pick"`:''}>${esc(label)}</button>`;
     const custom = d.verdict && !list.includes(d.verdict) && d.verdict!=='skip' ? d.verdict : '';
     if (c.resolved) return `<div class="where">Resolved: "${esc(c.resolution || c.current)}"</div>`;
-    return `<div class="opts">${list.map(v => btn(v, v, c.jev && v===c.jev.option ? 'jev' : '')).join('')}
-      <input type="text" placeholder="other: type the right reading" aria-label="Other" value="${esc(custom)}">
+    return `<div class="candidate-buttons">${list.map(v => btn(v, v, c.jev && v===c.jev.candidate ? 'jev' : '')).join('')}
+      <input type="text" placeholder="other: type the right words" aria-label="Other" value="${esc(custom)}">
       ${btn('skip', 'skip', 'skip')}</div>`;
   }
   function updateCard(id){
     // in-place refresh of one card's buttons and state chip; the text input is left alone
     const art = $(`article[data-id="${id}"]`); if (!art) return; const c = cards.find(x => x.id===id); const d = decisions[id] || {};
-    for (const b of art.querySelectorAll('.opts button')) b.setAttribute('aria-pressed', d.verdict===b.dataset.v);
+    for (const b of art.querySelectorAll('.candidate-buttons button')) b.setAttribute('aria-pressed', d.verdict===b.dataset.v);
     const chip = art.querySelector('.state'); const s = state(c); chip.textContent = label(s); chip.className = 'state ' + (s==='answered'||s==='resolved'?'done':'');
     const open = cards.filter(x => state(x)==='todo').length; $('#count').textContent = `${open} to do · ${cards.length} cards`;
     relabel();
@@ -415,7 +415,7 @@ _JS = r"""
       const where = c.kind==='ambiguity'
         ? `${c.count} place${c.count>1?'s':''} · first at ${link(c.first.url, c.first.at)} in ${esc(c.first.title)}`
         : `${esc(c.role)} in ${esc(c.title)} · ${link(c.url, c.at)}${c.current?` · currently "${esc(c.current)}"`:''}`;
-      const jev = c.jev ? `<div class="where">Jev picked "${esc(c.jev.option)}" · ${Math.round(c.jev.p*100)}%${c.jev.overrode?' · changed the clean-up model\'s pick':''}. Tap another option to overrule.</div>` : '';
+      const jev = c.jev ? `<div class="where">Jev picked "${esc(c.jev.candidate)}" · ${Math.round(c.jev.p*100)}%${c.jev.overrode?' · changed the AI cleanup\'s pick':''}. Tap another candidate to overrule.</div>` : '';
       const body = c.kind==='ambiguity'
         ? `<div class="ctx">${ctx(c.context)}</div>${jev}`
         : `<div class="ctx">Who is ${esc(c.role)}?${c.anchor?` <span style="font-size:14px;color:var(--muted)">Heard: ${esc(c.anchor)}</span>`:''}</div>`;
@@ -423,7 +423,7 @@ _JS = r"""
         ? `<details><summary>All ${c.count} places</summary><ul>${c.items.map(i => `<li>${link(i.url, i.at)} ${esc(i.title)} (${esc(i.key)})</li>`).join('')}</ul></details>` : '';
       return `<article data-id="${c.id}" ${visible(c)?'':'hidden'}>
         <div class="head"><span>${c.kind==='ambiguity'?`heard "${esc(c.span)}"`:'speaker'}</span><span class="state ${s==='answered'?'done':''}">${label(s)}</span></div>
-        ${body}<div class="where">${where}</div>${options(c)}${more}</article>`;
+        ${body}<div class="where">${where}</div>${candidateButtons(c)}${more}</article>`;
     }).join('');
     const open = cards.filter(c => state(c)==='todo').length;
     const hits = query ? ` · ${cards.filter(visible).length} match` : '';
@@ -732,7 +732,7 @@ def land_page_verdicts(
             role=v.get("role", ""),
             created_by=created_by,
             source=source,
-            idx=v.get("idx"),
+            index=v.get("idx"),
         )
         landed.append(f"{v['video_id']}:{v['key']}")
     return landed

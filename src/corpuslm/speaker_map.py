@@ -7,11 +7,11 @@ any evidence, the prompt that cleans transcripts of that source, whether the lab
 (HOST, GUEST_n, `YOUTUBE`) and Bee's (`bee_scheme`) are both built here.
 
 Deterministic. Candidate names come from the source's vocabulary; labels come from the
-transcript's segments (`role`); label-to-name bindings come from the model clean-up's
-anchored dialogue evidence (corpuslm.model_cleanup). A label resolves by default when the
+transcript's segments (`role`); label-to-name bindings come from the AI cleanup's
+anchored dialogue evidence (corpuslm.ai_cleanup). A label resolves by default when the
 scheme says so (RESOLVED_FROM_METADATA); one consistent confident binding is INFERRED; a label
 with no binding, a weak one or conflicting ones is NEEDS_AUTHOR with a stable review key
-`<prefix>-N`, and the label is used in the transcript meanwhile. Author verdicts arrive as
+`<prefix>-N`, and the label is used in the transcript meanwhile. Owner verdicts arrive as
 AUTHOR rows and outrank everything here.
 
 Never imports: db, store, clikit, any model transport.
@@ -21,22 +21,23 @@ Decisions:
   Enforced by: tests/test_speaker_map.py::test_the_bee_scheme_resolves_only_the_owner_label.
 - Fixed labels are never assigned or changed by a model; a model may only propose names for
   them. Enforced by:
-  tests/test_model_cleanup.py::test_fixed_labels_reject_a_reply_that_relabels_a_speaker.
+  tests/test_ai_cleanup.py::test_fixed_labels_reject_a_reply_that_relabels_a_speaker.
 - A label with no binding, a weak binding or a conflict is NEEDS_AUTHOR and goes to review
   without blocking. Enforced by:
-  tests/test_speaker_map.py::test_a_label_with_no_binding_or_a_conflict_needs_the_author.
-- A binding below LOW_CONFIDENCE is a question for the author, not a fact.
+  tests/test_speaker_map.py::test_a_label_with_no_binding_or_a_conflict_needs_the_owner.
+- A binding below LOW_CONFIDENCE is a question for the owner, not a fact.
 
 Terms:
 - **speaker scheme**: how one source labels its speakers and resolves a label to a name.
 - **fixed labels**: labels that come from the source (a diarization) and that no model may
   assign or change.
-- **label**: a speaker label per segment, stored as the segment's `role` (the stored key keeps
-  its name).
+- **speaker label**: the label a source gives a segment's speaker, stored as the segment's
+  `role` (the stored key keeps its name).
 - **speaker map**: per source, label to name with status `RESOLVED_FROM_METADATA`, `INFERRED`,
-  `AUTHOR` or `NEEDS_AUTHOR`.
-- **NEEDS_AUTHOR**: speaker map status for a label no one could name with confidence; becomes
-  a review item.
+  `AUTHOR` (the owner's) or `NEEDS_AUTHOR`.
+- **needs-owner status**: speaker map status for a label no one could name with confidence;
+  becomes a review item. Stored as `NEEDS_AUTHOR`; the owner's own status is stored as
+  `AUTHOR`.
 """
 
 from __future__ import annotations
@@ -44,7 +45,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
-LOW_CONFIDENCE = 0.6  # below this a binding goes to the author
+LOW_CONFIDENCE = 0.6  # below this a binding goes to the owner
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,7 +53,7 @@ class SpeakerScheme:
     labels: tuple[str, ...]  # the vocabulary, in display order; may be empty when fixed
     unresolved_label: str | None  # the label meaning "nobody identified"; None if there is none
     resolve_default: Callable[[str, dict], str | None]  # (label, source) -> name or None
-    prompt_id: str  # the clean-up prompt for sources that use this scheme
+    prompt_id: str  # the cleanup prompt for sources that use this scheme
     fixed_labels: bool  # labels come from the source; a model may not assign or change them
     review_key_prefix: str = "spk"  # review keys are `<prefix>-N`
     source_id_key: str = "video_id"  # the map's key for the source's id (stored bytes)
@@ -68,26 +69,28 @@ def ordered_labels(scheme: SpeakerScheme, present: Iterable[str]) -> list[str]:
     return out
 
 
-def labels_present(t: dict, *, scheme: SpeakerScheme) -> list[str]:
-    return ordered_labels(scheme, (seg.get("role") for seg in t["segments"] if seg.get("role")))
+def labels_present(document: dict, *, scheme: SpeakerScheme) -> list[str]:
+    return ordered_labels(
+        scheme, (segment.get("role") for segment in document["segments"] if segment.get("role"))
+    )
 
 
 def build_map(
     source: dict,
-    t: dict,
+    document: dict,
     bindings: list[dict],
     *,
     candidates: list[str],
     scheme: SpeakerScheme,
-    author: dict | None = None,
+    owner_names: dict | None = None,
 ) -> dict:
     """`author` maps label to name for AUTHOR-ratified verdicts."""
-    author = author or {}
+    owner_names = owner_names or {}
     roles: dict[str, dict] = {}
     key_n = 0
-    for role in labels_present(t, scheme=scheme):
-        if role in author:
-            roles[role] = {"name": author[role], "status": "AUTHOR"}
+    for role in labels_present(document, scheme=scheme):
+        if role in owner_names:
+            roles[role] = {"name": owner_names[role], "status": "AUTHOR"}
             continue
         names = {}
         for b in bindings:
@@ -105,7 +108,7 @@ def build_map(
                     "idx": int(b.get("idx", 0)),
                 }
                 continue
-            # a weak binding is a question for the author, not a fact
+            # a weak binding is a question for the owner, not a fact
         if len(names) == 0:
             default = scheme.resolve_default(role, source)
             if default:
@@ -123,19 +126,19 @@ def build_map(
     }
 
 
-def apply_map(t: dict, m: dict, *, scheme: SpeakerScheme) -> dict:
-    for seg in t["segments"]:
-        role = seg.get("role")
+def apply_map(document: dict, m: dict, *, scheme: SpeakerScheme) -> dict:
+    for segment in document["segments"]:
+        role = segment.get("role")
         if not role:
             continue
         entry = m["roles"].get(role)
         if scheme.unresolved_label is not None and role == scheme.unresolved_label:
-            seg["speaker"] = ""
+            segment["speaker"] = ""
         elif entry and entry.get("name"):
-            seg["speaker"] = entry["name"]
+            segment["speaker"] = entry["name"]
         else:
-            seg["speaker"] = role
-    return t
+            segment["speaker"] = role
+    return document
 
 
 def review_items(m: dict) -> list[str]:

@@ -97,30 +97,30 @@ def test_the_arbiter_asks_through_the_transport_it_is_given(tmp_path):
 
 def test_an_older_item_with_one_confidence_spreads_the_rest_evenly():
     a = {"span": "heard it", "candidates": ["A", "B"], "pick": "A", "confidence": 0.7}
-    opts = review.reading_options(a)
-    assert opts == ["A", "B", "heard it"]
-    assert arbiter.clean_up_probabilities(a, opts) == pytest.approx(
+    offered_candidates = review.candidates_offered(a)
+    assert offered_candidates == ["A", "B", "heard it"]
+    assert arbiter.clean_up_probabilities(a, offered_candidates) == pytest.approx(
         {"A": 0.7, "B": 0.15, "heard it": 0.15}
     )
 
 
 def test_a_pick_that_clears_the_threshold_is_applied_with_an_arbiter_origin(tmp_path):
-    t = document()
+    transcript_document = document()
     transport = RecordingTransport(reply("the skys", 0.97, "these guys"))
-    stats = make(tmp_path, transport).run(t, source="s1", protected=[], memory={})
-    a = t["ambiguities"][0]
+    stats = make(tmp_path, transport).run(transcript_document, source="s1", protected=[], memory={})
+    a = transcript_document["ambiguities"][0]
     assert a["status"] == "auto_resolved" and a["resolution"] == "the skys"
     assert a["origin"].startswith("arbiter jev-1 ")
-    assert t["segments"][0]["text"] == "he said the skys"
+    assert transcript_document["segments"][0]["text"] == "he said the skys"
     assert stats["applied"] == 1 and stats["overrode"] == 1
 
 
 def test_a_pick_below_the_threshold_stays_pending(tmp_path):
-    t = document()
-    t["ambiguities"][0]["probabilities"] = [0.9, 0.1]
+    transcript_document = document()
+    transcript_document["ambiguities"][0]["probabilities"] = [0.9, 0.1]
     transport = RecordingTransport(reply("the skys", 0.95, "these guys"))
-    stats = make(tmp_path, transport).run(t, source="s1", protected=[], memory={})
-    assert t["ambiguities"][0]["status"] == "pending"
+    stats = make(tmp_path, transport).run(transcript_document, source="s1", protected=[], memory={})
+    assert transcript_document["ambiguities"][0]["status"] == "pending"
     assert stats["deferred"] == 1 and stats["applied"] == 0
 
 
@@ -132,31 +132,35 @@ def test_the_same_question_is_served_from_the_cache_the_second_time(tmp_path):
 
 
 def test_a_bad_reply_is_never_cached_and_skips_only_its_item(tmp_path):
-    t = document()
-    t["ambiguities"].append(dict(t["ambiguities"][0], key="amb-0002"))
+    transcript_document = document()
+    transcript_document["ambiguities"].append(
+        dict(transcript_document["ambiguities"][0], key="amb-0002")
+    )
     transport = RecordingTransport({"model": "jev-1", "usage": {}})
-    stats = make(tmp_path, transport).run(t, source="s1", protected=[], memory={})
+    stats = make(tmp_path, transport).run(transcript_document, source="s1", protected=[], memory={})
     assert stats["bad"] == 2 and stats["asked"] == 0
     assert not list((Path(tmp_path) / llm.CACHE_DIR).glob("*.json"))
-    assert [a["status"] for a in t["ambiguities"]] == ["pending", "pending"]
+    assert [a["status"] for a in transcript_document["ambiguities"]] == ["pending", "pending"]
 
 
-def test_a_reply_outside_the_cards_options_is_a_bad_reply(tmp_path):
+def test_a_reply_outside_the_cards_candidates_is_a_bad_reply(tmp_path):
     transport = RecordingTransport(reply("somewhere else", 0.97, "these guys"))
     stats = make(tmp_path, transport).run(document(), source="s1", protected=[], memory={})
     assert stats["bad"] == 1 and "outside" in stats["error"]
 
 
 def test_the_spend_cap_stops_the_arbiter_and_leaves_the_rest_pending(tmp_path):
-    t = document()
-    t["ambiguities"].append(dict(t["ambiguities"][0], key="amb-0002"))
+    transcript_document = document()
+    transcript_document["ambiguities"].append(
+        dict(transcript_document["ambiguities"][0], key="amb-0002")
+    )
     transport = RecordingTransport(reply("the skys", 0.97, "these guys"))
     arb = make(tmp_path, transport, config={"llm": {"max_usd_per_run": 0.0001}, "logs": {}})
     arb.client.spent_usd = 1.0
-    stats = arb.run(t, source="s1", protected=[], memory={})
-    assert stats["budget"] and stats["cap"] == llm.RUN_CAP
+    stats = arb.run(transcript_document, source="s1", protected=[], memory={})
+    assert stats["spend_cap_reached"] and stats["cap"] == llm.RUN_CAP
     assert transport.bodies == []
-    assert [a["status"] for a in t["ambiguities"]] == ["pending", "pending"]
+    assert [a["status"] for a in transcript_document["ambiguities"]] == ["pending", "pending"]
 
 
 def test_off_reasons_name_what_to_fix():

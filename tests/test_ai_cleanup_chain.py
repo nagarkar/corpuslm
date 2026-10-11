@@ -1,4 +1,4 @@
-"""The model clean-up builder (`src/corpuslm/model_chain.py`) for a source kind that is not
+"""The AI cleanup builder (`src/corpuslm/ai_cleanup_chain.py`) for a source kind that is not
 YouTube: Bee's scheme with fixed labels, scripted replies, no vendor ever called. Sanitized
 synthetic text only."""
 
@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from corpuslm import chain, cleanup, db, llm, model_chain, review, transcript
+from corpuslm import ai_cleanup_chain, basic_cleanup, chain, db, llm, review, transcript
 from corpuslm.speaker_map import bee_scheme
 from corpuslm.store import Store
 
@@ -42,7 +42,7 @@ class FakeKind:
         )
 
     def vocabulary(self, source):
-        return cleanup.Vocabulary(terms=["Quillfeather"], substitutions={}, sources={})
+        return basic_cleanup.Vocabulary(terms=["Quillfeather"], substitutions={}, sources={})
 
     def language(self, source):
         return "en"
@@ -72,11 +72,11 @@ class Report:
     def __init__(self):
         self.counts, self.errors, self.notes, self.stopped_by = {}, {}, {}, ""
 
-    def count(self, node, n=1):
-        self.counts[node] = self.counts.get(node, 0) + n
+    def count(self, node, number=1):
+        self.counts[node] = self.counts.get(node, 0) + number
 
 
-class Verdicts(model_chain.NoReview):
+class Verdicts(ai_cleanup_chain.NoReview):
     def __init__(self):
         self.value = {}
 
@@ -97,13 +97,13 @@ class World:
             "logs": {},
         }
         self.review = Verdicts()
-        self.spending = model_chain.Spending()
+        self.spend_cap_stop = ai_cleanup_chain.SpendCapStop()
         self.report = Report()
         self.scripts = tmp_path / "scripts"
         self.clients = []
         normalized = chain.build_normalize(self.chain, SOURCE)
-        protected = chain.build_protected_vocabulary(self.chain, SOURCE, normalized.sha)
-        self.spell_fix = chain.build_spell_fix(self.chain, SOURCE, protected.sha).sha
+        protected = chain.build_protected_vocabulary(self.chain, SOURCE, normalized.sha256)
+        self.spell_fix = chain.build_spell_fix(self.chain, SOURCE, protected.sha256).sha256
 
     def script(self, tag, reply, tokens=(100, 20)):
         folder = self.scripts / "model_cleanup"
@@ -130,13 +130,13 @@ class World:
             "scheme": bee_scheme("Quill"),
             "config": self.config,
             "client": client,
-            "spending": self.spending,
+            "spend_cap_stop": self.spend_cap_stop,
             "review": self.review,
         }
-        return model_chain.ModelCleanup(**(base | changes))
+        return ai_cleanup_chain.AiCleanupSetup(**(base | changes))
 
     def build(self, **changes):
-        return model_chain.build_model_cleanup(
+        return ai_cleanup_chain.build_ai_cleanup(
             self.context(**changes), SOURCE, self.spell_fix, self.report
         )
 
@@ -144,7 +144,7 @@ class World:
         return self.store.artifact(SOURCE, "model_cleanup")
 
     def batches(self):
-        return model_chain.model_cleanup.batches(
+        return ai_cleanup_chain.ai_cleanup.batches(
             self.chain.load(SOURCE, "spell_fix"), batch_tokens=30, overlap_segments=1
         )
 
@@ -166,9 +166,9 @@ def script_all(world, reply=EMPTY_REPLY, tokens=(100, 20)):
 
 def test_the_shape_names_the_node_the_stage_and_the_inputs(world):
     script_all(world)
-    sha = world.build()
+    sha256 = world.build()
     row = world.row()
-    assert sha == row["sha256"] and row["state"] == "built"
+    assert sha256 == row["sha256"] and row["state"] == "built"
     assert row["path"] == f"t/{SOURCE}/model_cleanup.json"
     inputs = json.loads(row["inputs"])
     assert inputs["spell_fix"] == world.spell_fix
@@ -198,7 +198,7 @@ def test_fixed_labels_keep_the_sources_speaker_source(world):
     document = world.chain.load(SOURCE, "model_cleanup")
     assert document["state"] == "LLM-CLEANED"
     assert document["speaker_source"] == "diarized"
-    assert [seg["speaker"] for seg in document["segments"]] == ["Quill"] * 6
+    assert [segment["speaker"] for segment in document["segments"]] == ["Quill"] * 6
 
 
 def test_a_changed_prompt_applies_forward_only_and_a_patch_input_replays_the_cache(world):
@@ -231,8 +231,8 @@ def test_the_run_cap_stops_the_step_and_marks_the_rest_failed(world):
     assert row["state"] == "failed"
     assert json.loads(row["provenance"])["transient"] is True
     assert world.report.stopped_by == llm.RUN_CAP
-    assert world.spending.cap == llm.RUN_CAP
-    assert world.report.counts["model_cleanup_budget"] == 1
+    assert world.spend_cap_stop.cap == llm.RUN_CAP
+    assert world.report.counts["model_cleanup_spend_cap"] == 1
     assert "budget" in world.report.errors[SOURCE]
     # a later source in the same run is declined without a call
     calls = sum(client.calls for client in world.clients)
@@ -271,8 +271,8 @@ def test_an_absent_section_skips_the_step_and_calls_no_model(world):
 
 
 def test_the_estimate_calls_no_model_and_counts_what_would_be_billed(world):
-    ctx = world.context()
-    result = model_chain.estimate(ctx, {SOURCE: world.spell_fix})
+    ai_cleanup_setup = world.context()
+    result = ai_cleanup_chain.estimate(ai_cleanup_setup, {SOURCE: world.spell_fix})
     assert result.sources == 1 and result.batches == len(world.batches())
     assert result.from_cache == 0
     assert result.tokens_in > 0 and result.usd is not None and result.usd > 0
@@ -280,7 +280,7 @@ def test_the_estimate_calls_no_model_and_counts_what_would_be_billed(world):
     assert sum(client.calls for client in world.clients) == 0
     script_all(world)
     world.build()
-    done = model_chain.estimate(world.context(), {SOURCE: world.spell_fix})
+    done = ai_cleanup_chain.estimate(world.context(), {SOURCE: world.spell_fix})
     assert done.sources == 0 and done.batches == 0 and done.usd == 0
 
 
@@ -300,34 +300,34 @@ def test_a_landed_verdict_is_rebuilt_from_the_cache_and_the_estimate_says_so(wor
     """A verdict changes the step's inputs; the replies are cached, so the rebuild is free: the
     estimate counts the source under `from_cache`, bills nothing, and the rebuild makes no call."""
     script_all(world)
-    reviewing = model_chain.DatabaseReview(world.store)
+    reviewing = ai_cleanup_chain.DatabaseReview(world.store)
     first = world.build(review=reviewing)
     land_a_verdict(world)
-    before = model_chain.estimate(world.context(review=reviewing), {SOURCE: world.spell_fix})
+    before = ai_cleanup_chain.estimate(world.context(review=reviewing), {SOURCE: world.spell_fix})
     assert before.sources == 1 and before.from_cache == 1
     assert (before.batches, before.tokens_in, before.tokens_out, before.usd) == (0, 0, 0, 0.0)
     clients = len(world.clients)
     rebuilt = world.build(review=reviewing)
     assert rebuilt != first  # the transcript changed
     assert [c.calls for c in world.clients[clients:]] == [0]  # the transport was never called
-    after = model_chain.estimate(world.context(review=reviewing), {SOURCE: world.spell_fix})
+    after = ai_cleanup_chain.estimate(world.context(review=reviewing), {SOURCE: world.spell_fix})
     assert after.sources == 0
 
 
 def test_a_batch_the_cache_lacks_is_billed_with_every_batch_after_it(world):
     script_all(world)
-    reviewing = model_chain.DatabaseReview(world.store)
+    reviewing = ai_cleanup_chain.DatabaseReview(world.store)
     world.build(review=reviewing)
     calls = json.loads(world.row()["provenance"])["calls"]
     assert len(calls) == 2
     land_a_verdict(world)
     cache = world.root / llm.CACHE_DIR
     (cache / f"{calls[1]['payload_sha256']}.json").unlink()
-    result = model_chain.estimate(world.context(review=reviewing), {SOURCE: world.spell_fix})
+    result = ai_cleanup_chain.estimate(world.context(review=reviewing), {SOURCE: world.spell_fix})
     assert (result.sources, result.from_cache, result.batches) == (1, 0, 1)
     assert result.usd is not None and result.usd > 0
     (cache / f"{calls[0]['payload_sha256']}.json").unlink()
-    result = model_chain.estimate(world.context(review=reviewing), {SOURCE: world.spell_fix})
+    result = ai_cleanup_chain.estimate(world.context(review=reviewing), {SOURCE: world.spell_fix})
     assert (result.sources, result.from_cache, result.batches) == (1, 0, 2)
 
 
@@ -347,23 +347,23 @@ def ambiguous_reply(index):
     }
 
 
-def test_building_the_model_cleanup_records_its_suggestions(world):
+def test_building_the_ai_cleanup_records_its_suggestions(world):
     batches = world.batches()
     for batch in batches:
         world.script(f"{SOURCE}-{batch.tag_suffix}", ambiguous_reply(batch.start))
-    sha = world.build()
+    sha256 = world.build()
     held = world.store.model_suggestions(SOURCE)
-    assert list(held) == [f"amb-{n:04d}" for n in range(1, len(batches) + 1)]
+    assert list(held) == [f"amb-{number:04d}" for number in range(1, len(batches) + 1)]
     first = held["amb-0001"]
     assert first["span_norm"] == "line" and first["suggestion"] == "lime"
     assert first["suggestion_probability"] == 0.75
     assert first["candidates"] == ["line", "lime"] and first["probabilities"] == [0.25, 0.75]
-    assert first["model"] == MODEL and first["artifact_sha256"] == sha
+    assert first["model"] == MODEL and first["artifact_sha256"] == sha256
     # the artifact file itself is the same bytes the recorded hash names
-    assert world.row()["sha256"] == sha
+    assert world.row()["sha256"] == sha256
     # the owner's verdict rebuilds the artifact (new bytes); its rows are replaced, and the
-    # suggestion stays the model's pick, not the owner's reading
-    reviewing = model_chain.DatabaseReview(world.store)
+    # suggestion stays the model's pick, not the owner's choice
+    reviewing = ai_cleanup_chain.DatabaseReview(world.store)
     review.record_verdict(
         world.database,
         source_id=SOURCE,
@@ -374,7 +374,7 @@ def test_building_the_model_cleanup_records_its_suggestions(world):
         created_by="test",
     )
     again = world.build(review=reviewing)
-    assert again != sha
+    assert again != sha256
     rows = world.store.model_suggestions(SOURCE)
     assert {r["artifact_sha256"] for r in rows.values()} == {again}
     assert len(rows) == len(held) and rows["amb-0001"]["suggestion"] == "lime"

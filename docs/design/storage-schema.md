@@ -177,16 +177,16 @@ in `tests/fixtures/schema_v1.sql`). On open, `db.migrate`:
 3. upgrades an older database in place: first a backup through SQLite's
    backup API to `<db folder>/backups/<db file stem>-<UTC timestamp>-before-v<target>.sqlite`
    (`db.BACKUPS_DIRNAME`, in `src/corpuslm/db.py`), verified with
-   `PRAGMA integrity_check` and a row count of every author table
+   `PRAGMA integrity_check` and a row count of every owner table
    (`review_verdicts`, `speaker_verdicts`, `corrections`); then the rebuild
    in one `BEGIN IMMEDIATE … COMMIT` with `PRAGMA foreign_key_check`
    before the commit and `user_version` set inside it; then
-   `PRAGMA integrity_check` and the author-table counts again. Any failure
+   `PRAGMA integrity_check` and the owner-table counts again. Any failure
    rolls back and names the backup (`MigrationFailed`).
 
 The v4 → v5 step is additive: after the verified backup it creates `review_answers` and its
-change-log trigger in one transaction, sets `user_version` 5 inside it, and checks that no author
-row changed (`review_answers` is counted with the author tables, so a backup carries it from
+change-log trigger in one transaction, sets `user_version` 5 inside it, and checks that no owner
+row changed (`review_answers` is counted with the owner tables, so a backup carries it from
 then on). The v2 and v3 rebuilds end at the current schema, so they create it too.
 
 The v1 → v2 rebuild renames each v1 table to `legacy_v1_<name>`, creates
@@ -198,18 +198,18 @@ existed gains them first.
 
 The v5 → v6 step is additive too: after the verified backup it creates `model_suggestions` and
 `model_suggestion_candidates` (both empty) in one transaction and sets `user_version` 6 inside it;
-a v4 database takes both additive steps in one transaction. Neither is an author table, so the
-author counts are unchanged by construction and still checked.
+a v4 database takes both additive steps in one transaction. Neither is an owner table, so the
+owner counts are unchanged by construction and still checked.
 
 The v6 → v7 step is additive too: after the verified backup it creates `feeds` and `source_skips`
 (both empty) with their change-log triggers in one transaction and sets `user_version` 7 inside
 it; a v4 or v5 database takes the earlier additive steps in the same transaction. Neither new table
-is an author table, so the author counts are unchanged by construction and still checked.
+is an owner table, so the owner counts are unchanged by construction and still checked.
 
 The v7 → v8 step is additive too: after the verified backup it creates `cleaned_segments`, its FTS5 index
 `cleaned_segments_fts` and the three triggers that keep them in step (all empty) in one transaction and
 sets `user_version` 8 inside it; an older additive database takes the earlier steps in the same
-transaction. Neither new table is an author table, so the author counts are unchanged by
+transaction. Neither new table is an owner table, so the owner counts are unchanged by
 construction and still checked. `beelm corpus index` fills them from the transcripts already built
 (no model).
 
@@ -284,7 +284,7 @@ History: master.
 | fetcher | TEXT | no | the caption fetcher that produced the transcript |
 | transcript_state | TEXT | no | one of ``, `RAW`, `DETERMINISTIC-ONLY`, `LLM-CLEANED` |
 | last_error | TEXT | no | the last failure, `''` after a success |
-| perspective | TEXT | yes | the video's perspective; NULL until the digest or the author sets it |
+| perspective | TEXT | yes | the video's perspective; NULL until the digest or the owner sets it |
 
 ### `source_tags`
 
@@ -306,7 +306,7 @@ History: list `topics` of `sources`.
 | (base) | | | |
 | source_id | TEXT | no | the video |
 | position | INTEGER | no | order in the list, from 0 |
-| topic | TEXT | no | one topic (the digest's, or the author's) |
+| topic | TEXT | no | one topic (the digest's, or the owner's) |
 
 ### `source_people`
 
@@ -381,7 +381,7 @@ History: master.
 | person | TEXT | no | |
 | subject | TEXT | no | |
 | auto_ingest | INTEGER | no | 0 or 1 |
-| llm_cleanup | INTEGER | no | 0 or 1; the per-corpus off switch for pass 3 |
+| llm_cleanup | INTEGER | no | 0 or 1; the per-corpus off switch for AI cleanup |
 
 ### `corpus_topics`
 
@@ -450,7 +450,7 @@ corpus's answers are carried in the target's `metadata.merged_from` and deleted.
 
 History: derived.
 
-The clean-up model's top suggestion for one ambiguity, copied from the source's model clean-up
+The cleanup model's top suggestion for one ambiguity, copied from the source's AI cleanup
 artifact (`corpuslm.model_suggestions`): one row per (source, review key). Rebuilt with the
 artifact: a rebuilt artifact replaces every row of its source, and a second `suggestions record`
 writes nothing. The suggestion is the model's own pick, never the owner's resolution. A review
@@ -463,10 +463,10 @@ ambiguities differently, which is why the rows carry the hash of the artifact th
 | source_id | TEXT | no | the source the ambiguity is in; unique with key |
 | key | TEXT | no | the review key, `amb-NNNN`, not empty |
 | span_norm | TEXT | no | the words as heard, normalized (`identity.normalize_span`): what a review card is keyed on |
-| suggestion | TEXT | no | the reading the model picked, spelled as it spelled it |
+| suggestion | TEXT | no | the candidate the model picked, spelled as it spelled it |
 | suggestion_probability | REAL | yes | the model's probability for its pick, 0 to 1; NULL when the model gave none (a reply from the first prompt gave one confidence, not probabilities) |
 | model | TEXT | no | the model that cleaned the source (`passes.pass3.model`), `''` when the document records none |
-| artifact_sha256 | TEXT | no | SHA-256 of the model clean-up artifact the row was read from (64 characters) |
+| artifact_sha256 | TEXT | no | SHA-256 of the AI cleanup artifact the row was read from (64 characters) |
 
 ### `model_suggestion_candidates`
 
@@ -480,7 +480,7 @@ not JSON).
 | (base) | | | |
 | suggestion_id | TEXT | no | the `model_suggestions` row; unique with position |
 | position | INTEGER | no | order in the list, from 0 |
-| candidate | TEXT | no | one reading the model offered |
+| candidate | TEXT | no | one candidate the model offered |
 | probability | REAL | yes | the model's probability for this candidate, 0 to 1; NULL when the model gave none |
 
 ### `fetch_attempts`
@@ -522,11 +522,11 @@ History: append-only.
 | source_id | TEXT | no | the video |
 | key | TEXT | no | the review key (`amb-NNNN`, `spk-N`, `spk:ROLE`); names the slot |
 | kind | TEXT | no | one of `ambiguity`, `speaker` |
-| verdict | TEXT | no | the reading, the name, or `skip` |
+| verdict | TEXT | no | the chosen candidate, the name, or `skip` |
 | span | TEXT | no | the ambiguous span, for re-anchoring |
 | role | TEXT | no | for speaker verdicts |
 | source | TEXT | no | one of `review file`, `phone page` |
-| applied_at | TEXT | no | when the author's answer landed |
+| applied_at | TEXT | no | when the owner's answer landed |
 | subject_sha256 | TEXT | no | content hash of what was judged (64 hex) |
 | previous_subject_sha256 | TEXT | yes | the slot's previous hash when it differs (lineage) |
 
@@ -539,7 +539,7 @@ History: append-only.
 | (base) | | | |
 | source_id | TEXT | no | the video |
 | role | TEXT | no | the speaker role |
-| name | TEXT | no | the author's name for it |
+| name | TEXT | no | the owner's name for it |
 
 ### `corrections`
 
@@ -549,8 +549,8 @@ History: append-only.
 |---|---|---|---|
 | (base) | | | |
 | span_norm | TEXT | no | the correction memory key: the span lowercased, punctuation stripped |
-| verdict | TEXT | no | the author's reading |
-| kind | TEXT | no | one of `term`, `reading` |
+| verdict | TEXT | no | the owner's chosen candidate or name |
+| kind | TEXT | no | one of `term`, `reading` (the stored name of the ordinary-correction kind) |
 | origin_source | TEXT | no | the video the verdict was given on |
 | origin_key | TEXT | no | its review key |
 
@@ -618,7 +618,7 @@ History: derived.
 
 The cleaned transcript of a source whose raw lines are kept in `segments` and never overwritten
 (Bee's: the owner's rule is that raw text is never overwritten). One row per segment of the source's
-best transcript (the clean-up applied, the speaker names applied), rebuilt whole by
+best transcript (the cleanup applied, the speaker names applied), rebuilt whole by
 `Store.replace_cleaned_segments` whenever the transcript is rebuilt. A YouTube source has none: its
 `segments` already hold the best transcript.
 
@@ -723,6 +723,6 @@ segment changed, so it carries the previous hash):
 - 2026-10-03: Moved from ytlm to corpuslm with `db.py`, `store.py`, `model.py` and `clock.py`; the canonical hash and the verdict subject hash move to `identity.py`; the SQL function `ytlm_subject_sha256` is renamed `corpuslm_subject_sha256` (registered per connection, never stored); the error for a newer database names corpuslm; the JSON state files stay in ytlm's copy of this document (nagarkar/ytlm#50)
 - 2026-10-08: Version 3: `video_sources` (a video records the playlists and channels it was found through, dated by the row); `corpus_sources` kept, unused (nagarkar/ytlm#61)
 - 2026-10-08: Version 4 (nagarkar/ytlm#50, seam cut 1): `videos` is `sources` with a `kind` (`youtube`, `bee`), `url` is `locator`, every `video_id` is `source_id`, the playlist/channel list is `source_feeds`; `corpus_sources` is gone (a corpus records no feed). Rows in `change_log` written before keep the old table names.
-- 2026-10-10: Version 6: `model_suggestions` and `model_suggestion_candidates` (derived): the clean-up model's top suggestion for every ambiguity, written whenever the model clean-up artifact is built and by `corpuslm suggestions record`; `corpuslm review accept-suggestions` answers open cards from them
+- 2026-10-10: Version 6: `model_suggestions` and `model_suggestion_candidates` (derived): the cleanup model's top suggestion for every ambiguity, written whenever the AI cleanup artifact is built and by `corpuslm suggestions record`; `corpuslm review accept-suggestions` answers open cards from them
 - 2026-10-10: Version 7 (nagarkar/ytlm#21): `feeds` (the tracked playlists and channels) and `source_skips` (videos skipped from a scan, lifted by date, never deleted), both master data; `Store.remove_member` (the removal is logged); `source_feeds.feed_id` is unchanged and still names a feed whether or not it is tracked
 - 2026-10-10: Version 8: `cleaned_segments` and `cleaned_segments_fts` (derived): the best (cleaned) transcript of a source whose raw lines stay in `segments`, searched by `beelm search`; ytlm's `segments` and `search` are unchanged

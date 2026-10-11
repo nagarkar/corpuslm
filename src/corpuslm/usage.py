@@ -27,7 +27,6 @@ Terms:
 - **model spend**: the dollars, calls, cached calls and tokens in a tool's `usage.jsonl`.
 - **caption fetch**: one attempt to get a video's captions, kept in `fetch_attempts`; a fetcher is
   Supadata, YouTube or speech-to-text, an outcome is ok, none, error or skipped.
-- **per-run cap**: `[llm].max_usd_per_run` in the tool's own settings file.
 """
 
 from __future__ import annotations

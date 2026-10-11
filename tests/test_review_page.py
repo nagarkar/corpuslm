@@ -133,7 +133,7 @@ def test_a_kind_can_add_names_to_the_speaker_picker(database, sources_directory,
     assert unknown["names"] == ["Ren", OWNER, "Moss", "Fern"]
 
 
-def test_an_author_named_speaker_is_not_to_do_and_is_listed_first(
+def test_an_owner_named_speaker_is_not_to_do_and_is_listed_first(
     database, sources_directory, corpus
 ):
     write_source_again(
@@ -144,7 +144,7 @@ def test_an_author_named_speaker_is_not_to_do_and_is_listed_first(
     assert (unknown["open"], unknown["resolved"], unknown["current"]) == (False, True, "Fern")
     assert unknown["names"][0] == "Fern"
     assert data["open_items"] == 2
-    # a pick the author made is never turned into a verdict by the page
+    # a pick the owner made is never turned into a verdict by the page
     verdicts, _ = review_page.decisions_to_verdicts(
         database,
         sources_directory,
@@ -281,8 +281,8 @@ def test_a_kind_with_its_own_schema_reads_documents_the_shared_one_rejects(
     from corpuslm import schemas, transcript
 
     document = bee_transcript()
-    for seg in document["segments"]:
-        seg["role"] = seg["speaker"]  # a label the shared schema does not list
+    for segment in document["segments"]:
+        segment["role"] = segment["speaker"]  # a label the shared schema does not list
     (sources_directory / BEE_SOURCE / "transcript.json").write_text(json.dumps(document))
     with pytest.raises(schemas.SchemaError):
         build(database, sources_directory)

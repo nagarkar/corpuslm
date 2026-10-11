@@ -1,5 +1,5 @@
 """Accept suggestions (corpuslm.review_accept_suggestions): open ambiguity cards answered with
-the clean-up model's recorded suggestion, saved as the review page would save them, never over an
+the cleanup model's recorded suggestion, saved as the review page would save them, never over an
 existing answer. Sanitized synthetic text only."""
 
 from __future__ import annotations
@@ -40,8 +40,8 @@ CUTOFF = date(2026, 7, 1)
 AT = "2026-10-09T10:00:00Z"
 
 
-def pick(key, idx, span, reading, others=("Other",), **more):
-    return ambiguity(key, idx, span, reading, [reading, *others], **more)
+def pick(key, index, span, candidate, others=("Other",), **more):
+    return ambiguity(key, index, span, candidate, [candidate, *others], **more)
 
 
 @pytest.fixture

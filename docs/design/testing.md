@@ -17,4 +17,4 @@ Requirements: [../requirements/storage.md](../requirements/storage.md)
 
 ## Changes
 
-- 2026-10-03 Created with the tests moved from ytlm (nagarkar/ytlm#50, slice 1).
+- 2026-10-03 Created with the tests moved from ytlm (nagarkar/ytlm#50, build step 1).

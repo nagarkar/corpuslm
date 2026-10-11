@@ -1,8 +1,8 @@
 """Review: verdicts, the correction memory and the notes round trip, for any source kind.
 
-A review item is one question for the author about a source: `amb-NNNN` (a word the clean-up
+A review item is one question for the owner about a source: `amb-NNNN` (a word the cleanup
 model was unsure of) or `<prefix>-N` (a speaker label nobody could name; the prefix is the
-`SpeakerScheme`'s). The author answers in a vault note (checkbox callouts and frontmatter
+`SpeakerScheme`'s). The owner answers in a vault note (checkbox callouts and frontmatter
 speaker properties) or on the phone page (corpuslm.review_page); both land in the same
 verdict rows.
 
@@ -13,9 +13,9 @@ links. Both kinds live in corpuslm.review_kinds; Bee's has no links: a `file://`
 phone, so a time label stands alone.
 
 Export: `render_review` writes one callout per open item, each with a checkbox list (the
-options, `other: ___`, `skip`). Apply: `parse_note` reads a note back. ONE checked box is the
+candidates, `other: ___`, `skip`). Apply: `parse_note` reads a note back. ONE checked box is the
 verdict; none is untouched; more than one is reported by key and left alone; free text after
-`other:` is the author's own, verbatim. `record_verdict` lands every verdict as a row with
+`other:` is the owner's own, verbatim. `record_verdict` lands every verdict as a row with
 provenance, and every ambiguity verdict that is not `skip` becomes a rule in the
 correction memory keyed by the normalized span, so the same question is not asked twice.
 `reconcile` re-applies recorded verdicts to a rebuilt transcript by key and span; a verdict
@@ -45,11 +45,9 @@ Decisions:
 Terms:
 - **correction memory**: the append-only rules, newest per normalized span in force, that
   settle an ambiguity without asking again.
-- **review item**: one question for the author, with a stable key. The open ones form the
+- **review item**: one question for the owner, with a stable key. The open ones form the
   review queue.
-- **review kind**: how one source kind links, labels and names speakers on review surfaces
-  (`corpuslm.review_kinds` builds them).
-- **verdict**: the author's answer to a review item (an option, `other`, `skip`, a name).
+- **verdict**: the owner's answer to a review item (an option, `other`, `skip`, a name).
 """
 
 from __future__ import annotations
@@ -90,9 +88,9 @@ class ReviewKind:
     # The artifacts of a source that go stale when the owner answers one of its cards, so the
     # tool's next run rebuilds them; empty when the tool rebuilds from the answer itself.
     stale_nodes: tuple[str, ...] = ()
-    # The artifact node holding the model clean-up's document (`transcript.json`'s ambiguities
+    # The artifact node holding the AI cleanup's document (`transcript.json`'s ambiguities
     # before any later step), where its suggestions are read from.
-    model_cleanup_node: str = "model_cleanup"
+    ai_cleanup_node: str = "model_cleanup"
     # The verb of the tool that carries this kind's landed answers into its files (a speaker
     # name rebuilds a map the tool owns). Empty when marking `stale_nodes` is all it takes.
     # `corpuslm review apply` lands the kind's answers only where the tool registered a rebuilder
@@ -148,18 +146,18 @@ def moment_label(kind: ReviewKind, source: dict, seconds: float) -> str:
 
 
 def render_review(
-    t: dict | None, speaker_map: dict | None, *, source: dict, kind: ReviewKind
+    document: dict | None, speaker_map: dict | None, *, source: dict, kind: ReviewKind
 ) -> list[str]:
     """Markdown lines for the note's Review section (Live Preview shape)."""
     lines: list[str] = []
     pending: list[str] = []
     resolved: list[str] = []
-    segments = (t or {}).get("segments", [])
-    for a in (t or {}).get("ambiguities") or []:
-        seg = segments[a["idx"]] if a["idx"] < len(segments) else {"t0": 0, "text": ""}
+    segments = (document or {}).get("segments", [])
+    for a in (document or {}).get("ambiguities") or []:
+        segment = segments[a["idx"]] if a["idx"] < len(segments) else {"t0": 0, "text": ""}
         if a["status"] == "pending":
-            context = seg["text"].replace(a["pick"], f"**{a['pick']}**", 1)
-            moment = moment_label(kind, source, seg["t0"])
+            context = segment["text"].replace(a["pick"], f"**{a['pick']}**", 1)
+            moment = moment_label(kind, source, segment["t0"])
             pending += [
                 f'> [!question] {a["key"]} · {moment} · heard "{a["span"]}"',
                 f"> {context}",
@@ -191,10 +189,10 @@ def render_review(
                 pending.append(f"> - [ ] {name}")
             pending += [f"> - [ ] {OTHER}", f"> - [ ] {SKIP}", ""]
         elif entry.get("status") == "AUTHOR":
-            resolved.append(f'> - {role} → "{entry["name"]}" (author)')
-    unplaced = ((t or {}).get("passes", {}).get("pass3", {}) or {}).get("unplaced") or []
+            resolved.append(f'> - {role} → "{entry["name"]}" (owner)')
+    unplaced = ((document or {}).get("passes", {}).get("pass3", {}) or {}).get("unplaced") or []
     if unplaced:
-        # Author work is never dropped silently. A verdict whose span the
+        # Owner work is never dropped silently. A verdict whose span the
         # rebuilt transcript no longer carries is shown here, with what it said.
         pending += ["> [!warning] Unplaced verdicts (the transcript changed under them)"]
         pending += [
@@ -220,7 +218,7 @@ def parse_note(
     review_key_prefix: str = "spk",
     role_pattern: str = DEFAULT_ROLE_PATTERN,
 ) -> dict:
-    """Verdicts the author left in a note: `items` key → verdict (or None
+    """Verdicts the owner left in a note: `items` key → verdict (or None
     untouched), `ambiguous` keys with more than one box, `speakers` role →
     name from frontmatter. The prefix and the label pattern are the source kind's
     (`ReviewKind.scheme.review_key_prefix`, `ReviewKind.role_pattern`)."""
@@ -298,9 +296,9 @@ def record_verdict(
     role: str = "",
     created_by: str = "cli",
     source: str = "review file",
-    idx: int | None = None,
+    index: int | None = None,
 ) -> None:
-    """Append the author's verdict (decisions are append-only: an answer
+    """Append the owner's verdict (decisions are append-only: an answer
     given again, or changed, is a new row and the newest is in force)."""
     store = Store(db)
     subject = subject_sha256(kind=kind, source_id=source_id, span=span, role=role)
@@ -320,7 +318,7 @@ def record_verdict(
             role=role,
             source=source,
             subject_sha256=subject,
-            metadata=None if idx is None else {"idx": int(idx)},
+            metadata=None if index is None else {"idx": int(index)},
             created_by=created_by,
         )
     if kind == "speaker" and verdict != SKIP:
@@ -362,12 +360,12 @@ def remember(
 
 
 def verdict_kind(verdict: str) -> str:
-    """`term` when the reading carries a name or a word the English dictionary
-    does not know (a Sanskrit term, a proper noun); `reading` for ordinary
-    words. Terms feed the deterministic clean-up as substitutions
-    (corpuslm.cleanup); readings are applied only where the model clean-up flags the
+    """`term` when the corrected words carry a name or a word the English dictionary
+    does not know (a Sanskrit term, a proper noun); `reading` (the stored name of the
+    ordinary-correction kind) for ordinary words. Terms feed the basic cleanup as substitutions
+    (corpuslm.basic_cleanup); ordinary corrections are applied only where the AI cleanup flags the
     same span again."""
-    from .cleanup import is_dictionary_word
+    from .basic_cleanup import is_dictionary_word
 
     words = [w.strip(".,;:!?\"'()") for w in verdict.split()]
     words = [w for w in words if w]
@@ -410,43 +408,43 @@ def verdicts_for(db, source_id: str) -> dict[str, dict]:
 
 def term_vocabulary(db) -> dict[str, str]:
     """Correction memory verdicts of kind `term`: mis-hearing → protected form,
-    for the deterministic clean-up (corpuslm.cleanup)."""
+    for the basic cleanup (corpuslm.basic_cleanup)."""
     return {norm: r["verdict"] for norm, r in Store(db).current_corrections(kind="term").items()}
 
 
 # ---- reconcile after a rebuild ----------------------------------------------------
 
 
-def reading_options(ambiguity: dict) -> list[str]:
-    """The card's choices: the clean-up model's pick, the candidates and the
-    words as heard. Readings that differ only in case or punctuation are one
-    option, spelled as the first of them (the pick's spelling when it is
-    one): a pick with a comma once matched no option at all (2026-09-29)."""
+def candidates_offered(ambiguity: dict) -> list[str]:
+    """The candidates a card offers: the AI cleanup's pick, its candidates and the
+    words as heard. Candidates that differ only in case or punctuation are one
+    candidate, spelled as the first of them (the pick's spelling when it is
+    one): a pick with a comma once matched no candidate at all (2026-09-29)."""
     out: dict[str, str] = {}
-    for option in (ambiguity["pick"], *ambiguity["candidates"], ambiguity["span"]):
-        out.setdefault(normalize_span(option) or option, option)
+    for candidate in (ambiguity["pick"], *ambiguity["candidates"], ambiguity["span"]):
+        out.setdefault(normalize_span(candidate) or candidate, candidate)
     return list(out.values())
 
 
-def apply_resolution(t: dict, a: dict, resolution: str) -> None:
+def apply_resolution(document: dict, a: dict, resolution: str) -> None:
     if resolution == SKIP:
         return
-    seg = t["segments"][a["idx"]]
+    segment = document["segments"][a["idx"]]
     for needle in (a["pick"], a["span"], *a["candidates"]):
-        if needle and needle in seg["text"]:
-            seg.setdefault("raw", seg["text"])
-            seg["text"] = seg["text"].replace(needle, resolution, 1)
+        if needle and needle in segment["text"]:
+            segment.setdefault("raw", segment["text"])
+            segment["text"] = segment["text"].replace(needle, resolution, 1)
             break
 
 
 def reconcile(
-    t: dict,
+    document: dict,
     verdicts: dict[str, dict],
     memory: dict[str, dict],
     *,
     now: datetime | None = None,
 ) -> dict:
-    """Apply the author's own verdicts (by key, span must still match) and
+    """Apply the owner's own verdicts (by key, span must still match) and
     the correction memory to a freshly built model-cleaned transcript, stamped
     `now` (default: the clock). Returns counts: carried, unplaced,
     auto_resolved."""
@@ -458,28 +456,33 @@ def reconcile(
         "unplaced_items": [],
         "already_applied": 0,
     }
-    corpus_text = "\n".join(seg["text"] for seg in t["segments"])
+    corpus_text = "\n".join(segment["text"] for segment in document["segments"])
     by_norm: dict[str, dict] = {}
-    for a in t.get("ambiguities") or []:
+    for a in document.get("ambiguities") or []:
         by_norm.setdefault(normalize_span(a["span"]), a)
     placed: set[str] = set()
     for key, v in verdicts.items():
         if v["kind"] != "ambiguity":
             continue
         target = None
-        cand = next((a for a in t.get("ambiguities") or [] if a["key"] == key), None)
-        if cand and normalize_span(cand["span"]) == normalize_span(v["span"] or cand["span"]):
-            target = cand
+        candidate = next((a for a in document.get("ambiguities") or [] if a["key"] == key), None)
+        if candidate and normalize_span(candidate["span"]) == normalize_span(
+            v["span"] or candidate["span"]
+        ):
+            target = candidate
         elif v["span"] and normalize_span(v["span"]) in by_norm:
             target = by_norm[normalize_span(v["span"])]
         if target is None or target["key"] in placed:
-            # The deterministic clean-up's correction memory may already have written this reading
+            # The basic cleanup's correction memory may already have written this correction
             # into the transcript, so the model never asked again: applied,
-            # not lost (author work is never dropped silently). Checked
+            # not lost (owner work is never dropped silently). Checked
             # near the segment the verdict was given on when that is known.
-            idx = (loads(v.get("metadata"), {}) or {}).get("idx")
-            if isinstance(idx, int):
-                near = " ".join(seg["text"] for seg in t["segments"][max(0, idx - 2) : idx + 3])
+            index = (loads(v.get("metadata"), {}) or {}).get("idx")
+            if isinstance(index, int):
+                near = " ".join(
+                    segment["text"]
+                    for segment in document["segments"][max(0, index - 2) : index + 3]
+                )
             else:
                 near = corpus_text
             if v["verdict"] != SKIP and v["verdict"] in near:
@@ -494,10 +497,10 @@ def reconcile(
         target["status"] = "resolved"
         target["resolution"] = v["verdict"]
         target["resolved_at"] = v.get("applied_at") or now_iso(now)
-        apply_resolution(t, target, v["verdict"])
+        apply_resolution(document, target, v["verdict"])
         counts["carried"] += 1
     today = now.astimezone(UTC).strftime("%Y-%m-%d")
-    for a in t.get("ambiguities") or []:
+    for a in document.get("ambiguities") or []:
         if a["status"] != "pending" or a["key"] in placed:
             continue
         hit = memory.get(normalize_span(a["span"]))
@@ -507,6 +510,6 @@ def reconcile(
         a["resolution"] = hit["verdict"]
         a["origin"] = f"{hit['origin_source']} {hit.get('created_at', today)[:10]}"
         a["resolved_at"] = now_iso(now)
-        apply_resolution(t, a, hit["verdict"])
+        apply_resolution(document, a, hit["verdict"])
         counts["auto_resolved"] += 1
     return counts

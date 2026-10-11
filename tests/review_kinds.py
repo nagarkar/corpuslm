@@ -33,11 +33,13 @@ LINKED_KIND = ReviewKind(
 )
 
 
-def segment(index: int, t0: float, text: str, *, raw: str = "", speaker: str = "") -> dict:
+def segment(
+    index: int, start_seconds: float, text: str, *, raw: str = "", speaker: str = ""
+) -> dict:
     return {
         "idx": index,
-        "t0": t0,
-        "t1": t0 + 4.0,
+        "t0": start_seconds,
+        "t1": start_seconds + 4.0,
         "speaker": speaker,
         "text": text,
         **({"raw": raw} if raw else {}),

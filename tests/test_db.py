@@ -39,8 +39,8 @@ from corpuslm.store import Store
 REPO = Path(__file__).parent.parent
 SCHEMA_V1 = REPO / "tests" / "fixtures" / "schema_v1.sql"
 
-VID = "vidAAAAAAA1"
-VID2 = "vidBBBBBBB2"
+VIDEO_ID = "vidAAAAAAA1"
+SECOND_VIDEO_ID = "vidBBBBBBB2"
 HASH_A = "a" * 64
 HASH_B = "b" * 64
 
@@ -62,7 +62,7 @@ def store(database):
     return Store(database)
 
 
-def _video(store: Store, vid: str = VID, **changes) -> str:
+def _video(store: Store, vid: str = VIDEO_ID, **changes) -> str:
     assert store.add_source(vid, f"https://www.youtube.com/watch?v={vid}", created_by="cli")
     if changes:
         store.update_source(vid, changes)
@@ -83,7 +83,9 @@ def _corpus(store: Store, name: str = "Dharma", **extra) -> str:
     return store.add_corpus(fields, created_by="cli")
 
 
-def _verdict(store: Store, vid=VID, key="amb-0001", verdict="Dharma", sha=HASH_A, kind="ambiguity"):
+def _verdict(
+    store: Store, vid=VIDEO_ID, key="amb-0001", verdict="Dharma", sha256=HASH_A, kind="ambiguity"
+):
     return store.append_review_verdict(
         source_id=vid,
         key=key,
@@ -92,7 +94,7 @@ def _verdict(store: Store, vid=VID, key="amb-0001", verdict="Dharma", sha=HASH_A
         span="darma",
         role="",
         source="review file",
-        subject_sha256=sha,
+        subject_sha256=sha256,
         created_by="cli",
     )
 
@@ -161,8 +163,8 @@ def test_video_status_outside_enum_is_rejected(store, database):
     # storage-schema.md videos.status: "one of added, ingested, no_captions, unavailable, failed"
     _video(store)
     with pytest.raises(sqlite3.IntegrityError):
-        database.update("sources", VID, {"status": "bogus"})
-    assert store.source(VID)["status"] == "added"
+        database.update("sources", VIDEO_ID, {"status": "bogus"})
+    assert store.source(VIDEO_ID)["status"] == "added"
 
 
 def test_member_reason_outside_enum_is_rejected(store):
@@ -170,15 +172,15 @@ def test_member_reason_outside_enum_is_rejected(store):
     _video(store)
     cid = _corpus(store)
     with pytest.raises(sqlite3.IntegrityError):
-        store.add_member(cid, VID, "bogus", created_by="cli")
-    assert not store.is_member(cid, VID)
+        store.add_member(cid, VIDEO_ID, "bogus", created_by="cli")
+    assert not store.is_member(cid, VIDEO_ID)
 
 
 def test_corrupt_json_metadata_is_rejected(store, database):
     # "JSON columns carry CHECK (json_valid(...))"
     _video(store)
     with pytest.raises(sqlite3.IntegrityError):
-        database.update("sources", VID, {"metadata": "{not json"})
+        database.update("sources", VIDEO_ID, {"metadata": "{not json"})
 
 
 # 3. FOREIGN KEYs -------------------------------------------------------------
@@ -223,10 +225,10 @@ def test_two_verdicts_for_one_slot_keep_both_rows_newest_in_force(store):
     first = _verdict(store, verdict="Dharma")
     second = _verdict(store, verdict="Dhamma")
     assert first != second
-    history = store.review_verdict_history(VID, "amb-0001")
+    history = store.review_verdict_history(VIDEO_ID, "amb-0001")
     assert len(history) == 2
     assert [h["verdict"] for h in history] == ["Dharma", "Dhamma"]  # oldest first
-    current = store.current_review_verdicts(VID)
+    current = store.current_review_verdicts(VIDEO_ID)
     assert set(current) == {"amb-0001"}
     assert current["amb-0001"]["verdict"] == "Dhamma"
     assert current["amb-0001"]["id"] == second
@@ -237,47 +239,47 @@ def test_newest_in_force_with_many_rewrites(store):
     _video(store)
     for v in ["one", "two", "three", "four", "five"]:
         _verdict(store, verdict=v)
-    assert store.current_review_verdicts(VID)["amb-0001"]["verdict"] == "five"
-    assert len(store.review_verdict_history(VID, "amb-0001")) == 5
+    assert store.current_review_verdicts(VIDEO_ID)["amb-0001"]["verdict"] == "five"
+    assert len(store.review_verdict_history(VIDEO_ID, "amb-0001")) == 5
 
 
 def test_previous_subject_sha256_lineage(store):
     # "When a new verdict for the same key judged different content,
     #  previous_subject_sha256 holds the old hash (lineage: new hash -> old hash)"
     _video(store)
-    _verdict(store, verdict="first", sha=HASH_A)
-    _verdict(store, verdict="second", sha=HASH_A)  # same content, changed answer
-    _verdict(store, verdict="third", sha=HASH_B)  # different content
-    h = store.review_verdict_history(VID, "amb-0001")
+    _verdict(store, verdict="first", sha256=HASH_A)
+    _verdict(store, verdict="second", sha256=HASH_A)  # same content, changed answer
+    _verdict(store, verdict="third", sha256=HASH_B)  # different content
+    h = store.review_verdict_history(VIDEO_ID, "amb-0001")
     assert [r["subject_sha256"] for r in h] == [HASH_A, HASH_A, HASH_B]
     assert h[0]["previous_subject_sha256"] is None  # first in slot
     assert h[1]["previous_subject_sha256"] is None  # same hash as the slot's current
     assert h[2]["previous_subject_sha256"] == HASH_A
-    assert store.current_review_verdicts(VID)["amb-0001"]["previous_subject_sha256"] == HASH_A
+    assert store.current_review_verdicts(VIDEO_ID)["amb-0001"]["previous_subject_sha256"] == HASH_A
 
 
 def test_lineage_is_per_slot(store):
     _video(store)
-    _verdict(store, key="amb-0001", sha=HASH_A)
-    _verdict(store, key="amb-0002", sha=HASH_B)
-    h = store.review_verdict_history(VID, "amb-0002")
+    _verdict(store, key="amb-0001", sha256=HASH_A)
+    _verdict(store, key="amb-0002", sha256=HASH_B)
+    h = store.review_verdict_history(VIDEO_ID, "amb-0002")
     assert h[0]["previous_subject_sha256"] is None
 
 
 def _fill_append_only(store):
     _video(store)
     _verdict(store)
-    store.append_speaker_verdict(source_id=VID, role="host", name="Ajahn", created_by="cli")
+    store.append_speaker_verdict(source_id=VIDEO_ID, role="host", name="Ajahn", created_by="cli")
     store.append_correction(
         span_norm="darma",
         verdict="Dharma",
         kind="term",
-        origin_source=VID,
+        origin_source=VIDEO_ID,
         origin_key="amb-0001",
         created_by="cli",
     )
-    store.append_fetch_attempt(VID, "supadata", "ok", "", created_by="runner")
-    store.update_source(VID, {"title": "A talk"})  # writes change_log
+    store.append_fetch_attempt(VIDEO_ID, "supadata", "ok", "", created_by="runner")
+    store.update_source(VIDEO_ID, {"title": "A talk"})  # writes change_log
 
 
 @pytest.mark.parametrize(
@@ -312,13 +314,15 @@ def test_append_only_constant_matches_spec():
 def test_current_speaker_names_newest_per_role(store):
     # vw_current_speaker_verdicts: "the newest row per (source_id, role)"
     _video(store)
-    _video(store, VID2)
-    store.append_speaker_verdict(source_id=VID, role="host", name="Old", created_by="cli")
-    store.append_speaker_verdict(source_id=VID, role="guest", name="Guest", created_by="cli")
-    store.append_speaker_verdict(source_id=VID, role="host", name="New", created_by="cli")
-    store.append_speaker_verdict(source_id=VID2, role="host", name="Other", created_by="cli")
-    assert store.current_speaker_names(VID) == {"host": "New", "guest": "Guest"}
-    assert store.current_speaker_names(VID2) == {"host": "Other"}
+    _video(store, SECOND_VIDEO_ID)
+    store.append_speaker_verdict(source_id=VIDEO_ID, role="host", name="Old", created_by="cli")
+    store.append_speaker_verdict(source_id=VIDEO_ID, role="guest", name="Guest", created_by="cli")
+    store.append_speaker_verdict(source_id=VIDEO_ID, role="host", name="New", created_by="cli")
+    store.append_speaker_verdict(
+        source_id=SECOND_VIDEO_ID, role="host", name="Other", created_by="cli"
+    )
+    assert store.current_speaker_names(VIDEO_ID) == {"host": "New", "guest": "Guest"}
+    assert store.current_speaker_names(SECOND_VIDEO_ID) == {"host": "Other"}
 
 
 def test_current_corrections_newest_per_span(store):
@@ -329,7 +333,7 @@ def test_current_corrections_newest_per_span(store):
         span_norm="darma",
         verdict="Dharma",
         kind="term",
-        origin_source=VID,
+        origin_source=VIDEO_ID,
         origin_key="amb-0001",
         created_by="cli",
     )
@@ -337,7 +341,7 @@ def test_current_corrections_newest_per_span(store):
         span_norm="sutta",
         verdict="Sutta",
         kind="term",
-        origin_source=VID,
+        origin_source=VIDEO_ID,
         origin_key="amb-0002",
         created_by="cli",
     )
@@ -345,7 +349,7 @@ def test_current_corrections_newest_per_span(store):
         span_norm="darma",
         verdict="Dhamma",
         kind="reading",
-        origin_source=VID,
+        origin_source=VIDEO_ID,
         origin_key="amb-0003",
         created_by="cli",
     )
@@ -367,7 +371,7 @@ def test_correction_kind_outside_enum_is_rejected(store):
             span_norm="x",
             verdict="X",
             kind="bogus",
-            origin_source=VID,
+            origin_source=VIDEO_ID,
             origin_key="amb-0001",
             created_by="cli",
         )
@@ -393,12 +397,12 @@ def _list_changes(store, vid):
 def test_title_change_is_logged_with_old_and_new(store):
     # "a trigger writes every changed column to change_log (old value, new value, row version)"
     _video(store)
-    store.update_source(VID, {"title": "First title"})
-    v1 = store.source(VID)["version"]
-    store.update_source(VID, {"title": "Second title"})
-    v2 = store.source(VID)["version"]
+    store.update_source(VIDEO_ID, {"title": "First title"})
+    v1 = store.source(VIDEO_ID)["version"]
+    store.update_source(VIDEO_ID, {"title": "Second title"})
+    v2 = store.source(VIDEO_ID)["version"]
     assert v2 == v1 + 1  # "version bumps on every update"
-    rows = [r for r in store.changes_of("sources", VID) if r["column_name"] == "title"]
+    rows = [r for r in store.changes_of("sources", VIDEO_ID) if r["column_name"] == "title"]
     match = [
         r for r in rows if r["old_value"] == "First title" and r["new_value"] == "Second title"
     ]
@@ -410,11 +414,11 @@ def test_title_change_is_logged_with_old_and_new(store):
 
 def test_unchanged_column_is_not_logged(store):
     _video(store)
-    store.update_source(VID, {"title": "T", "channel_title": "C"})
-    store.update_source(VID, {"title": "T2"})
+    store.update_source(VIDEO_ID, {"title": "T", "channel_title": "C"})
+    store.update_source(VIDEO_ID, {"title": "T2"})
     cols = [
         r["column_name"]
-        for r in store.changes_of("sources", VID)
+        for r in store.changes_of("sources", VIDEO_ID)
         if r["new_value"] == "C" or r["old_value"] == "C"
     ]
     assert cols == ["channel_title"]  # only the update that changed it
@@ -424,10 +428,10 @@ def test_tags_change_logs_removed_and_added_elements(store):
     # "list tables log each element added or removed"; old_value NULL for added,
     # new_value NULL for removed; row_id is the parent's id
     _video(store)
-    store.update_source(VID, {"tags": ["alpha", "beta"]})
-    n0 = len(_list_changes(store, VID))
-    store.update_source(VID, {"tags": ["alpha", "gamma"]})
-    new = _list_changes(store, VID)[n0:]
+    store.update_source(VIDEO_ID, {"tags": ["alpha", "beta"]})
+    n0 = len(_list_changes(store, VIDEO_ID))
+    store.update_source(VIDEO_ID, {"tags": ["alpha", "gamma"]})
+    new = _list_changes(store, VIDEO_ID)[n0:]
     removed = sorted(r["old_value"] for r in new if r["new_value"] is None)
     added = sorted(r["new_value"] for r in new if r["old_value"] is None)
     assert removed == ["beta"]
@@ -437,9 +441,9 @@ def test_tags_change_logs_removed_and_added_elements(store):
 def test_unchanged_list_write_adds_no_change_rows(store, database):
     # storage-schema.md (task): an unchanged list write adds no change-log rows
     _video(store)
-    store.update_source(VID, {"tags": ["alpha", "beta"], "topics": ["t"]})
+    store.update_source(VIDEO_ID, {"tags": ["alpha", "beta"], "topics": ["t"]})
     before = database.one("SELECT COUNT(*) FROM change_log")[0]
-    store.update_source(VID, {"tags": ["alpha", "beta"], "topics": ["t"]})
+    store.update_source(VIDEO_ID, {"tags": ["alpha", "beta"], "topics": ["t"]})
     assert database.one("SELECT COUNT(*) FROM change_log")[0] == before
 
 
@@ -452,19 +456,19 @@ def test_video_lists_round_trip_in_order(store):
     tags = ["zeta", "alpha", "mu", "alpha2"]
     topics = ["impermanence", "attachment"]
     people = [{"name": "Ajahn X", "role": "host"}, {"name": "Guest Y", "role": ""}]
-    store.update_source(VID, {"tags": tags, "topics": topics, "people": people})
-    v = store.source(VID)
+    store.update_source(VIDEO_ID, {"tags": tags, "topics": topics, "people": people})
+    v = store.source(VIDEO_ID)
     assert v["tags"] == tags
     assert v["topics"] == topics
     assert v["people"] == people
-    store.update_source(VID, {"tags": ["only"]})
-    assert store.source(VID)["tags"] == ["only"]
-    assert store.source(VID)["topics"] == topics
+    store.update_source(VIDEO_ID, {"tags": ["only"]})
+    assert store.source(VIDEO_ID)["tags"] == ["only"]
+    assert store.source(VIDEO_ID)["topics"] == topics
 
 
 def test_fresh_video_lists_are_empty(store):
     _video(store)
-    v = store.source(VID)
+    v = store.source(VIDEO_ID)
     assert v["tags"] == [] and v["topics"] == [] and v["people"] == []
     assert v["status"] == "added"
     assert v["version"] == 1
@@ -473,7 +477,8 @@ def test_fresh_video_lists_are_empty(store):
 def test_add_source_twice_returns_false(store):
     _video(store)
     assert (
-        store.add_source(VID, "https://www.youtube.com/watch?v=" + VID, created_by="cli") is False
+        store.add_source(VIDEO_ID, "https://www.youtube.com/watch?v=" + VIDEO_ID, created_by="cli")
+        is False
     )
 
 
@@ -535,7 +540,7 @@ def test_artifacts_for_video_and_corpus_owner(store):
     _video(store)
     cid = _corpus(store)
     store.record_artifact(
-        VID,
+        VIDEO_ID,
         "transcript",
         path="videos/x/transcript.json",
         sha256=HASH_A,
@@ -554,32 +559,32 @@ def test_artifacts_for_video_and_corpus_owner(store):
         provenance={},
         created_by="runner",
     )
-    a = store.artifact(VID, "transcript")
+    a = store.artifact(VIDEO_ID, "transcript")
     assert a is not None and a["state"] == "built" and a["sha256"] == HASH_A
     assert a["path"] == "videos/x/transcript.json"
     c = store.artifact(cid, "corpus_note")
     assert c is not None and c["sha256"] == HASH_B
-    assert store.artifact(VID, "corpus_note") is None
-    assert store.mark_stale(VID, "transcript") is True
-    assert store.artifact(VID, "transcript")["state"] == "stale"
-    assert store.mark_stale(VID, "no_such_node") is False
+    assert store.artifact(VIDEO_ID, "corpus_note") is None
+    assert store.mark_stale(VIDEO_ID, "transcript") is True
+    assert store.artifact(VIDEO_ID, "transcript")["state"] == "stale"
+    assert store.mark_stale(VIDEO_ID, "no_such_node") is False
 
 
 def test_record_artifact_rebuilds_in_place(store):
     # derived state: "rebuilt from files; no history"; node "unique per owner"
     _video(store)
-    for sha in (HASH_A, HASH_B):
+    for sha256 in (HASH_A, HASH_B):
         store.record_artifact(
-            VID,
+            VIDEO_ID,
             "transcript",
             path="p",
-            sha256=sha,
+            sha256=sha256,
             state="built",
             inputs={},
             provenance={},
             created_by="runner",
         )
-    assert store.artifact(VID, "transcript")["sha256"] == HASH_B
+    assert store.artifact(VIDEO_ID, "transcript")["sha256"] == HASH_B
 
 
 def test_artifact_owner_neither_video_nor_corpus_raises_keyerror(store):
@@ -601,7 +606,7 @@ def test_artifact_state_outside_enum_is_rejected(store):
     _video(store)
     with pytest.raises(sqlite3.IntegrityError):
         store.record_artifact(
-            VID,
+            VIDEO_ID,
             "transcript",
             path="p",
             sha256=HASH_A,
@@ -625,12 +630,12 @@ def _segments():
 def test_search_finds_text_with_start_seconds(store):
     # "Store.replace_segments maps" idx/t0/t1 to position/start_seconds/end_seconds
     _video(store, title="Talk one")
-    store.replace_segments(VID, _segments())
+    store.replace_segments(VIDEO_ID, _segments())
     assert store.segment_count() == 2
     hits = store.search("eightfold", corpus_id=None, limit=10)
     assert len(hits) == 1
     h = hits[0]
-    assert h["source_id"] == VID
+    assert h["source_id"] == VIDEO_ID
     assert h["start_seconds"] == 4.5
     assert h["end_seconds"] == 9.25
     assert h["position"] == 1
@@ -639,9 +644,9 @@ def test_search_finds_text_with_start_seconds(store):
 
 def test_replace_segments_rebuilds_whole(store):
     _video(store)
-    store.replace_segments(VID, _segments())
+    store.replace_segments(VIDEO_ID, _segments())
     store.replace_segments(
-        VID, [{"idx": 0, "t0": 1.0, "t1": 2.0, "speaker": "", "text": "only mindfulness"}]
+        VIDEO_ID, [{"idx": 0, "t0": 1.0, "t1": 2.0, "speaker": "", "text": "only mindfulness"}]
     )
     assert store.segment_count() == 1
     assert store.search("eightfold", corpus_id=None, limit=10) == []
@@ -650,37 +655,38 @@ def test_replace_segments_rebuilds_whole(store):
 
 def test_segments_reads_back_what_replace_segments_wrote_in_order(store):
     _video(store)
-    _video(store, VID2)
-    store.replace_segments(VID, list(reversed(_segments())))
-    store.replace_segments(VID2, [{"idx": 0, "t0": 0.0, "t1": 1.0, "text": "other"}])
-    assert store.segments(VID) == _segments()
-    assert store.segments(VID2) == [
+    _video(store, SECOND_VIDEO_ID)
+    store.replace_segments(VIDEO_ID, list(reversed(_segments())))
+    store.replace_segments(SECOND_VIDEO_ID, [{"idx": 0, "t0": 0.0, "t1": 1.0, "text": "other"}])
+    assert store.segments(VIDEO_ID) == _segments()
+    assert store.segments(SECOND_VIDEO_ID) == [
         {"idx": 0, "t0": 0.0, "t1": 1.0, "speaker": "", "text": "other"}
     ]
     assert store.segments("nobody") == []
 
 
 def test_search_corpus_filter_excludes_non_members(store):
-    _video(store, VID)
-    _video(store, VID2)
-    store.replace_segments(VID, _segments())
+    _video(store, VIDEO_ID)
+    _video(store, SECOND_VIDEO_ID)
+    store.replace_segments(VIDEO_ID, _segments())
     store.replace_segments(
-        VID2, [{"idx": 0, "t0": 7.0, "t1": 8.0, "speaker": "", "text": "eightfold again"}]
+        SECOND_VIDEO_ID,
+        [{"idx": 0, "t0": 7.0, "t1": 8.0, "speaker": "", "text": "eightfold again"}],
     )
     cid = _corpus(store)
-    store.add_member(cid, VID2, "author", created_by="cli")
+    store.add_member(cid, SECOND_VIDEO_ID, "author", created_by="cli")
     assert {h["source_id"] for h in store.search("eightfold", corpus_id=None, limit=10)} == {
-        VID,
-        VID2,
+        VIDEO_ID,
+        SECOND_VIDEO_ID,
     }
     hits = store.search("eightfold", corpus_id=cid, limit=10)
-    assert [h["source_id"] for h in hits] == [VID2]
+    assert [h["source_id"] for h in hits] == [SECOND_VIDEO_ID]
     assert hits[0]["start_seconds"] == 7.0
 
 
 def test_search_bad_fts_syntax_raises(store):
     _video(store)
-    store.replace_segments(VID, _segments())
+    store.replace_segments(VIDEO_ID, _segments())
     with pytest.raises(sqlite3.OperationalError):
         store.search('"unterminated', corpus_id=None, limit=10)
 
@@ -745,8 +751,8 @@ def _build_v1(path: Path) -> None:
     ins(
         "videos",
         dict(
-            id=VID,
-            url="https://www.youtube.com/watch?v=" + VID,
+            id=VIDEO_ID,
+            url="https://www.youtube.com/watch?v=" + VIDEO_ID,
             title="Old talk",
             channel_id="UC1",
             channel_title="Chan",
@@ -767,8 +773,8 @@ def _build_v1(path: Path) -> None:
     ins(
         "videos",
         dict(
-            id=VID2,
-            url="https://www.youtube.com/watch?v=" + VID2,
+            id=SECOND_VIDEO_ID,
+            url="https://www.youtube.com/watch?v=" + SECOND_VIDEO_ID,
             title="Second",
             status="added",
             perspective="Theravada",
@@ -790,20 +796,27 @@ def _build_v1(path: Path) -> None:
     )
     ins(
         "corpus_members",
-        dict(id="mem_1", corpus_id="crp_1", video_id=VID, reason="author", status="ingested"),
+        dict(id="mem_1", corpus_id="crp_1", video_id=VIDEO_ID, reason="author", status="ingested"),
     )
     ins(
         "corpus_members",
-        dict(id="mem_2", corpus_id="crp_1", video_id=VID2, reason="discovered", status="queued"),
+        dict(
+            id="mem_2",
+            corpus_id="crp_1",
+            video_id=SECOND_VIDEO_ID,
+            reason="discovered",
+            status="queued",
+        ),
     )
     ins(
-        "fetch_attempts", dict(id="fa_1", video_id=VID, fetcher="supadata", outcome="ok", detail="")
+        "fetch_attempts",
+        dict(id="fa_1", video_id=VIDEO_ID, fetcher="supadata", outcome="ok", detail=""),
     )
     ins(
         "artifacts",
         dict(
             id="art_1",
-            owner=VID,
+            owner=VIDEO_ID,
             node="transcript",
             path="videos/x/t.json",
             sha256=HASH_A,
@@ -817,7 +830,7 @@ def _build_v1(path: Path) -> None:
         dict(
             id="rv_1",
             created_at="2026-05-02T09:00:00Z",
-            video_id=VID,
+            video_id=VIDEO_ID,
             key="amb-0001",
             kind="ambiguity",
             verdict="Dharma",
@@ -831,7 +844,7 @@ def _build_v1(path: Path) -> None:
         dict(
             id="rv_2",
             created_at="2026-05-02T09:01:00Z",
-            video_id=VID,
+            video_id=VIDEO_ID,
             key="spk-1",
             kind="speaker",
             verdict="Ajahn X",
@@ -840,7 +853,7 @@ def _build_v1(path: Path) -> None:
             applied_at="2026-05-02T09:01:00Z",
         ),
     )
-    ins("speaker_verdicts", dict(id="sv_1", video_id=VID, role="host", name="Ajahn X"))
+    ins("speaker_verdicts", dict(id="sv_1", video_id=VIDEO_ID, role="host", name="Ajahn X"))
     ins(
         "corrections",
         dict(
@@ -849,7 +862,7 @@ def _build_v1(path: Path) -> None:
             span_norm="darma",
             verdict="Dharma",
             kind="term",
-            origin_video=VID,
+            origin_video=VIDEO_ID,
             origin_key="amb-0001",
         ),
     )
@@ -861,17 +874,17 @@ def _build_v1(path: Path) -> None:
             span_norm="sutra",
             verdict="sutta",
             kind="reading",
-            origin_video=VID,
+            origin_video=VIDEO_ID,
             origin_key="amb-0002",
         ),
     )
-    for idx, t0, t1, text in [
+    for index, start_seconds, end_seconds, text in [
         (0, 0.0, 3.0, "welcome everyone"),
         (1, 3.0, 7.5, "the noble eightfold path"),
     ]:
         conn.execute(
             "INSERT INTO segments (video_id, idx, t0, t1, speaker, text) VALUES (?,?,?,?,?,?)",
-            (VID, idx, t0, t1, "Host", text),
+            (VIDEO_ID, index, start_seconds, end_seconds, "Host", text),
         )
     conn.commit()
     assert conn.execute("PRAGMA user_version").fetchone()[0] == 0
@@ -909,7 +922,7 @@ def test_v1_upgrades_to_user_version(migrated, dbpath):
 
 def test_v1_backup_is_verified_and_complete(migrated, dbpath):
     # "first a backup ... to <workspace>/backups/<db file stem>-<UTC timestamp>-before-v4.sqlite ...
-    #  verified with PRAGMA integrity_check and a row count of every author table"
+    #  verified with PRAGMA integrity_check and a row count of every owner table"
     _, _, original_rv = migrated
     bdir = dbpath.parent / db.BACKUPS_DIRNAME
     assert db.BACKUPS_DIRNAME == "backups"
@@ -924,10 +937,10 @@ def test_v1_backup_is_verified_and_complete(migrated, dbpath):
     assert _rows(b, "PRAGMA user_version")[0][0] == 0  # the copy is from before
 
 
-def test_v1_author_decisions_survive(migrated):
+def test_v1_owner_decisions_survive(migrated):
     # every review verdict and correction survives with the same id, verdict, created_at
     _, store, _ = migrated
-    cur = store.current_review_verdicts(VID)
+    cur = store.current_review_verdicts(VIDEO_ID)
     assert set(cur) == {"amb-0001", "spk-1"}
     assert (cur["amb-0001"]["id"], cur["amb-0001"]["verdict"], cur["amb-0001"]["created_at"]) == (
         "rv_1",
@@ -947,7 +960,7 @@ def test_v1_author_decisions_survive(migrated):
         "sutra": ("cor_2", "sutta", "reading", "2026-05-02T09:02:00Z"),
     }
     assert store.correction_count() == 2
-    assert store.current_speaker_names(VID) == {"host": "Ajahn X"}
+    assert store.current_speaker_names(VIDEO_ID) == {"host": "Ajahn X"}
 
 
 def test_v1_migration_writes_no_change_log(migrated):
@@ -958,7 +971,7 @@ def test_v1_migration_writes_no_change_log(migrated):
 
 def test_v1_lists_read_back_through_store(migrated):
     _, store, _ = migrated
-    v = store.source(VID)
+    v = store.source(VIDEO_ID)
     assert v["tags"] == ["zen", "breath"]
     assert v["topics"] == ["impermanence"]
     assert v["people"] == [{"name": "Ajahn X", "role": "host"}]
@@ -972,23 +985,23 @@ def test_v1_lists_read_back_through_store(migrated):
 def test_v1_empty_perspective_reads_as_none(migrated):
     # "A v1 perspective of '' becomes NULL"
     _, store, _ = migrated
-    assert store.source(VID)["perspective"] is None
-    assert store.source(VID2)["perspective"] == "Theravada"
+    assert store.source(VIDEO_ID)["perspective"] is None
+    assert store.source(SECOND_VIDEO_ID)["perspective"] == "Theravada"
 
 
 def test_v1_members_status_derived_and_search_works(migrated):
     _, store, _ = migrated
     by_vid = {m["id"]: m for m in store.member_sources("crp_1")}
-    assert by_vid[VID]["member_status"] == "ingested"
-    assert by_vid[VID2]["member_status"] == "queued"
-    assert by_vid[VID2]["member_reason"] == "discovered"
+    assert by_vid[VIDEO_ID]["member_status"] == "ingested"
+    assert by_vid[SECOND_VIDEO_ID]["member_status"] == "queued"
+    assert by_vid[SECOND_VIDEO_ID]["member_reason"] == "discovered"
     hits = store.search("eightfold", corpus_id=None, limit=10)
     assert len(hits) == 1
-    assert hits[0]["source_id"] == VID
+    assert hits[0]["source_id"] == VIDEO_ID
     assert hits[0]["start_seconds"] == 3.0
     assert hits[0]["position"] == 1
     assert len(store.search("eightfold", corpus_id="crp_1", limit=10)) == 1
-    a = store.artifact(VID, "transcript")
+    a = store.artifact(VIDEO_ID, "transcript")
     assert a is not None and a["sha256"] == HASH_A
 
 
@@ -1037,11 +1050,16 @@ def test_newer_database_is_declined_untouched(dbpath):
 
 def test_canonical_sha256_matches_hand_computation():
     # "SHA-256 of canonical JSON (keys sorted, no whitespace, UTF-8)"
-    obj = {"type": "ambiguity", "source_id": VID, "span": "dhárma é", "n": [1, 2, {"z": 1, "a": 2}]}
+    obj = {
+        "type": "ambiguity",
+        "source_id": VIDEO_ID,
+        "span": "dhárma é",
+        "n": [1, 2, {"z": 1, "a": 2}],
+    }
     reordered = {
         "span": "dhárma é",
         "n": [1, 2, {"a": 2, "z": 1}],
-        "source_id": VID,
+        "source_id": VIDEO_ID,
         "type": "ambiguity",
     }
     expected = hashlib.sha256(
@@ -1050,7 +1068,9 @@ def test_canonical_sha256_matches_hand_computation():
     assert db.canonical_sha256(obj) == expected
     assert db.canonical_sha256(reordered) == expected
     assert len(expected) == 64
-    assert db.canonical_sha256({"type": "speaker", "source_id": VID, "role": "host"}) != expected
+    assert (
+        db.canonical_sha256({"type": "speaker", "source_id": VIDEO_ID, "role": "host"}) != expected
+    )
 
 
 _json = st.recursive(
@@ -1151,8 +1171,8 @@ def test_the_schema_document_mirrors_the_code():
             "AND name NOT LIKE '%segments_fts%'"
         )
     }
-    doc = _doc_sections()
-    assert set(doc) == set(objects)
+    document = _doc_sections()
+    assert set(document) == set(objects)
     history = {t: "master" for t in db.MASTER_COLUMNS}
     history |= {t: "append-only" for t in db.APPEND_ONLY}
     history |= {
@@ -1172,7 +1192,7 @@ def test_the_schema_document_mirrors_the_code():
         "locks": "coordination",
     }
     for name, kind in objects.items():
-        section = doc[name]
+        section = document[name]
         assert section["view"] == (kind == "view"), name
         cols = conn.execute(f"PRAGMA table_xinfo({name})").fetchall()
         if section["same_as"]:

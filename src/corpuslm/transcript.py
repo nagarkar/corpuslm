@@ -2,7 +2,7 @@
 
 A transcript document is a dict (the `transcript.json` file of a source): `segments` carry
 idx, t0, t1, speaker, text; `words` is empty until an audio step exists; `speaker` is '' until
-role labelling; `state` is RAW until clean-up runs (corpuslm.cleanup). `from_segments` builds
+role labelling; `state` is RAW until cleanup runs (corpuslm.basic_cleanup). `from_segments` builds
 the document from any source's timed text, `dumps` writes its canonical bytes, `loads` reads
 and validates, `to_srt` derives the subtitle file.
 
@@ -47,11 +47,16 @@ from . import schemas
 _WS = re.compile(r"\s+")
 
 
-def _cue(seg: Any) -> tuple[float, float, str, str]:
+def _cue(segment: Any) -> tuple[float, float, str, str]:
     """(t0, t1, text, speaker) of a Segment or of a stored segment mapping."""
-    if isinstance(seg, Mapping):
-        return float(seg["t0"]), float(seg["t1"]), seg["text"], seg.get("speaker", "")
-    return float(seg.t0), float(seg.t1), seg.text, ""
+    if isinstance(segment, Mapping):
+        return (
+            float(segment["t0"]),
+            float(segment["t1"]),
+            segment["text"],
+            segment.get("speaker", ""),
+        )
+    return float(segment.start_seconds), float(segment.end_seconds), segment.text, ""
 
 
 def from_segments(
@@ -66,12 +71,12 @@ def from_segments(
     or mappings with t0, t1, text and optionally speaker; `caption` is the provenance block
     (language, generated, fetcher); `schema_id` is the writing tool's (`ytlm.transcript/1`)."""
     cues = []
-    for seg in segments:
-        t0, t1, raw_text, speaker = _cue(seg)
+    for segment in segments:
+        start_seconds, end_seconds, raw_text, speaker = _cue(segment)
         text = _WS.sub(" ", html.unescape(raw_text)).strip()
         if not text:
             continue
-        cues.append([t0, float(max(t1, t0)), text, speaker])
+        cues.append([start_seconds, float(max(end_seconds, start_seconds)), text, speaker])
     cues.sort(key=lambda c: c[0])
     # Auto-captions roll: each cue's end overlaps the next cue's start.
     # Clamp so a segment never outlives its successor; SRT and search
@@ -87,8 +92,14 @@ def from_segments(
         "caption": dict(caption),
         "speaker_source": speaker_source,
         "segments": [
-            {"idx": i, "t0": round(t0, 3), "t1": round(t1, 3), "speaker": speaker, "text": text}
-            for i, (t0, t1, text, speaker) in enumerate(cues)
+            {
+                "idx": i,
+                "t0": round(start_seconds, 3),
+                "t1": round(end_seconds, 3),
+                "speaker": speaker,
+                "text": text,
+            }
+            for i, (start_seconds, end_seconds, text, speaker) in enumerate(cues)
         ],
         "words": [],
     }
@@ -106,18 +117,18 @@ def with_free_labels(refined_schema: dict | None = None) -> dict:
     return free
 
 
-def dumps(t: dict, *, refined_schema: dict | None = None) -> str:
+def dumps(document: dict, *, refined_schema: dict | None = None) -> str:
     """Canonical bytes: stable key order, so staleness is byte comparison. Validated at
     write; a tool passes its refined schema."""
-    schemas.validate("transcript", t, refined_schema=refined_schema)
-    return json.dumps(t, ensure_ascii=False, indent=1, sort_keys=True) + "\n"
+    schemas.validate("transcript", document, refined_schema=refined_schema)
+    return json.dumps(document, ensure_ascii=False, indent=1, sort_keys=True) + "\n"
 
 
 def loads(text: str, *, refined_schema: dict | None = None) -> dict:
     """Validated at read: a hand-broken file is rejected naming the property."""
-    t = json.loads(text)
-    schemas.validate("transcript", t, refined_schema=refined_schema)
-    return t
+    document = json.loads(text)
+    schemas.validate("transcript", document, refined_schema=refined_schema)
+    return document
 
 
 def srt_time(seconds: float) -> str:
@@ -128,12 +139,12 @@ def srt_time(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
-def to_srt(t: dict, *, max_line_chars: int = 42) -> str:
+def to_srt(document: dict, *, max_line_chars: int = 42) -> str:
     out = []
-    for seg in t["segments"]:
-        lines = textwrap.wrap(seg["text"], width=max_line_chars) or [seg["text"]]
+    for segment in document["segments"]:
+        lines = textwrap.wrap(segment["text"], width=max_line_chars) or [segment["text"]]
         out.append(
-            f"{seg['idx'] + 1}\n{srt_time(seg['t0'])} --> {srt_time(seg['t1'])}\n"
+            f"{segment['idx'] + 1}\n{srt_time(segment['t0'])} --> {srt_time(segment['t1'])}\n"
             + "\n".join(lines)
             + "\n"
         )

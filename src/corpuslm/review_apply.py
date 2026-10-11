@@ -7,7 +7,7 @@ verdict row with provenance (`review_page.land_page_verdicts`) and deletes the a
 in one transaction, so the table only ever holds answers not yet landed. A tool that can rebuild
 what a speaker answer changes passes `rebuilders` (`corpuslm.review_rebuilders` finds the ones
 registered in this environment): a speaker answer then rebuilds that source's speaker map at once
-(no model); every other answer waits for the tool's next AI clean-up run, and the report says how
+(no model); every other answer waits for the tool's next AI cleanup run, and the report says how
 many sources wait. A source kind whose answers need such a rebuilder (`ReviewKind.rebuilt_by`) and
 has none here lands nothing: its answers stay where they are and the report counts them per kind,
 so the verb names the tool's own verb to run.

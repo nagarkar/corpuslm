@@ -59,7 +59,7 @@ def test_resolved_items_move_to_a_collapsed_callout():
     )
     text = "\n".join(lines)
     assert "_No open items._" in text and "> [!done]- Resolved" in text
-    assert '> - amb-0001 → "Ren"' in text and '> - Unknown → "Wren" (author)' in text
+    assert '> - amb-0001 → "Ren"' in text and '> - Unknown → "Wren" (owner)' in text
 
 
 def test_nothing_to_review_says_so():
@@ -156,7 +156,7 @@ def test_a_speaker_verdict_lands_a_name_for_the_label(database):
 
 
 def test_reconcile_carries_a_verdict_and_auto_resolves_from_the_memory():
-    t = bee_transcript(
+    document = bee_transcript(
         ambiguities=[
             ambiguity("amb-0001", 1, "wren", "Wren", ["Wren", "Ren"]),
             ambiguity("amb-0002", 2, "kiln", "kiln", ["kiln", "Kiln"]),
@@ -164,11 +164,11 @@ def test_reconcile_carries_a_verdict_and_auto_resolves_from_the_memory():
     )
     verdicts = {"amb-0001": {"kind": "ambiguity", "span": "wren", "verdict": "Ren"}}
     memory = {"kiln": {"verdict": "Kiln", "origin_source": BEE_SOURCE, "created_at": "2026-10-01"}}
-    counts = review.reconcile(t, verdicts, memory)
+    counts = review.reconcile(document, verdicts, memory)
     assert (counts["carried"], counts["auto_resolved"], counts["unplaced"]) == (1, 1, 0)
-    assert t["segments"][1]["text"] == "We should call Ren about the kiln."
-    assert t["segments"][2]["text"] == "Wren said the Kiln is ready."
-    assert t["ambiguities"][1]["origin"] == f"{BEE_SOURCE} 2026-10-01"
+    assert document["segments"][1]["text"] == "We should call Ren about the kiln."
+    assert document["segments"][2]["text"] == "Wren said the Kiln is ready."
+    assert document["ambiguities"][1]["origin"] == f"{BEE_SOURCE} 2026-10-01"
 
 
 def test_a_verdict_with_a_vanished_span_is_unplaced():
@@ -186,9 +186,9 @@ def test_a_verdict_the_text_already_carries_is_applied_not_lost():
     assert (counts["already_applied"], counts["unplaced"]) == (1, 0)
 
 
-def test_reading_options_merge_readings_that_differ_only_in_case_or_punctuation():
+def test_candidates_offered_merge_candidates_that_differ_only_in_case_or_punctuation():
     a = ambiguity("amb-0001", 0, "wren", "Wren,", ["wren", "Ren", "REN."])
-    assert review.reading_options(a) == ["Wren,", "Ren"]
+    assert review.candidates_offered(a) == ["Wren,", "Ren"]
 
 
 def test_verdict_kind_treats_names_as_terms():

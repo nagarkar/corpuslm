@@ -67,8 +67,8 @@ REVIEW_ANSWERS_TABLE = f"""CREATE TABLE IF NOT EXISTS review_answers (
 ) STRICT;
 """
 
-# Derived state: the clean-up model's top suggestion for each ambiguity, read from the model
-# clean-up artifact (`Store.replace_model_suggestions`). One row per (source, review key); the
+# Derived state: the cleanup model's top suggestion for each ambiguity, read from the model
+# cleanup artifact (`Store.replace_model_suggestions`). One row per (source, review key); the
 # candidates are rows of their own, in the model's order.
 MODEL_SUGGESTIONS_TABLES = f"""CREATE TABLE IF NOT EXISTS model_suggestions (
     {KNOWLEDGE_OBJECT_COLUMNS},
@@ -507,7 +507,7 @@ def new_id(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:12]}"
 
 
-def ko_fields(
+def standard_fields(
     prefix: str | None = None, *, id: str | None = None, created_by: str = "cli"
 ) -> dict[str, Any]:
     """Fresh KnowledgeObject base fields; the single constructor for every
@@ -555,9 +555,9 @@ V1_TABLES = (
     "review_verdicts", "speaker_verdicts", "corrections", "locks", "segments",
 )  # fmt: skip
 
-# The tables whose rows are irreplaceable author work; a backup must carry
+# The tables whose rows are irreplaceable owner work; a backup must carry
 # every one of their rows before a migration may start.
-AUTHOR_TABLES = ("review_verdicts", "speaker_verdicts", "corrections", "review_answers")
+OWNER_TABLES = ("review_verdicts", "speaker_verdicts", "corrections", "review_answers")
 
 
 def _ko_copy(prefix: str, created_at: str = "p.created_at") -> str:
@@ -567,73 +567,76 @@ def _ko_copy(prefix: str, created_at: str = "p.created_at") -> str:
     )
 
 
-KO = "id, version, created_at, created_by, schema_version, metadata"
+STANDARD_COLUMNS = "id, version, created_at, created_by, schema_version, metadata"
 
 # v1 → v2: STRICT tables with CHECK and FOREIGN KEY constraints, JSON lists
 # into one row per element, segment columns renamed, membership status
 # derived from the source's, decision tables append-only with a content hash.
 # The v1 tables are renamed to legacy_v1_* first, read, then dropped.
 V1_TO_V2_COPY = f"""
-INSERT INTO sources ({KO}, kind, locator, title, channel_id, channel_title, published_at,
+INSERT INTO sources ({STANDARD_COLUMNS}, kind, locator, title, channel_id, channel_title,
+    published_at,
     duration_seconds, description, thumbnail_url, language, caption_language, caption_kind,
     metadata_source, has_caption_track, status, fetcher, transcript_state, last_error,
     perspective)
-SELECT {KO}, 'youtube', url, title, channel_id, channel_title, published_at,
+SELECT {STANDARD_COLUMNS}, 'youtube', url, title, channel_id, channel_title, published_at,
     duration_seconds, description, thumbnail_url, language, caption_language, caption_kind,
     metadata_source, has_caption_track, status, fetcher, transcript_state, last_error,
     nullif(perspective, '')
 FROM legacy_v1_videos ORDER BY rowid;
 
-INSERT INTO source_tags ({KO}, source_id, position, tag)
+INSERT INTO source_tags ({STANDARD_COLUMNS}, source_id, position, tag)
 SELECT {_ko_copy("vtg")}, p.id, CAST(j.key AS INTEGER), j.value
 FROM legacy_v1_videos p, json_each(p.tags) j ORDER BY p.rowid, j.key;
 
-INSERT INTO source_topics ({KO}, source_id, position, topic)
+INSERT INTO source_topics ({STANDARD_COLUMNS}, source_id, position, topic)
 SELECT {_ko_copy("vtp")}, p.id, CAST(j.key AS INTEGER), j.value
 FROM legacy_v1_videos p, json_each(p.topics) j ORDER BY p.rowid, j.key;
 
-INSERT INTO source_people ({KO}, source_id, position, name, role)
+INSERT INTO source_people ({STANDARD_COLUMNS}, source_id, position, name, role)
 SELECT {_ko_copy("vpp")}, p.id, CAST(j.key AS INTEGER),
        json_extract(j.value, '$.name'), coalesce(json_extract(j.value, '$.role'), '')
 FROM legacy_v1_videos p, json_each(p.people) j ORDER BY p.rowid, j.key;
 
-INSERT INTO corpora ({KO}, name, person, subject, auto_ingest, llm_cleanup)
-SELECT {KO}, name, person, subject, auto_ingest, llm_cleanup
+INSERT INTO corpora ({STANDARD_COLUMNS}, name, person, subject, auto_ingest, llm_cleanup)
+SELECT {STANDARD_COLUMNS}, name, person, subject, auto_ingest, llm_cleanup
 FROM legacy_v1_corpora ORDER BY rowid;
 
-INSERT INTO corpus_topics ({KO}, corpus_id, position, topic)
+INSERT INTO corpus_topics ({STANDARD_COLUMNS}, corpus_id, position, topic)
 SELECT {_ko_copy("ctp")}, p.id, CAST(j.key AS INTEGER), j.value
 FROM legacy_v1_corpora p, json_each(p.topic) j ORDER BY p.rowid, j.key;
 
-INSERT INTO corpus_perspectives ({KO}, corpus_id, position, perspective)
+INSERT INTO corpus_perspectives ({STANDARD_COLUMNS}, corpus_id, position, perspective)
 SELECT {_ko_copy("cps")}, p.id, CAST(j.key AS INTEGER), j.value
 FROM legacy_v1_corpora p, json_each(p.perspective) j ORDER BY p.rowid, j.key;
 
-INSERT INTO corpus_members ({KO}, corpus_id, source_id, reason)
-SELECT {KO}, corpus_id, video_id, reason FROM legacy_v1_corpus_members ORDER BY rowid;
+INSERT INTO corpus_members ({STANDARD_COLUMNS}, corpus_id, source_id, reason)
+SELECT {STANDARD_COLUMNS}, corpus_id, video_id, reason FROM legacy_v1_corpus_members ORDER BY rowid;
 
-INSERT INTO fetch_attempts ({KO}, source_id, fetcher, outcome, detail)
-SELECT {KO}, video_id, fetcher, outcome, detail FROM legacy_v1_fetch_attempts ORDER BY rowid;
+INSERT INTO fetch_attempts ({STANDARD_COLUMNS}, source_id, fetcher, outcome, detail)
+SELECT {STANDARD_COLUMNS}, video_id, fetcher, outcome, detail
+FROM legacy_v1_fetch_attempts ORDER BY rowid;
 
-INSERT INTO artifacts ({KO}, source_id, corpus_id, node, path, sha256, state, inputs, provenance)
-SELECT {KO},
+INSERT INTO artifacts ({STANDARD_COLUMNS}, source_id, corpus_id, node, path, sha256, state,
+    inputs, provenance)
+SELECT {STANDARD_COLUMNS},
        CASE WHEN owner IN (SELECT id FROM sources) THEN owner END,
        CASE WHEN owner IN (SELECT id FROM corpora) THEN owner END,
        node, path, sha256, state, inputs, provenance
 FROM legacy_v1_artifacts ORDER BY rowid;
 
-INSERT INTO review_verdicts ({KO}, source_id, key, kind, verdict, span, role, source,
+INSERT INTO review_verdicts ({STANDARD_COLUMNS}, source_id, key, kind, verdict, span, role, source,
     applied_at, subject_sha256, previous_subject_sha256)
-SELECT {KO}, video_id, key, kind, verdict, span, role, source,
+SELECT {STANDARD_COLUMNS}, video_id, key, kind, verdict, span, role, source,
        CASE WHEN applied_at = '' THEN created_at ELSE applied_at END,
        corpuslm_subject_sha256(kind, video_id, span, role), NULL
 FROM legacy_v1_review_verdicts ORDER BY rowid;
 
-INSERT INTO speaker_verdicts ({KO}, source_id, role, name)
-SELECT {KO}, video_id, role, name FROM legacy_v1_speaker_verdicts ORDER BY rowid;
+INSERT INTO speaker_verdicts ({STANDARD_COLUMNS}, source_id, role, name)
+SELECT {STANDARD_COLUMNS}, video_id, role, name FROM legacy_v1_speaker_verdicts ORDER BY rowid;
 
-INSERT INTO corrections ({KO}, span_norm, verdict, kind, origin_source, origin_key)
-SELECT {KO}, span_norm, verdict, kind, origin_video, origin_key
+INSERT INTO corrections ({STANDARD_COLUMNS}, span_norm, verdict, kind, origin_source, origin_key)
+SELECT {STANDARD_COLUMNS}, span_norm, verdict, kind, origin_video, origin_key
 FROM legacy_v1_corrections ORDER BY rowid;
 
 INSERT INTO locks (owner, holder, acquired_at, expires_at)
@@ -748,7 +751,7 @@ def backup(
     """A verified copy of the database under `<workspace>/backups/`, named
     with a UTC timestamp: written through SQLite's backup API to a temp
     file, checked with PRAGMA integrity_check and a row count of every
-    author table, then renamed into place. Raises MigrationFailed when the
+    owner table, then renamed into place. Raises MigrationFailed when the
     copy does not verify (the partial file is removed)."""
     directory = Path(db_path).parent / BACKUPS_DIRNAME
     directory.mkdir(exist_ok=True)
@@ -763,15 +766,15 @@ def backup(
     try:
         conn.backup(dest)
         check = dest.execute("PRAGMA integrity_check").fetchone()[0]
-        want = _counts(conn, AUTHOR_TABLES)
-        got = _counts(dest, AUTHOR_TABLES)
+        want = _counts(conn, OWNER_TABLES)
+        got = _counts(dest, OWNER_TABLES)
     finally:
         dest.close()
     if check != "ok" or want != got:
         partial.unlink(missing_ok=True)
         raise MigrationFailed(
             f"backup of {db_path} did not verify (integrity_check: {check}; "
-            f"author rows {want} vs copy {got}); nothing was migrated"
+            f"owner rows {want} vs copy {got}); nothing was migrated"
         )
     os.replace(partial, target)
     return target
@@ -915,7 +918,7 @@ def migrate(conn: sqlite3.Connection, db_path: Path) -> dict:
     saved = backup(conn, db_path, label=f"before-v{USER_VERSION}")
     deleted = prune_backups(db_path)  # only after the new one verified
     if version in (4, 5, 6, 7):
-        before = _counts(conn, AUTHOR_TABLES)
+        before = _counts(conn, OWNER_TABLES)
 
         def additive(c: sqlite3.Connection) -> list[str]:
             return [
@@ -934,10 +937,10 @@ def migrate(conn: sqlite3.Connection, db_path: Path) -> dict:
                 "by": "another process",
             }
         check = conn.execute("PRAGMA integrity_check").fetchone()[0]
-        after = _counts(conn, AUTHOR_TABLES)
+        after = _counts(conn, OWNER_TABLES)
         if check != "ok" or any(before[t] != after[t] for t in before):
             raise MigrationFailed(
-                f"{db_path} after migration: integrity_check {check}; author rows {before} -> "
+                f"{db_path} after migration: integrity_check {check}; owner rows {before} -> "
                 f"{after}. The verified backup is {saved}."
             )
         return {
@@ -952,7 +955,7 @@ def migrate(conn: sqlite3.Connection, db_path: Path) -> dict:
             if "corpus_sources" in _tables(conn)
             else []
         )
-        before = _counts(conn, AUTHOR_TABLES)
+        before = _counts(conn, OWNER_TABLES)
 
         def to_v4(c: sqlite3.Connection) -> list[str]:
             return [*(_statements(V2_TO_V3_TABLE) if version == 2 else []), *_v3_to_v4_script(c)]
@@ -965,10 +968,10 @@ def migrate(conn: sqlite3.Connection, db_path: Path) -> dict:
                 "by": "another process",
             }
         check = conn.execute("PRAGMA integrity_check").fetchone()[0]
-        after = _counts(conn, AUTHOR_TABLES)
+        after = _counts(conn, OWNER_TABLES)
         if check != "ok" or any(before[t] != after[t] for t in before):
             raise MigrationFailed(
-                f"{db_path} after migration: integrity_check {check}; author rows {before} -> "
+                f"{db_path} after migration: integrity_check {check}; owner rows {before} -> "
                 f"{after}. The verified backup is {saved}."
             )
         return {
@@ -979,7 +982,7 @@ def migrate(conn: sqlite3.Connection, db_path: Path) -> dict:
             "dropped_corpus_feeds": dropped,
         }
     conn.create_function("corpuslm_subject_sha256", 4, _subject_sha256, deterministic=True)
-    before = _counts(conn, AUTHOR_TABLES)
+    before = _counts(conn, OWNER_TABLES)
 
     def v1_to_v2(c: sqlite3.Connection) -> list[str]:
         _complete_v1(c)
@@ -994,10 +997,10 @@ def migrate(conn: sqlite3.Connection, db_path: Path) -> dict:
             "by": "another process",
         }
     check = conn.execute("PRAGMA integrity_check").fetchone()[0]
-    after = _counts(conn, AUTHOR_TABLES)
+    after = _counts(conn, OWNER_TABLES)
     if check != "ok" or any(before[t] != after[t] for t in before):
         raise MigrationFailed(
-            f"{db_path} after migration: integrity_check {check}; author rows {before} → "
+            f"{db_path} after migration: integrity_check {check}; owner rows {before} → "
             f"{after}. The verified backup is {saved}."
         )
     return {"from": version, "to": USER_VERSION, "backup": str(saved), "backups_deleted": deleted}

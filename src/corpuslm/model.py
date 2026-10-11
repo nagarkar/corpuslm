@@ -9,8 +9,8 @@ from dataclasses import dataclass, field
 class Segment:
     """One caption cue. Times in seconds."""
 
-    t0: float
-    t1: float
+    start_seconds: float
+    end_seconds: float
     text: str
 
 

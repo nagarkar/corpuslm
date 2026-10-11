@@ -1,4 +1,4 @@
-"""Model suggestions (corpuslm.model_suggestions): the clean-up model's top suggestion for every
+"""Model suggestions (corpuslm.model_suggestions): the cleanup model's top suggestion for every
 ambiguity, kept in the database, recorded from the artifact files with no model call. Sanitized
 synthetic text only."""
 
@@ -45,10 +45,10 @@ def kinds(tmp_path):
     }
 
 
-def put_model_cleanup(store, kinds, source_id, document, *, state="built"):
-    """Write a source's model clean-up file and record the artifact the way the builder does."""
+def put_ai_cleanup(store, kinds, source_id, document, *, state="built"):
+    """Write a source's AI cleanup file and record the artifact the way the builder does."""
     kind = store.source(source_id)["kind"]
-    node = kinds[kind].kind.model_cleanup_node
+    node = kinds[kind].kind.ai_cleanup_node
     name = "transcript.pass3.json" if kind == "youtube" else "model_cleanup.json"
     folder = kinds[kind].sources_directory / source_id
     folder.mkdir(parents=True, exist_ok=True)
@@ -137,8 +137,8 @@ def test_the_store_keeps_candidates_in_order_and_refuses_an_unknown_source(store
 def test_a_rebuilt_artifact_replaces_its_rows_and_a_second_backfill_writes_nothing(store, kinds):
     add_bee(store, BEE_SOURCE)
     add_youtube_source(store, store.add_corpus({"name": "C"}, created_by="test"))
-    put_model_cleanup(store, kinds, BEE_SOURCE, bee_transcript())
-    put_model_cleanup(store, kinds, YOUTUBE_SOURCE, youtube_transcript())
+    put_ai_cleanup(store, kinds, BEE_SOURCE, bee_transcript())
+    put_ai_cleanup(store, kinds, YOUTUBE_SOURCE, youtube_transcript())
     first = model_suggestions.backfill(store, kinds, created_by="test")
     assert (first.sources_checked, first.sources_recorded, first.suggestions_recorded) == (2, 2, 2)
     assert store.model_suggestion_counts()["suggestions"] == 2
@@ -152,12 +152,12 @@ def test_a_rebuilt_artifact_replaces_its_rows_and_a_second_backfill_writes_nothi
             ambiguity("amb-0002", 2, "kiln", "kiln", ["kiln", "kill"]),
         ]
     )
-    sha = put_model_cleanup(store, kinds, BEE_SOURCE, rebuilt)
+    sha256 = put_ai_cleanup(store, kinds, BEE_SOURCE, rebuilt)
     third = model_suggestions.backfill(store, kinds, created_by="test")
     assert (third.sources_recorded, third.sources_already_recorded) == (1, 1)
     held = store.model_suggestions(BEE_SOURCE)
     assert sorted(held) == ["amb-0001", "amb-0002"]
-    assert {h["artifact_sha256"] for h in held.values()} == {sha}
+    assert {h["artifact_sha256"] for h in held.values()} == {sha256}
     assert held["amb-0001"]["suggestion_probability"] == 0.9
     assert store.model_suggestion_counts() == {
         "sources": 2,
@@ -169,9 +169,9 @@ def test_a_rebuilt_artifact_replaces_its_rows_and_a_second_backfill_writes_nothi
 def test_a_file_changed_since_it_was_built_is_counted_and_not_read(store, kinds):
     add_bee(store, BEE_SOURCE)
     add_bee(store, SECOND_BEE_SOURCE)
-    put_model_cleanup(store, kinds, BEE_SOURCE, bee_transcript())
+    put_ai_cleanup(store, kinds, BEE_SOURCE, bee_transcript())
     other = bee_transcript() | {"video_id": SECOND_BEE_SOURCE}
-    put_model_cleanup(store, kinds, SECOND_BEE_SOURCE, other)
+    put_ai_cleanup(store, kinds, SECOND_BEE_SOURCE, other)
     (kinds["bee"].sources_directory / BEE_SOURCE / "model_cleanup.json").write_text("{}")
     report = model_suggestions.backfill(store, kinds, created_by="test")
     assert report.sources_file_changed_since_built == 1 and report.sources_recorded == 1
@@ -181,16 +181,16 @@ def test_a_file_changed_since_it_was_built_is_counted_and_not_read(store, kinds)
 def test_a_source_without_a_built_artifact_or_file_is_counted(store, kinds):
     add_bee(store, BEE_SOURCE)
     add_bee(store, SECOND_BEE_SOURCE)
-    put_model_cleanup(store, kinds, SECOND_BEE_SOURCE, bee_transcript(), state="failed")
+    put_ai_cleanup(store, kinds, SECOND_BEE_SOURCE, bee_transcript(), state="failed")
     (kinds["bee"].sources_directory / SECOND_BEE_SOURCE / "model_cleanup.json").unlink()
     report = model_suggestions.backfill(store, kinds, created_by="test")
-    assert report.sources_checked == 2 and report.sources_without_model_cleanup == 2
+    assert report.sources_checked == 2 and report.sources_without_ai_cleanup == 2
     assert report.sources_recorded == 0
 
 
 def test_a_dry_run_counts_and_writes_nothing(store, kinds):
     add_bee(store, BEE_SOURCE)
-    put_model_cleanup(store, kinds, BEE_SOURCE, bee_transcript())
+    put_ai_cleanup(store, kinds, BEE_SOURCE, bee_transcript())
     report = model_suggestions.backfill(store, kinds, created_by="test", dry_run=True)
     assert report.sources_to_record == 1 and report.suggestions_to_record == 1
     assert report.sources_recorded == 0 and report.suggestions_recorded == 0
@@ -199,9 +199,9 @@ def test_a_dry_run_counts_and_writes_nothing(store, kinds):
 
 def test_an_artifact_with_no_ambiguities_clears_the_rows_of_the_one_before(store, kinds):
     add_bee(store, BEE_SOURCE)
-    put_model_cleanup(store, kinds, BEE_SOURCE, bee_transcript())
+    put_ai_cleanup(store, kinds, BEE_SOURCE, bee_transcript())
     model_suggestions.backfill(store, kinds, created_by="test")
-    put_model_cleanup(store, kinds, BEE_SOURCE, with_ambiguities(bee_transcript()))
+    put_ai_cleanup(store, kinds, BEE_SOURCE, with_ambiguities(bee_transcript()))
     model_suggestions.backfill(store, kinds, created_by="test")
     assert store.model_suggestions(BEE_SOURCE) == {}
 
@@ -238,7 +238,7 @@ def test_a_version_5_database_gains_the_tables_after_a_verified_backup(tmp_path)
 def config(tmp_path, store, kinds, database):
     kinds["bee"] = KindSetup(review_kinds.bee_review("Quill"), tmp_path / "transcripts")
     add_bee(store, "bee:101")
-    put_model_cleanup(store, kinds, "bee:101", bee_transcript() | {"video_id": "bee:101"})
+    put_ai_cleanup(store, kinds, "bee:101", bee_transcript() | {"video_id": "bee:101"})
     database.close()
     path = tmp_path / "review.toml"
     path.write_text(
@@ -265,8 +265,8 @@ def test_a_source_whose_artifact_cannot_be_recorded_is_counted_and_the_rest_go_o
     add_bee(store, BEE_SOURCE)
     add_bee(store, SECOND_BEE_SOURCE)
     bad = ambiguity("amb-0001", 1, "wren", "Wren", ["Wren", "Ren"], probabilities=[3, 1])
-    put_model_cleanup(store, kinds, BEE_SOURCE, with_ambiguities(bee_transcript(), bad))
-    put_model_cleanup(store, kinds, SECOND_BEE_SOURCE, bee_transcript())
+    put_ai_cleanup(store, kinds, BEE_SOURCE, with_ambiguities(bee_transcript(), bad))
+    put_ai_cleanup(store, kinds, SECOND_BEE_SOURCE, bee_transcript())
     report = model_suggestions.backfill(store, kinds, created_by="test")
     assert report.sources_unreadable == 1 and report.sources_recorded == 1
     assert store.model_suggestions(BEE_SOURCE) == {}

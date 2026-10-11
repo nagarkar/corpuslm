@@ -2,7 +2,7 @@
 
 A vault is a folder opened in Obsidian as its own vault; the desk review surface. One note per
 source and one per corpus. Every exported note carries its kind's marker line (ytlm's is
-`ytlm: exported`) and is regenerated on change; a note without the marker is the author's own
+`ytlm: exported`) and is regenerated on change; a note without the marker is the owner's own
 and is never touched.
 
 This module holds what every kind shares: safe note names, the marker rules for writing and
@@ -97,9 +97,9 @@ def render_corpus_note(
         "",
         f"# {corpus['name']}",
         "",
-        "## Glossary",
+        "## Corpus glossary",
         "",
-        "_Glossary arrives in slice 3._",
+        "_The corpus glossary arrives in build step 3._",
         "",
         "## Members",
         "",
@@ -129,7 +129,7 @@ def remove_exported(directory: Path, key: str, value: str, *, marker: str) -> in
 
 
 class UnmarkedNoteInTheWay(RuntimeError):
-    """An author's own note (no marker) sits at the export path; left alone."""
+    """An owner's own note (no marker) sits at the export path; left alone."""
 
 
 def write_note(

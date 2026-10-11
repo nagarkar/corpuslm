@@ -1,6 +1,6 @@
-"""Model clean-up: the batching, reply bounds and edits of the model's residual clean-up pass.
+"""AI cleanup: the batching, reply bounds and edits of the step that asks a model to clean a source.
 
-The model clean-up is the pass after the deterministic ones (corpuslm.cleanup). This module
+The AI cleanup is the step after the basic cleanup (corpuslm.basic_cleanup). This module
 holds its source-agnostic mechanics and calls no model.
 
 Batches: fixed input-token budgets cut on segment boundaries, the previous batch's tail
@@ -18,31 +18,37 @@ The stored keys of a document keep their legacy names (`role`, `role_confidence`
 `amb-NNNN`, `passes.pass3`): renaming them would change stored bytes and force a paid rebuild.
 
 corpuslm ships `cleanup_bee_v1.md` for the Bee scheme among its built-in prompts
-(corpuslm.prompts); a scheme's `prompt_id` names the prompt a source's clean-up uses.
+(corpuslm.prompts); a scheme's `prompt_id` names the prompt a source's cleanup uses.
 
 Never imports: db, store, clikit, any model transport.
 
 Decisions:
 - Segments are never re-cut. Why: stable segments keep anchors, SRT cues, FTS rows and review
   keys stable. Enforced by:
-  tests/test_model_cleanup.py::test_apply_never_changes_segment_boundaries_and_protects_spans.
+  tests/test_ai_cleanup.py::test_apply_never_changes_segment_boundaries_and_protects_spans.
 - A batch is the unit of cache key, retry and spend; batches cut on segment boundaries with a
   read-only overlap. Enforced by:
-  tests/test_model_cleanup.py::test_batches_cut_on_segment_boundaries_with_read_only_overlap.
+  tests/test_ai_cleanup.py::test_batches_cut_on_segment_boundaries_with_read_only_overlap.
 - Replies carry edits only: untouched segments cost no output tokens.
 - A stray edit index is dropped and counted, never a failed transcript; a stray label,
   ambiguity or binding index is an error. Enforced by:
-  tests/test_model_cleanup.py::test_apply_rejects_an_index_outside_the_batch_and_protects_spans.
+  tests/test_ai_cleanup.py::test_apply_rejects_an_index_outside_the_batch_and_protects_spans.
 - With fixed labels a segment's `role` is the source's own speaker label. Enforced by:
-  tests/test_model_cleanup.py::test_fixed_labels_are_adopted_from_the_speakers.
+  tests/test_ai_cleanup.py::test_fixed_labels_are_adopted_from_the_speakers.
 - A fixed-label scheme rejects any reply that assigns or changes a label. Enforced by:
-  tests/test_model_cleanup.py::test_fixed_labels_reject_a_reply_that_relabels_a_speaker.
+  tests/test_ai_cleanup.py::test_fixed_labels_reject_a_reply_that_relabels_a_speaker.
 - New ambiguities are capped per source; past the cap the model's pick stands. Enforced by:
-  tests/test_model_cleanup.py::test_cap_ambiguities_keeps_the_least_confident_pending.
+  tests/test_ai_cleanup.py::test_cap_ambiguities_keeps_the_least_confident_pending.
 
 Terms:
+- **AI cleanup**: the step after the basic cleanup that asks a model, batch by batch, for edits,
+  speaker label assignments, ambiguities and name bindings. Stored under the node names `pass3`
+  (ytlm) and `model_cleanup` (beelm).
 - **batch**: the segments one model call edits, plus a read-only tail of the previous batch.
   Never called a window.
+- **candidate**: one possible wording of an ambiguous span; the words as heard are always among
+  them. A review card offers the candidates, the pick and the words as heard
+  (`review.candidates_offered`).
 - **ambiguity**: a consequential span the model was unsure of (a name, a term, or words that
   change meaning), with its candidates, probabilities and pick. Filler and punctuation are
   never ambiguities. Review key `amb-NNNN`.
@@ -64,34 +70,34 @@ class BatchError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class Batch:
-    n: int
+    number: int
     start: int  # first editable segment index (inclusive)
     end: int  # last editable segment index (exclusive)
     context: tuple[int, int]  # read-only tail of the previous batch [a, b)
 
     @property
     def tag_suffix(self) -> str:
-        return f"b{self.n}"
+        return f"b{self.number}"
 
 
-def adopt_fixed_labels(t: dict) -> None:
+def adopt_fixed_labels(document: dict) -> None:
     """With fixed labels the segment's `role` is the source's own speaker label: set it, where
     the segment has a speaker and no role yet, so the batches show it and the speaker map
     lists it. Segments with no speaker stay unlabelled."""
-    for seg in t["segments"]:
-        if seg.get("speaker") and not seg.get("role"):
-            seg["role"] = seg["speaker"]
+    for segment in document["segments"]:
+        if segment.get("speaker") and not segment.get("role"):
+            segment["role"] = segment["speaker"]
 
 
 def estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4 + 1)
 
 
-def batches(t: dict, *, batch_tokens: int, overlap_segments: int) -> list[Batch]:
-    segments = t["segments"]
+def batches(document: dict, *, batch_tokens: int, overlap_segments: int) -> list[Batch]:
+    segments = document["segments"]
     out: list[Batch] = []
     start = 0
-    n = 0
+    number = 0
     while start < len(segments):
         used = 0
         end = start
@@ -102,30 +108,30 @@ def batches(t: dict, *, batch_tokens: int, overlap_segments: int) -> list[Batch]
             used += cost
             end += 1
         context = (max(0, start - overlap_segments), start) if start else (0, 0)
-        out.append(Batch(n=n, start=start, end=end, context=context))
+        out.append(Batch(number=number, start=start, end=end, context=context))
         start = end
-        n += 1
+        number += 1
     return out
 
 
-def render(t: dict, w: Batch, *, scheme: SpeakerScheme) -> str:
+def render(document: dict, batch: Batch, *, scheme: SpeakerScheme) -> str:
     """The batch as `[index] text` lines, read-only context first. With fixed labels each line
     also shows its label (`[index] label: text`), because the model must see them."""
 
     def line(i: int, mark: str) -> str:
-        seg = t["segments"][i]
-        label = f"{seg['role']}: " if scheme.fixed_labels and seg.get("role") else ""
-        return f"[{i}] {mark}{label}{seg['text']}"
+        segment = document["segments"][i]
+        label = f"{segment['role']}: " if scheme.fixed_labels and segment.get("role") else ""
+        return f"[{i}] {mark}{label}{segment['text']}"
 
-    lines = [line(i, "(context) ") for i in range(*w.context)]
-    lines += [line(i, "") for i in range(w.start, w.end)]
+    lines = [line(i, "(context) ") for i in range(*batch.context)]
+    lines += [line(i, "") for i in range(batch.start, batch.end)]
     return "\n".join(lines)
 
 
-def role_summary(t: dict, *, upto: int, bindings: list[dict], scheme: SpeakerScheme) -> str:
+def role_summary(document: dict, *, upto: int, bindings: list[dict], scheme: SpeakerScheme) -> str:
     counts: dict[str, int] = {}
-    for seg in t["segments"][:upto]:
-        role = seg.get("role")
+    for segment in document["segments"][:upto]:
+        role = segment.get("role")
         if role:
             counts[role] = counts.get(role, 0) + 1
     names = {b["role"]: b["name"] for b in bindings if b.get("name")}
@@ -150,34 +156,38 @@ def _summary_order(scheme: SpeakerScheme, present: list[str]) -> list[str]:
     return ordered
 
 
-def check_bounds(w: Batch, reply: dict, *, scheme: SpeakerScheme, t: dict | None = None) -> None:
+def check_bounds(
+    batch: Batch, reply: dict, *, scheme: SpeakerScheme, document: dict | None = None
+) -> None:
     """Every index the reply names must be editable in this batch, and an ambiguity's
     probabilities line up with its candidates. Runs before the reply is cached: a bad reply
     is never served from cache. With fixed labels and the transcript `t`, a label that
     differs from the segment's own is rejected here too."""
-    editable = range(w.start, w.end)
-    visible = range(w.context[0], w.end) if w.context[1] else editable
+    editable = range(batch.start, batch.end)
+    visible = range(batch.context[0], batch.end) if batch.context[1] else editable
     # Edits outside the editable range are dropped and counted at apply: a single stray index
     # on a four-hour video failed the whole video and re-billed thirty batches on retry.
-    for idx_raw in reply.get("roles") or {}:
+    for index_raw in reply.get("roles") or {}:
         # A label on a read-only context line is harmless and common (the model labels
         # everything it sees); it is ignored at apply, not an error.
-        if int(idx_raw) not in visible:
+        if int(index_raw) not in visible:
             raise ValueError(
-                f"roles: index {idx_raw} is outside batch {w.n} [{w.context[0]}, {w.end})"
+                f"roles: index {index_raw} is outside batch {batch.number} "
+                f"[{batch.context[0]}, {batch.end})"
             )
-    if scheme.fixed_labels and t is not None:
-        for idx_raw, label in (reply.get("roles") or {}).items():
-            idx = int(idx_raw)
-            if idx in editable and label[0] != t["segments"][idx].get("role"):
+    if scheme.fixed_labels and document is not None:
+        for index_raw, label in (reply.get("roles") or {}).items():
+            idx = int(index_raw)
+            if idx in editable and label[0] != document["segments"][idx].get("role"):
                 raise ValueError(
                     f"roles: {label[0]!r} would relabel segment {idx} from "
-                    f"{t['segments'][idx].get('role')!r}; the labels are fixed"
+                    f"{document['segments'][idx].get('role')!r}; the labels are fixed"
                 )
     for item in reply.get("ambiguities") or []:
         if int(item["idx"]) not in editable:
             raise ValueError(
-                f"ambiguities: index {item['idx']} is outside batch {w.n} [{w.start}, {w.end})"
+                f"ambiguities: index {item['idx']} is outside batch {batch.number} "
+                f"[{batch.start}, {batch.end})"
             )
     # A binding is evidence (an anchor quote on the line where a name is said), so a context
     # line the model saw is good evidence: speakers often name themselves just before a
@@ -185,7 +195,8 @@ def check_bounds(w: Batch, reply: dict, *, scheme: SpeakerScheme, t: dict | None
     for item in reply.get("bindings") or []:
         if int(item["idx"]) not in visible:
             raise ValueError(
-                f"bindings: index {item['idx']} is outside batch {w.n} [{w.context[0]}, {w.end})"
+                f"bindings: index {item['idx']} is outside batch {batch.number} "
+                f"[{batch.context[0]}, {batch.end})"
             )
     for a in reply.get("ambiguities") or []:
         probs = a.get("probabilities")
@@ -200,21 +211,22 @@ def check_bounds(w: Batch, reply: dict, *, scheme: SpeakerScheme, t: dict | None
 
 
 def apply(
-    t: dict, w: Batch, reply: dict, *, next_key: int, scheme: SpeakerScheme
+    document: dict, batch: Batch, reply: dict, *, next_key: int, scheme: SpeakerScheme
 ) -> tuple[dict, dict]:
     """Apply one batch's reply in place. `next_key` is the next ambiguity number for this
     source (keys are amb-NNNN, stable within the source). Returns (t, stats)."""
-    segments = t["segments"]
-    editable = range(w.start, w.end)
+    segments = document["segments"]
+    editable = range(batch.start, batch.end)
 
-    def check(idx_raw, what: str, allowed: range = editable) -> int:
+    def check(index_raw, what: str, allowed: range = editable) -> int:
         try:
-            idx = int(idx_raw)
+            idx = int(index_raw)
         except (TypeError, ValueError) as e:
-            raise BatchError(f"{what}: index {idx_raw!r} is not an integer") from e
+            raise BatchError(f"{what}: index {index_raw!r} is not an integer") from e
         if idx not in allowed:
             raise BatchError(
-                f"{what}: index {idx} is outside batch {w.n} [{allowed.start}, {allowed.stop})"
+                f"{what}: index {idx} is outside batch {batch.number} "
+                f"[{allowed.start}, {allowed.stop})"
             )
         return idx
 
@@ -227,45 +239,45 @@ def apply(
         "dropped_ambiguities": 0,
         "dropped_bindings": 0,
     }
-    for idx_raw, text in (reply.get("edits") or {}).items():
-        if int(idx_raw) not in editable:
+    for index_raw, text in (reply.get("edits") or {}).items():
+        if int(index_raw) not in editable:
             stats["stray_edits"] = stats.get("stray_edits", 0) + 1
             continue
-        idx = check(idx_raw, "edits")
-        seg = segments[idx]
+        idx = check(index_raw, "edits")
+        segment = segments[idx]
         new = str(text).strip()
         if not new:
             stats["protected_violations"] += 0
             continue
-        if any(span not in new for span in seg.get("protected") or []):
+        if any(span not in new for span in segment.get("protected") or []):
             stats["protected_violations"] += 1
             continue
-        if new != seg["text"]:
-            seg.setdefault("raw", seg["text"])
-            seg["text"] = new
+        if new != segment["text"]:
+            segment.setdefault("raw", segment["text"])
+            segment["text"] = new
             stats["edits"] += 1
-    for idx_raw, label in (reply.get("roles") or {}).items():
-        if int(idx_raw) in range(*w.context):
+    for index_raw, label in (reply.get("roles") or {}).items():
+        if int(index_raw) in range(*batch.context):
             stats["context_roles_ignored"] = stats.get("context_roles_ignored", 0) + 1
             continue
-        idx = check(idx_raw, "roles")
+        idx = check(index_raw, "roles")
         role, confidence = label[0], float(label[1])
-        seg = segments[idx]
+        segment = segments[idx]
         if scheme.fixed_labels:
-            if role != seg.get("role"):
+            if role != segment.get("role"):
                 raise BatchError(
-                    f"roles: {role!r} would relabel segment {idx} from {seg.get('role')!r}; "
+                    f"roles: {role!r} would relabel segment {idx} from {segment.get('role')!r}; "
                     "the labels are fixed"
                 )
             continue  # a confirmation changes nothing
         if role not in scheme.labels:
             raise BatchError(f"roles: {role!r} is not a role label")
-        seg["role"] = role
-        seg["role_confidence"] = round(confidence, 3)
-        if role != scheme.unresolved_label and not seg.get("speaker"):
-            seg["speaker"] = role
+        segment["role"] = role
+        segment["role_confidence"] = round(confidence, 3)
+        if role != scheme.unresolved_label and not segment.get("speaker"):
+            segment["speaker"] = role
         stats["roles"] += 1
-    ambiguities = t.setdefault("ambiguities", [])
+    ambiguities = document.setdefault("ambiguities", [])
     for a in reply.get("ambiguities") or []:
         idx = check(a["idx"], "ambiguities")
         text = segments[idx]["text"]
@@ -295,7 +307,11 @@ def apply(
         stats["ambiguities"] += 1
     known = {s.get("role") for s in segments}
     for b in reply.get("bindings") or []:
-        idx = check(b["idx"], "bindings", range(w.context[0], w.end) if w.context[1] else editable)
+        idx = check(
+            b["idx"],
+            "bindings",
+            range(batch.context[0], batch.end) if batch.context[1] else editable,
+        )
         if scheme.fixed_labels and b["role"] not in known:
             stats["dropped_bindings"] += 1  # a name for a label no segment carries
         elif b["anchor"] and b["anchor"] in segments[idx]["text"]:
@@ -311,29 +327,29 @@ def apply(
         else:
             stats["dropped_bindings"] += 1
     stats["next_key"] = next_key
-    return t, stats
+    return document, stats
 
 
-def drop_unanchored(t: dict) -> int:
+def drop_unanchored(document: dict) -> int:
     """After the memory patch and the verdicts, a pending item whose span, pick and
     candidates no longer appear in its segment (an overlapping substitution rewrote it) has
     nothing to ask about: dropped and counted, never a failed transcript."""
     kept, dropped = [], 0
-    for a in t.get("ambiguities") or []:
-        text = t["segments"][a["idx"]]["text"]
+    for a in document.get("ambiguities") or []:
+        text = document["segments"][a["idx"]]["text"]
         needles = [a["span"], a["pick"], *a["candidates"], a.get("resolution", "")]
-        if any(n and n in text for n in needles):
+        if any(number and number in text for number in needles):
             kept.append(a)
         else:
             dropped += 1
-    t["ambiguities"] = kept
+    document["ambiguities"] = kept
     return dropped
 
 
-def cap_ambiguities(t: dict, *, max_new: int) -> int:
+def cap_ambiguities(document: dict, *, max_new: int) -> int:
     """Beyond the cap the model's pick stands and the item is marked capped, lowest
     confidence first kept pending. Returns the capped count."""
-    pending = [a for a in t.get("ambiguities") or [] if a["status"] == "pending"]
+    pending = [a for a in document.get("ambiguities") or [] if a["status"] == "pending"]
     if max_new <= 0 or len(pending) <= max_new:
         return 0
     pending.sort(key=lambda a: a["confidence"])

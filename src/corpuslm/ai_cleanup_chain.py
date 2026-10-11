@@ -1,16 +1,16 @@
-"""Model chain: the builder of the model clean-up step, the same for every source kind.
+"""AI cleanup chain: the builder of the AI cleanup step, the same for every source kind.
 
-The model clean-up (`build_model_cleanup`) is the step after spell fix that asks a model, batch by
-batch, for the residual edits, label-to-name bindings and ambiguities of one source
-(corpuslm.model_cleanup holds the batching and the bounds; this module holds the bookkeeping
+The AI cleanup (`build_ai_cleanup`) is the step after spell fix that asks a model, batch by
+batch, for the edits, label-to-name bindings and ambiguities of one source
+(corpuslm.ai_cleanup holds the batching and the bounds; this module holds the bookkeeping
 around the calls). It reads the spell-fix document, calls a model through `corpuslm.llm.Client`
-(or serves the recorded replies from the cache), applies the correction memory and the author's
+(or serves the recorded replies from the cache), applies the correction memory and the owner's
 verdicts, optionally asks the arbiter about what is still pending, and records the artifact with
 the hashes of its inputs. A tool describes its source with a `SourceKind` (corpuslm.chain) and a
-`SpeakerScheme` (corpuslm.speaker_map) and hands the builder a `ModelCleanup`: the collaborators
+`SpeakerScheme` (corpuslm.speaker_map) and hands the builder an `AiCleanupSetup`: the collaborators
 the step needs and nothing else.
 
-What a tool keeps: its review layer (`ReviewHooks`, the author's verdicts and the correction
+What a tool keeps: its review layer (`ReviewHooks`, the owner's verdicts and the correction
 memory), its arbiter (corpuslm.arbiter, built with the tool's transport), the word that turns
 the step off for a source (`declined`), the prompt directories, and the report it keeps.
 
@@ -20,45 +20,45 @@ to a vendor and calls no model.
 Never imports: db, cli, clikit.
 
 Decisions:
-- A PATCH input (the author's verdicts, the correction memory, the arbiter's settings) is
+- A PATCH input (the owner's verdicts, the correction memory, the arbiter's settings) is
   applied after the model's replies and never asks the model again; a held build is replayed
   from the cache. A CONFIG input (prompt, model, batch settings) applies forward only: a built
   transcript keeps the prompt and model it was built with until `rebuild_stale` is said.
   Enforced by:
-  tests/test_model_chain.py::test_a_changed_prompt_applies_forward_only_and_a_patch_input_replays_the_cache.
+  tests/test_ai_cleanup_chain.py::test_a_changed_prompt_applies_forward_only_and_a_patch_input_replays_the_cache.
 - At a spend cap the step starts no new call and records the source failed (transient,
   budget); the next run continues. Enforced by:
-  tests/test_model_chain.py::test_the_run_cap_stops_the_step_and_marks_the_rest_failed.
+  tests/test_ai_cleanup_chain.py::test_the_run_cap_stops_the_step_and_marks_the_rest_failed.
 - A reply that is wrong for its batch is never cached and fails the source transiently.
   Enforced by:
-  tests/test_model_chain.py::test_a_reply_outside_its_batch_fails_the_source_transiently.
+  tests/test_ai_cleanup_chain.py::test_a_reply_outside_its_batch_fails_the_source_transiently.
 - The stored names (the node, the inputs keys, the provenance keys) are the tool's and the
   first tool's; the builder never renames them. Enforced by:
-  tests/test_model_chain.py::test_the_shape_names_the_node_the_stage_and_the_inputs.
-- The author's verdicts and the correction memory are read from the shared database
+  tests/test_ai_cleanup_chain.py::test_the_shape_names_the_node_the_stage_and_the_inputs.
+- The owner's verdicts and the correction memory are read from the shared database
   (`DatabaseReview`, corpuslm.review) for every source kind. Enforced by:
-  tests/test_model_chain.py::test_a_recorded_verdict_changes_the_inputs_and_a_term_rule_is_applied.
+  tests/test_ai_cleanup_chain.py::test_a_recorded_verdict_changes_the_inputs_and_a_term_rule_is_applied.
 - With fixed labels the transcript's speaker source stays what the source said (a diarization
   is not "inferred"). Enforced by:
-  tests/test_model_chain.py::test_fixed_labels_keep_the_sources_speaker_source.
+  tests/test_ai_cleanup_chain.py::test_fixed_labels_keep_the_sources_speaker_source.
 - A build or rebuild records the model's suggestions for every ambiguity
   (corpuslm.model_suggestions) with the artifact, in one transaction. Enforced by:
-  tests/test_model_chain.py::test_building_the_model_cleanup_records_its_suggestions.
+  tests/test_ai_cleanup_chain.py::test_building_the_ai_cleanup_records_its_suggestions.
 - `estimate` calls no model and bills nothing. Enforced by:
-  tests/test_model_chain.py::test_the_estimate_calls_no_model_and_counts_what_would_be_billed.
+  tests/test_ai_cleanup_chain.py::test_the_estimate_calls_no_model_and_counts_what_would_be_billed.
 - A landed verdict or memory rule changes a source's inputs; its batches are served from the reply
   cache, so the rebuild makes no model call and costs nothing, and `estimate` counts that source
   under `from_cache` with no billed batch. A batch the cache lacks is billed with every batch after
   it. Enforced by:
-  tests/test_model_chain.py::test_a_landed_verdict_is_rebuilt_from_the_cache_and_the_estimate_says_so,
-  tests/test_model_chain.py::test_a_batch_the_cache_lacks_is_billed_with_every_batch_after_it.
+  tests/test_ai_cleanup_chain.py::test_a_landed_verdict_is_rebuilt_from_the_cache_and_the_estimate_says_so,
+  tests/test_ai_cleanup_chain.py::test_a_batch_the_cache_lacks_is_billed_with_every_batch_after_it.
 
 Terms:
 - **CONFIG input**: prompt, model, batch tokens, overlap; a change applies forward only.
 - **PATCH input**: verdicts, memory, arbiter settings; a change replays the cached calls.
 - **held build**: a built transcript kept although a CONFIG input changed.
 - **from cache**: a source whose step is not current but whose every batch the reply cache holds.
-- **spending**: the run's note of the spend cap that stopped it (`Spending`).
+- **spend cap stop**: the run's note of the spend cap that stopped it (`SpendCapStop`).
 """
 
 from __future__ import annotations
@@ -69,7 +69,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
-from . import cleanup, llm, model_cleanup, model_suggestions, review
+from . import ai_cleanup, basic_cleanup, llm, model_suggestions, review
 from . import clock as clock_module
 from . import prompts as prompts_module
 from .chain import Chain, Report, canonical_sha256, is_current, record, write_if_changed
@@ -81,11 +81,11 @@ __all__ = [
     "ArbiterLike",
     "DatabaseReview",
     "Estimate",
-    "ModelCleanup",
+    "AiCleanupSetup",
     "NoReview",
     "ReviewHooks",
-    "Spending",
-    "build_model_cleanup",
+    "SpendCapStop",
+    "build_ai_cleanup",
     "estimate",
 ]
 
@@ -100,17 +100,17 @@ ASSUMED_OUTPUT_PER_INPUT = 0.25
 
 
 class ReviewHooks(Protocol):
-    """A tool's review layer: what the author already said, applied to a fresh build."""
+    """A tool's review layer: what the owner already said, applied to a fresh build."""
 
     def verdicts(self, source: str) -> dict[str, dict]:
-        """The author's current verdicts on the source, by review key."""
+        """The owner's current verdicts on the source, by review key."""
         ...
 
     def corrections(self) -> dict[str, dict]:
-        """The correction memory: reading rules by normalized span."""
+        """The correction memory: ordinary-correction rules by normalized span."""
         ...
 
-    def memory_vocabulary(self) -> cleanup.Vocabulary:
+    def memory_vocabulary(self) -> basic_cleanup.Vocabulary:
         """The memory's term verdicts as a vocabulary for `cleanup.apply_correction_memory`."""
         ...
 
@@ -131,8 +131,8 @@ class NoReview:
     def corrections(self) -> dict[str, dict]:
         return {}
 
-    def memory_vocabulary(self) -> cleanup.Vocabulary:
-        return cleanup.Vocabulary(terms=[], substitutions={}, sources={})
+    def memory_vocabulary(self) -> basic_cleanup.Vocabulary:
+        return basic_cleanup.Vocabulary(terms=[], substitutions={}, sources={})
 
     def reconcile(
         self, document: dict, verdicts: dict[str, dict], memory: dict[str, dict], *, now: datetime
@@ -147,7 +147,7 @@ class NoReview:
 
 
 class DatabaseReview:
-    """The review layer over the shared database (corpuslm.review): the author's verdicts and
+    """The review layer over the shared database (corpuslm.review): the owner's verdicts and
     the correction memory as they stand, applied to a fresh build. ytlm and beelm both use it."""
 
     def __init__(self, store: Store):
@@ -159,9 +159,9 @@ class DatabaseReview:
     def corrections(self) -> dict[str, dict]:
         return review.corrections(self.store.db)
 
-    def memory_vocabulary(self) -> cleanup.Vocabulary:
+    def memory_vocabulary(self) -> basic_cleanup.Vocabulary:
         terms = review.term_vocabulary(self.store.db)
-        return cleanup.Vocabulary(
+        return basic_cleanup.Vocabulary(
             terms=list(dict.fromkeys(terms.values())),
             substitutions=dict(terms),
             sources={v: "correction memory" for v in terms.values()},
@@ -178,11 +178,11 @@ class ArbiterLike(Protocol):
 
     def fingerprint(self) -> dict: ...
 
-    def run(self, t: dict, *, source: str, protected: list[str], memory: dict) -> dict: ...
+    def run(self, document: dict, *, source: str, protected: list[str], memory: dict) -> dict: ...
 
 
 @dataclass(slots=True)
-class Spending:
+class SpendCapStop:
     """The spend cap that stopped this run, if one did. Shared by every source of a run."""
 
     cap: str | None = None
@@ -207,8 +207,8 @@ def _no_arbiter() -> tuple[ArbiterLike | None, str | None]:
 
 
 @dataclass(frozen=True, slots=True)
-class ModelCleanup:
-    """The collaborators of the model clean-up step.
+class AiCleanupSetup:
+    """The collaborators of the AI cleanup step.
 
     `client` is called when a model is first needed (a client opens nothing until then).
     `declined(source)` is the tool's own reason to leave a source without the step (a corpus
@@ -219,7 +219,7 @@ class ModelCleanup:
     scheme: SpeakerScheme
     config: dict
     client: Callable[[], llm.Client]
-    spending: Spending
+    spend_cap_stop: SpendCapStop
     review: ReviewHooks = field(default_factory=NoReview)
     prompt_directories: Sequence[Path] | None = None
     declined: Callable[[str], str | None] = _never_declined
@@ -229,7 +229,7 @@ class ModelCleanup:
 
     @property
     def node(self) -> str:
-        return self.chain.kind.shape.model_cleanup
+        return self.chain.kind.shape.ai_cleanup
 
     def prompt(self) -> prompts_module.Prompt:
         return prompts_module.load(self.scheme.prompt_id, directories=self.prompt_directories)
@@ -250,11 +250,11 @@ class ModelCleanup:
             return reason
         if not self.config.get("cleanup"):
             return "[cleanup] is absent from config.toml"
-        if self.spending.cap:
-            return self.spending.note()
+        if self.spend_cap_stop.cap:
+            return self.spend_cap_stop.note()
         return None
 
-    def inputs(self, source: str, spell_fix_sha: str) -> dict:
+    def inputs(self, source: str, spell_fix_sha256: str) -> dict:
         """The hashes this build depends on."""
         shape = self.chain.kind.shape
         settings = self.settings()
@@ -262,12 +262,12 @@ class ModelCleanup:
         memory = self.review.corrections()
         arbiter, _ = self.arbiter()
         return {
-            shape.spell_fix: spell_fix_sha,
+            shape.spell_fix: spell_fix_sha256,
             "prompt": self.prompt().sha256,
             "model": settings["model"],
             "batch_tokens": settings["batch_tokens"],
             "overlap_segments": settings["overlap_segments"],
-            shape.step_key: shape.model_cleanup_step,
+            shape.step_key: shape.ai_cleanup_step,
             "verdicts": canonical_sha256({k: v["verdict"] for k, v in verdicts.items()}),
             "memory": canonical_sha256({k: v["verdict"] for k, v in memory.items()}),
             **({"arbiter": canonical_sha256(arbiter.fingerprint())} if arbiter else {}),
@@ -275,52 +275,52 @@ class ModelCleanup:
 
 
 def _run_arbiter(
-    ctx: ModelCleanup,
+    ai_cleanup_setup: AiCleanupSetup,
     source: str,
     document: dict,
     terms: list[str],
     memory: dict,
     report: Report,
 ) -> dict:
-    arbiter, reason = ctx.arbiter()
+    arbiter, reason = ai_cleanup_setup.arbiter()
     if arbiter is None:
-        if ctx.config.get("arbiter") is not None:
+        if ai_cleanup_setup.config.get("arbiter") is not None:
             report.notes["arbiter"] = f"skipped: {reason}"
         return {}
-    if ctx.spending.cap:
-        stats = {"error": ctx.spending.note(), "budget": True}
-        report.count("arbiter_budget")
+    if ai_cleanup_setup.spend_cap_stop.cap:
+        stats = {"error": ai_cleanup_setup.spend_cap_stop.note(), "spend_cap_reached": True}
+        report.count("arbiter_spend_cap")
         report.errors[source] = f"arbiter: {stats['error']}"
         return stats
     stats = arbiter.run(document, source=source, protected=terms, memory=memory)
     for key in ("asked", "applied", "overrode", "deferred", "bad"):
         if stats[key]:
             report.count(f"arbiter_{key}", stats[key])
-    if stats["budget"]:
-        ctx.spending.stop(stats.get("cap", llm.RUN_CAP), report)
-        report.count("arbiter_budget")
+    if stats["spend_cap_reached"]:
+        ai_cleanup_setup.spend_cap_stop.stop(stats.get("cap", llm.RUN_CAP), report)
+        report.count("arbiter_spend_cap")
     if stats["error"]:
         report.errors[source] = f"arbiter: {stats['error']}"
     return stats
 
 
-def build_model_cleanup(
-    ctx: ModelCleanup, source: str, spell_fix_sha: str, report: Report
+def build_ai_cleanup(
+    ai_cleanup_setup: AiCleanupSetup, source: str, spell_fix_sha256: str, report: Report
 ) -> str | None:
-    """The model clean-up of one source over its spell-fix artifact. Returns the artifact's
-    sha256, or None when the step did not produce one (skipped, failed, over budget)."""
-    chain = ctx.chain
+    """The AI cleanup of one source over its spell-fix artifact. Returns the artifact's
+    sha256, or None when the step did not produce one (skipped, failed, stopped by a spend cap)."""
+    chain = ai_cleanup_setup.chain
     shape = chain.kind.shape
-    node = shape.model_cleanup
-    prompt = ctx.prompt()
-    section = ctx.config.get("cleanup") or {}
-    settings = ctx.settings()
+    node = shape.ai_cleanup
+    prompt = ai_cleanup_setup.prompt()
+    section = ai_cleanup_setup.config.get("cleanup") or {}
+    settings = ai_cleanup_setup.settings()
     batch_tokens = settings["batch_tokens"]
     overlap = settings["overlap_segments"]
     max_new = settings["max_new_ambiguities"]
-    verdicts = ctx.review.verdicts(source)
-    memory = ctx.review.corrections()
-    inputs = ctx.inputs(source, spell_fix_sha)
+    verdicts = ai_cleanup_setup.review.verdicts(source)
+    memory = ai_cleanup_setup.review.corrections()
+    inputs = ai_cleanup_setup.inputs(source, spell_fix_sha256)
     path = chain.path(source, node)
     store = chain.store
     row = store.artifact(source, node)
@@ -330,7 +330,7 @@ def build_model_cleanup(
     def put(
         *,
         path: Path | None,
-        sha: str,
+        sha256: str,
         inputs: dict,
         provenance: dict,
         state: str = "built",
@@ -341,7 +341,7 @@ def build_model_cleanup(
             node,
             root=chain.root,
             path=path,
-            sha=sha,
+            sha256=sha256,
             inputs=inputs,
             provenance=provenance,
             created_by=chain.created_by,
@@ -350,33 +350,41 @@ def build_model_cleanup(
 
     replay: dict[int, str] | None = None  # batch -> payload sha of the call that built it
     held: dict = {}  # CONFIG inputs kept from the held build
-    old_prov: dict = {}
+    old_provenance_record: dict = {}
     if row and path.exists() and row["state"] in ("built", "stale"):
         old_inputs = loads(row["inputs"], {})
         changed = {k for k, v in inputs.items() if old_inputs.get(k) != v}
         if (
             changed & CONFIG_INPUTS
-            and not ctx.rebuild_stale
+            and not ai_cleanup_setup.rebuild_stale
             and not (changed - CONFIG_INPUTS - PATCH_INPUTS)
         ):
             # A config change applies forward only: the build keeps the prompt and model it was
             # made with and stays `built`, never rebuilt on its own, until `rebuild_stale` or a
             # refetch. A build an older rule marked stale for config is set back to built.
-            old_prov = loads(row["provenance"], {})
-            if row["state"] == "stale" and str(old_prov.get("stale_reason", "")).startswith(
-                "config:"
-            ):
-                old_prov = {
-                    k: v for k, v in old_prov.items() if k not in ("stale_reason", "stale_at")
+            old_provenance_record = loads(row["provenance"], {})
+            if row["state"] == "stale" and str(
+                old_provenance_record.get("stale_reason", "")
+            ).startswith("config:"):
+                old_provenance_record = {
+                    k: v
+                    for k, v in old_provenance_record.items()
+                    if k not in ("stale_reason", "stale_at")
                 }
-                put(path=path, sha=row["sha256"], inputs=old_inputs, provenance=old_prov)
+                put(
+                    path=path,
+                    sha256=row["sha256"],
+                    inputs=old_inputs,
+                    provenance=old_provenance_record,
+                )
             if not (changed & PATCH_INPUTS):
                 return row["sha256"]
             # A verdict or a memory rule landed on a held build: replay the calls that built it
-            # from the cache and patch again. The model is never asked with a prompt the author
+            # from the cache and patch again. The model is never asked with a prompt the owner
             # has not approved.
             replay = {
-                int(c["batch"]): str(c.get("payload_sha256", "")) for c in old_prov.get("calls", [])
+                int(c["batch"]): str(c.get("payload_sha256", ""))
+                for c in old_provenance_record.get("calls", [])
             }
             held = {k: old_inputs.get(k) for k in CONFIG_INPUTS}
             if not replay:
@@ -385,35 +393,37 @@ def build_model_cleanup(
                 return row["sha256"]
             batch_tokens = int(held.get("batch_tokens") or batch_tokens)
             overlap = int(held.get("overlap_segments") or overlap)
-    reason = ctx.off_reason(source)
+    reason = ai_cleanup_setup.off_reason(source)
     if reason:
         state = "failed" if reason.startswith("budget") else "skipped"
         put(
             path=None,
-            sha="",
+            sha256="",
             inputs=inputs,
             state=state,
             provenance={"reason": reason, **({"transient": True} if state == "failed" else {})},
         )
         if state == "failed":
-            report.count(f"{node}_budget")
+            report.count(f"{node}_spend_cap")
             report.errors[source] = f"{node}: {reason}"
         return None
     document = chain.load(source, shape.spell_fix)
-    if ctx.scheme.fixed_labels:
-        model_cleanup.adopt_fixed_labels(document)
+    if ai_cleanup_setup.scheme.fixed_labels:
+        ai_cleanup.adopt_fixed_labels(document)
     # Source names only in the prompt: the correction memory's terms are already applied by
     # protected vocabulary and marked protected in the segments, so apply() keeps them; leaving
     # them out of the prompt keeps every batch payload stable and the cache warm (a new verdict
     # must not re-bill the corpus).
     terms = sorted(chain.kind.vocabulary(source).terms)
     protected = ", ".join(terms) or "(none)"
-    scheme = ctx.scheme
-    wins = model_cleanup.batches(document, batch_tokens=batch_tokens, overlap_segments=overlap)
+    scheme = ai_cleanup_setup.scheme
+    batches_to_run = ai_cleanup.batches(
+        document, batch_tokens=batch_tokens, overlap_segments=overlap
+    )
     bindings: list[dict] = []
     next_key = 1
     totals = {
-        "batches": len(wins),
+        "batches": len(batches_to_run),
         "edits": 0,
         "protected_violations": 0,
         "roles": 0,
@@ -426,31 +436,33 @@ def build_model_cleanup(
         "cached": 0,
         "cost_unknown": 0,
     }
-    first_prov: dict = {}
+    first_provenance_record: dict = {}
     calls: list[dict] = []
     client = None
-    for w in wins:
+    for batch in batches_to_run:
         variables = {
             "source_label": shape.source_label,
             "protected": protected,
-            "roles": model_cleanup.role_summary(
-                document, upto=w.start, bindings=bindings, scheme=scheme
+            "roles": ai_cleanup.role_summary(
+                document, upto=batch.start, bindings=bindings, scheme=scheme
             ),
-            "batch": model_cleanup.render(document, w, scheme=scheme),
+            "batch": ai_cleanup.render(document, batch, scheme=scheme),
         }
-        tag = f"{source}-{w.tag_suffix}"
+        tag = f"{source}-{batch.tag_suffix}"
 
-        def check(obj, w=w, current=document):
-            model_cleanup.check_bounds(w, obj, scheme=scheme, t=current)
+        def check(obj, batch=batch, current=document):
+            ai_cleanup.check_bounds(batch, obj, scheme=scheme, document=current)
 
         try:
-            client = client or ctx.client()
+            client = client or ai_cleanup_setup.client()
             if replay is not None:
-                reply = client.replay(node, prompt, replay.get(w.n, ""), tag=tag, check=check)
+                reply = client.replay(
+                    node, prompt, replay.get(batch.number, ""), tag=tag, check=check
+                )
             else:
                 reply = client.complete(node, prompt, variables, tag=tag, check=check)
-            document, stats = model_cleanup.apply(
-                document, w, reply.parsed, next_key=next_key, scheme=scheme
+            document, stats = ai_cleanup.apply(
+                document, batch, reply.parsed, next_key=next_key, scheme=scheme
             )
         except llm.CacheMiss as e:
             # the held build stays as it is; the verdict waits in the database
@@ -458,42 +470,46 @@ def build_model_cleanup(
             report.errors[source] = f"{node}: {e}"
             return row["sha256"] if row else None
         except llm.NotConfigured as e:
-            put(path=None, sha="", inputs=inputs, state="skipped", provenance={"reason": str(e)})
+            put(path=None, sha256="", inputs=inputs, state="skipped", provenance={"reason": str(e)})
             return None
-        except llm.BudgetExceeded as e:
-            ctx.spending.stop(e.cap, report)
+        except llm.SpendCapReached as e:
+            ai_cleanup_setup.spend_cap_stop.stop(e.cap, report)
             put(
                 path=None,
-                sha="",
+                sha256="",
                 inputs=inputs,
                 state="failed",
-                provenance={"reason": f"budget: {e}", "transient": True, "batches_done": w.n},
+                provenance={
+                    "reason": f"budget: {e}",
+                    "transient": True,
+                    "batches_done": batch.number,
+                },
             )
-            report.count(f"{node}_budget")
+            report.count(f"{node}_spend_cap")
             report.errors[source] = f"{node}: budget: {e}"
             return None
         except llm.VendorError as e:
             # transient by definition: recorded, the run goes on
             put(
                 path=None,
-                sha="",
+                sha256="",
                 inputs=inputs,
                 state="failed",
-                provenance={"reason": f"vendor: {e}", "transient": True, "batch": w.n},
+                provenance={"reason": f"vendor: {e}", "transient": True, "batch": batch.number},
             )
             report.count(f"{node}_failed")
-            report.errors[source] = f"{node} batch {w.n}: vendor: {e}"
+            report.errors[source] = f"{node} batch {batch.number}: vendor: {e}"
             return None
-        except (llm.BadReply, llm.TruncatedReply, model_cleanup.BatchError) as e:
+        except (llm.BadReply, llm.TruncatedReply, ai_cleanup.BatchError) as e:
             put(
                 path=None,
-                sha="",
+                sha256="",
                 inputs=inputs,
                 state="failed",
-                provenance={"reason": f"bad_reply: {e}", "transient": True, "batch": w.n},
+                provenance={"reason": f"bad_reply: {e}", "transient": True, "batch": batch.number},
             )
             report.count(f"{node}_failed")
-            report.errors[source] = f"{node} batch {w.n}: {e}"
+            report.errors[source] = f"{node} batch {batch.number}: {e}"
             return None
         next_key = stats["next_key"]
         bindings += stats["bindings"]
@@ -506,51 +522,55 @@ def build_model_cleanup(
             "dropped_bindings",
         ):
             totals[key] += stats[key]
-        prov = reply.provenance()
-        first_prov = first_prov or prov
+        provenance_record = reply.provenance()
+        first_provenance_record = first_provenance_record or provenance_record
         calls.append(
             {
-                "batch": w.n,
-                "payload_sha256": prov["payload_sha256"],
-                "requested_at": prov["requested_at"],
-                "cached": prov["cached"],
-                "tokens_in": prov["tokens_in"],
-                "tokens_out": prov["tokens_out"],
-                "cost_usd": prov["cost_usd"],
-                "attempts": prov["attempts"],
+                "batch": batch.number,
+                "payload_sha256": provenance_record["payload_sha256"],
+                "requested_at": provenance_record["requested_at"],
+                "cached": provenance_record["cached"],
+                "tokens_in": provenance_record["tokens_in"],
+                "tokens_out": provenance_record["tokens_out"],
+                "cost_usd": provenance_record["cost_usd"],
+                "attempts": provenance_record["attempts"],
             }
         )
-        totals["tokens_in"] += prov["tokens_in"]
-        totals["tokens_out"] += prov["tokens_out"]
-        totals["cached"] += 1 if prov["cached"] else 0
-        if prov["cost_usd"] is None and not prov["cached"]:
+        totals["tokens_in"] += provenance_record["tokens_in"]
+        totals["tokens_out"] += provenance_record["tokens_out"]
+        totals["cached"] += 1 if provenance_record["cached"] else 0
+        if provenance_record["cost_usd"] is None and not provenance_record["cached"]:
             totals["cost_unknown"] += 1
         else:
-            totals["cost_usd"] = round(totals["cost_usd"] + (prov["cost_usd"] or 0.0), 6)
+            totals["cost_usd"] = round(
+                totals["cost_usd"] + (provenance_record["cost_usd"] or 0.0), 6
+            )
     # The correction memory's term verdicts, as a deterministic patch on the model's output; then
-    # the author's verdicts and the memory's reading rules, before the cap and before anything
-    # reaches the queue.
-    document, memory_stats = cleanup.apply_correction_memory(
-        document, ctx.review.memory_vocabulary()
+    # the owner's verdicts and the memory's ordinary-correction rules, before the spend cap and
+    # before anything reaches the queue.
+    document, memory_stats = basic_cleanup.apply_correction_memory(
+        document, ai_cleanup_setup.review.memory_vocabulary()
     )
-    carried = ctx.review.reconcile(document, verdicts, memory, now=ctx.clock())
-    dropped_after_memory = model_cleanup.drop_unanchored(document)
-    arbiter_stats = _run_arbiter(ctx, source, document, terms, memory, report)
+    carried = ai_cleanup_setup.review.reconcile(
+        document, verdicts, memory, now=ai_cleanup_setup.clock()
+    )
+    dropped_after_memory = ai_cleanup.drop_unanchored(document)
+    arbiter_stats = _run_arbiter(ai_cleanup_setup, source, document, terms, memory, report)
     if arbiter_stats.get("error"):
         # asked again on the next run: the recorded input no longer matches
         inputs = inputs | {"arbiter": "incomplete"}
-    capped = model_cleanup.cap_ambiguities(document, max_new=max_new)
+    capped = ai_cleanup.cap_ambiguities(document, max_new=max_new)
     document["state"] = "LLM-CLEANED"
     if not scheme.fixed_labels:
         document["speaker_source"] = "inferred"
     prompt_keys = ("prompt_id", "prompt_version", "prompt_sha256", "model", "profile")
-    lineage = {k: v for k, v in first_prov.items() if k in prompt_keys}
+    lineage = {k: v for k, v in first_provenance_record.items() if k in prompt_keys}
     if held:
         # the replies came from the held build: its prompt and model, not today's
-        lineage = {k: old_prov.get(k, lineage.get(k)) for k in prompt_keys}
+        lineage = {k: old_provenance_record.get(k, lineage.get(k)) for k in prompt_keys}
     document.setdefault("passes", {})["pass3"] = {
         "status": "ran",
-        "batches": len(wins),
+        "batches": len(batches_to_run),
         "edits": totals["edits"],
         "ambiguities": totals["ambiguities"],
         "ambiguities_capped": capped,
@@ -560,13 +580,13 @@ def build_model_cleanup(
         "bindings": bindings,
         "unplaced": carried["unplaced_items"],
     }
-    sha = write_if_changed(path, chain.dumps(document))
+    sha256 = write_if_changed(path, chain.dumps(document))
     # The artifact and the model's suggestions it holds are recorded together, so a rebuilt
     # artifact replaces the suggestions of the one before it.
     with store.transaction():
         put(
             path=path,
-            sha=sha,
+            sha256=sha256,
             inputs=inputs | held,
             provenance={
                 **lineage,
@@ -590,10 +610,10 @@ def build_model_cleanup(
             },
         )
         model_suggestions.record(
-            store, source, document, artifact_sha256=sha, created_by=chain.created_by
+            store, source, document, artifact_sha256=sha256, created_by=chain.created_by
         )
     report.count(f"{node}_replayed" if held else node)
-    return sha
+    return sha256
 
 
 # ---- what a run would send ------------------------------------------------------------------
@@ -612,74 +632,83 @@ class Estimate:
     model: str
 
 
-def _walk_cache(ctx: ModelCleanup, source: str, document: dict) -> list[str]:
+def _walk_cache(ai_cleanup_setup: AiCleanupSetup, source: str, document: dict) -> list[str]:
     """The rendered text of each batch the cache does not hold (empty: the cache holds them all).
 
-    Walks the source's batches as `build_model_cleanup` does, applying each cached reply so the
+    Walks the source's batches as `build_ai_cleanup` does, applying each cached reply so the
     next batch's payload is the one a run would send. From the first batch the cache lacks, the
     rest are counted as billed: their payloads depend on a reply nobody has seen."""
-    shape = ctx.chain.kind.shape
-    settings = ctx.settings()
-    scheme = ctx.scheme
-    prompt = ctx.prompt()
-    wins = model_cleanup.batches(
+    shape = ai_cleanup_setup.chain.kind.shape
+    settings = ai_cleanup_setup.settings()
+    scheme = ai_cleanup_setup.scheme
+    prompt = ai_cleanup_setup.prompt()
+    batches_to_run = ai_cleanup.batches(
         document,
         batch_tokens=settings["batch_tokens"],
         overlap_segments=settings["overlap_segments"],
     )
-    protected = ", ".join(sorted(ctx.chain.kind.vocabulary(source).terms)) or "(none)"
-    client = ctx.client()
+    protected = ", ".join(sorted(ai_cleanup_setup.chain.kind.vocabulary(source).terms)) or "(none)"
+    client = ai_cleanup_setup.client()
     bindings: list[dict] = []
     next_key = 1
-    for n, w in enumerate(wins):
+    for number, batch in enumerate(batches_to_run):
         variables = {
             "source_label": shape.source_label,
             "protected": protected,
-            "roles": model_cleanup.role_summary(
-                document, upto=w.start, bindings=bindings, scheme=scheme
+            "roles": ai_cleanup.role_summary(
+                document, upto=batch.start, bindings=bindings, scheme=scheme
             ),
-            "batch": model_cleanup.render(document, w, scheme=scheme),
+            "batch": ai_cleanup.render(document, batch, scheme=scheme),
         }
 
-        def check(obj, w=w, current=document):
-            model_cleanup.check_bounds(w, obj, scheme=scheme, t=current)
+        def check(obj, batch=batch, current=document):
+            ai_cleanup.check_bounds(batch, obj, scheme=scheme, document=current)
 
-        reply = client.lookup(ctx.node, prompt, variables, check=check)
+        reply = client.lookup(ai_cleanup_setup.node, prompt, variables, check=check)
         if reply is None:
-            return [model_cleanup.render(document, later, scheme=scheme) for later in wins[n:]]
-        document, stats = model_cleanup.apply(
-            document, w, reply.parsed, next_key=next_key, scheme=scheme
+            return [
+                ai_cleanup.render(document, later, scheme=scheme)
+                for later in batches_to_run[number:]
+            ]
+        document, stats = ai_cleanup.apply(
+            document, batch, reply.parsed, next_key=next_key, scheme=scheme
         )
         next_key = stats["next_key"]
         bindings += stats["bindings"]
     return []
 
 
-def estimate(ctx: ModelCleanup, spell_fix_shas: dict[str, str]) -> Estimate:
+def estimate(ai_cleanup_setup: AiCleanupSetup, spell_fix_sha256s: dict[str, str]) -> Estimate:
     """What the step would bill for `spell_fix_shas` (source -> spell-fix sha), skipping every
     source whose step is current. A source whose batches the reply cache holds is rebuilt from the
     cache (a landed verdict or memory rule changed its inputs): it counts under `from_cache` and
     bills nothing. Calls no model, prints no text and writes nothing."""
-    shape = ctx.chain.kind.shape
-    settings = ctx.settings()
+    shape = ai_cleanup_setup.chain.kind.shape
+    settings = ai_cleanup_setup.settings()
     sources = from_cache = batches = tokens_in = 0
-    for source, sha in sorted(spell_fix_shas.items()):
-        if is_current(ctx.chain.store, source, shape.model_cleanup, ctx.inputs(source, sha)):
+    for source, sha256 in sorted(spell_fix_sha256s.items()):
+        if is_current(
+            ai_cleanup_setup.chain.store,
+            source,
+            shape.ai_cleanup,
+            ai_cleanup_setup.inputs(source, sha256),
+        ):
             continue
-        if ctx.off_reason(source):
+        if ai_cleanup_setup.off_reason(source):
             continue
-        document = ctx.chain.load(source, shape.spell_fix)
-        if ctx.scheme.fixed_labels:
-            model_cleanup.adopt_fixed_labels(document)
-        missed = _walk_cache(ctx, source, document)
+        document = ai_cleanup_setup.chain.load(source, shape.spell_fix)
+        if ai_cleanup_setup.scheme.fixed_labels:
+            ai_cleanup.adopt_fixed_labels(document)
+        missed = _walk_cache(ai_cleanup_setup, source, document)
         sources += 1
         if not missed:
             from_cache += 1
             continue
         batches += len(missed)
-        terms = ", ".join(sorted(ctx.chain.kind.vocabulary(source).terms))
+        terms = ", ".join(sorted(ai_cleanup_setup.chain.kind.vocabulary(source).terms))
         tokens_in += sum(
-            model_cleanup.estimate_tokens(ctx.prompt().body + terms + text) for text in missed
+            ai_cleanup.estimate_tokens(ai_cleanup_setup.prompt().body + terms + text)
+            for text in missed
         )
     tokens_out = int(tokens_in * ASSUMED_OUTPUT_PER_INPUT)
     return Estimate(
