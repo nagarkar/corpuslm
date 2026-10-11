@@ -130,7 +130,7 @@ def backfill(
     counts = dict.fromkeys(BackfillReport.__slots__, 0)  # type: ignore[attr-defined]
     for kind_name, setup in kinds.items():
         node = setup.kind.ai_cleanup_node
-        for source_id in store.source_ids(kind_name):
+        for source_id in store.source_ids(kind_name, include_ignored=False):
             counts["sources_checked"] += 1
             row = store.artifact(source_id, node)
             if row is None or row["state"] not in ("built", "stale") or not row["path"]:

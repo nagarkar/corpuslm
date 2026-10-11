@@ -154,9 +154,16 @@ class Store:
     def has_source(self, source_id: str) -> bool:
         return self.db.one("SELECT 1 FROM sources WHERE id = ?", (source_id,)) is not None
 
-    def source_ids(self, kind: str | None = None) -> list[str]:
-        """Every source id, oldest first; only those of `kind` (`youtube`, `bee`) when given."""
-        where, args = ("WHERE kind = ? ", [kind]) if kind else ("", [])
+    def source_ids(self, kind: str | None = None, *, include_ignored: bool = True) -> list[str]:
+        """Every source id, oldest first; only those of `kind` (`youtube`, `bee`) when given.
+        `include_ignored=False` leaves out the sources whose status is `ignored`: the answer for
+        anything that builds, counts or lists work for the owner; the catalog (is it known?) keeps
+        the default."""
+        clauses = (["kind = ?"] if kind else []) + (
+            [] if include_ignored else ["status <> 'ignored'"]
+        )
+        args = [kind] if kind else []
+        where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
         return [
             r["id"]
             for r in self.db.all(f"SELECT id FROM sources {where}ORDER BY created_at, rowid", args)
@@ -321,12 +328,17 @@ class Store:
             self.db.execute("DELETE FROM corpus_members WHERE id = ?", (row["id"],))
         return True
 
-    def member_source_ids(self, corpus_id: str) -> list[str]:
+    def member_source_ids(self, corpus_id: str, *, include_ignored: bool = True) -> list[str]:
+        """The corpus's member ids, oldest membership first. `include_ignored=False` leaves out
+        the sources whose status is `ignored` (what a build, a count or a review works from);
+        the default keeps every member (a merge moves them all)."""
         return [
             r["source_id"]
             for r in self.db.all(
-                "SELECT source_id FROM corpus_members WHERE corpus_id = ? "
-                "ORDER BY created_at, rowid",
+                "SELECT m.source_id FROM corpus_members m JOIN sources v ON v.id = m.source_id "
+                "WHERE m.corpus_id = ? "
+                + ("" if include_ignored else "AND v.status <> 'ignored' ")
+                + "ORDER BY m.created_at, m.rowid",
                 (corpus_id,),
             )
         ]
@@ -338,7 +350,8 @@ class Store:
 
     def member_status_counts(self, corpus_id: str) -> dict[str, int]:
         """Membership status is derived from the source's status
-        (vw_corpus_members): queued, ingested or failed."""
+        (vw_corpus_members): queued, ingested, failed or ignored. An ignored member is counted
+        under its own key; callers leave it out of a corpus's member total."""
         return {
             r["member_status"]: r["n"]
             for r in self.db.all(
@@ -351,8 +364,10 @@ class Store:
     def corpus_summaries(self, kind: str | None = None) -> list[dict]:
         where, args = _of_kind(kind)
         rows = self.db.all(
-            "SELECT c.name, c.id, c.person, c.subject, COUNT(m.id) AS members, "
-            "SUM(CASE WHEN m.member_status = 'ingested' THEN 1 ELSE 0 END) AS ingested "
+            "SELECT c.name, c.id, c.person, c.subject, "
+            "COUNT(m.id) - COALESCE(SUM(m.member_status = 'ignored'), 0) AS members, "
+            "COALESCE(SUM(m.member_status = 'ingested'), 0) AS ingested, "
+            "COALESCE(SUM(m.member_status = 'ignored'), 0) AS ignored "
             "FROM corpora c LEFT JOIN vw_corpus_members m ON m.corpus_id = c.id "
             f"{where}GROUP BY c.id ORDER BY c.name",
             args,
@@ -361,11 +376,12 @@ class Store:
 
     def member_sources(self, corpus_id: str, *, ingested_only: bool = False) -> list[dict]:
         """Member source rows (with their lists) plus `member_status` and
-        `member_reason`, in publication order."""
+        `member_reason`, in publication order. Ignored sources are left out: every caller lists
+        or reviews what the owner works from."""
         rows = self.db.all(
             "SELECT v.id, m.member_status, m.reason AS member_reason "
             "FROM vw_corpus_members m JOIN sources v ON v.id = m.source_id "
-            "WHERE m.corpus_id = ? "
+            "WHERE m.corpus_id = ? AND v.status <> 'ignored' "
             + ("AND v.status = 'ingested' " if ingested_only else "")
             + "ORDER BY v.published_at, v.title, v.id",
             (corpus_id,),
@@ -868,7 +884,7 @@ class Store:
             "c.start_seconds AS start_seconds, bm25(cleaned_segments_fts) AS rank "
             "FROM cleaned_segments_fts JOIN cleaned_segments c "
             "ON c.rowid = cleaned_segments_fts.rowid JOIN sources o ON o.id = c.source_id "
-            "WHERE cleaned_segments_fts MATCH ? "
+            "WHERE cleaned_segments_fts MATCH ? AND o.status <> 'ignored' "
             + ("AND substr(o.published_at, 1, 10) < ? " if before else "")
             + "ORDER BY rank, o.id, c.position LIMIT ?"
         )
