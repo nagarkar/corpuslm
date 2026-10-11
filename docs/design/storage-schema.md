@@ -450,7 +450,7 @@ corpus's answers are carried in the target's `metadata.merged_from` and deleted.
 
 History: derived.
 
-The cleanup model's top suggestion for one ambiguity, copied from the source's AI cleanup
+The AI cleanup's top suggestion for one ambiguity, copied from the source's AI cleanup
 artifact (`corpuslm.model_suggestions`): one row per (source, review key). Rebuilt with the
 artifact: a rebuilt artifact replaces every row of its source, and a second `suggestions record`
 writes nothing. The suggestion is the model's own pick, never the owner's resolution. A review
@@ -723,6 +723,6 @@ segment changed, so it carries the previous hash):
 - 2026-10-03: Moved from ytlm to corpuslm with `db.py`, `store.py`, `model.py` and `clock.py`; the canonical hash and the verdict subject hash move to `identity.py`; the SQL function `ytlm_subject_sha256` is renamed `corpuslm_subject_sha256` (registered per connection, never stored); the error for a newer database names corpuslm; the JSON state files stay in ytlm's copy of this document (nagarkar/ytlm#50)
 - 2026-10-08: Version 3: `video_sources` (a video records the playlists and channels it was found through, dated by the row); `corpus_sources` kept, unused (nagarkar/ytlm#61)
 - 2026-10-08: Version 4 (nagarkar/ytlm#50, seam cut 1): `videos` is `sources` with a `kind` (`youtube`, `bee`), `url` is `locator`, every `video_id` is `source_id`, the playlist/channel list is `source_feeds`; `corpus_sources` is gone (a corpus records no feed). Rows in `change_log` written before keep the old table names.
-- 2026-10-10: Version 6: `model_suggestions` and `model_suggestion_candidates` (derived): the cleanup model's top suggestion for every ambiguity, written whenever the AI cleanup artifact is built and by `corpuslm suggestions record`; `corpuslm review accept-suggestions` answers open cards from them
+- 2026-10-10: Version 6: `model_suggestions` and `model_suggestion_candidates` (derived): the AI cleanup's top suggestion for every ambiguity, written whenever the AI cleanup artifact is built and by `corpuslm suggestions record`; `corpuslm review accept-suggestions` answers open cards from them
 - 2026-10-10: Version 7 (nagarkar/ytlm#21): `feeds` (the tracked playlists and channels) and `source_skips` (videos skipped from a scan, lifted by date, never deleted), both master data; `Store.remove_member` (the removal is logged); `source_feeds.feed_id` is unchanged and still names a feed whether or not it is tracked
 - 2026-10-10: Version 8: `cleaned_segments` and `cleaned_segments_fts` (derived): the best (cleaned) transcript of a source whose raw lines stay in `segments`, searched by `beelm search`; ytlm's `segments` and `search` are unchanged

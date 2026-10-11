@@ -1,4 +1,4 @@
-"""Model suggestions (corpuslm.model_suggestions): the cleanup model's top suggestion for every
+"""Model suggestions (corpuslm.model_suggestions): the AI cleanup's top suggestion for every
 ambiguity, kept in the database, recorded from the artifact files with no model call. Sanitized
 synthetic text only."""
 

@@ -67,7 +67,7 @@ REVIEW_ANSWERS_TABLE = f"""CREATE TABLE IF NOT EXISTS review_answers (
 ) STRICT;
 """
 
-# Derived state: the cleanup model's top suggestion for each ambiguity, read from the model
+# Derived state: the AI cleanup's top suggestion for each ambiguity, read from the model
 # cleanup artifact (`Store.replace_model_suggestions`). One row per (source, review key); the
 # candidates are rows of their own, in the model's order.
 MODEL_SUGGESTIONS_TABLES = f"""CREATE TABLE IF NOT EXISTS model_suggestions (

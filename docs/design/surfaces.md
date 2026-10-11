@@ -49,7 +49,7 @@ flowchart LR
 
 ## The model's suggestions, recorded and used (2026-10-10)
 
-- The cleanup model's top suggestion for every ambiguity is a row of `model_suggestions` (schema 6, [`src/corpuslm/model_suggestions.py`](../../src/corpuslm/model_suggestions.py)), written by the AI cleanup builder with the artifact, for ytlm and beelm alike. `corpuslm suggestions record --config FILE` writes the rows from the artifacts already on disk, with no model call, and a second run writes nothing.
+- The AI cleanup's top suggestion for every ambiguity is a row of `model_suggestions` (schema 6, [`src/corpuslm/model_suggestions.py`](../../src/corpuslm/model_suggestions.py)), written by the AI cleanup builder with the artifact, for ytlm and beelm alike. `corpuslm suggestions record --config FILE` writes the rows from the artifacts already on disk, with no model call, and a second run writes nothing.
 - `corpuslm review accept-suggestions --config FILE --kind NAME --before YYYY-MM-DD` saves an answer equal to the suggestion on every open ambiguity card whose sources are all of that kind and recorded before the date, through the Store method the review server uses. The owner sees the answers on the page and can change them; nothing is landed. It never overwrites an answer and never touches a speaker card. `--dry-run` counts only.
 
 **Why:** the owner wants the model's suggestion kept so older conversations can be answered without rerunning the model, faster and free.
