@@ -26,15 +26,17 @@ def write_atomic(path: Path, data: str | bytes, *, mode: int | None = None) -> P
     if mode is None and path.exists():
         mode = path.stat().st_mode & 0o777
     raw = data.encode("utf-8") if isinstance(data, str) else data
-    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    file_descriptor, temporary_path = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
     try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(raw)
-            f.flush()
-            os.fsync(f.fileno())
-        os.chmod(tmp, 0o644 if mode is None else mode)
-        os.replace(tmp, path)
+        with os.fdopen(file_descriptor, "wb") as file:
+            file.write(raw)
+            file.flush()
+            os.fsync(file.fileno())
+        os.chmod(temporary_path, 0o644 if mode is None else mode)
+        os.replace(temporary_path, path)
     except BaseException:
-        Path(tmp).unlink(missing_ok=True)
+        Path(temporary_path).unlink(missing_ok=True)
         raise
     return path

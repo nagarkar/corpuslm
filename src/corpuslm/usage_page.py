@@ -46,15 +46,15 @@ def _count(table: dict, fetcher: str, outcome: str) -> int:
     return table.get(fetcher, {}).get(outcome, 0)
 
 
-def _cap_text(cap: float | None) -> str:
-    return money(cap) if cap is not None else "none set"
+def _cap_text(cap_usd: float | None) -> str:
+    return money(cap_usd) if cap_usd is not None else "none set"
 
 
 def _tool_card(tool: dict) -> str:
-    cap, biggest = tool["per_run_usd"], tool["biggest_day_usd"]
+    cap_usd, biggest = tool["per_run_usd"], tool["biggest_day_usd"]
     meter = ""
-    if cap:
-        share = min(100, round(100 * biggest / cap))
+    if cap_usd:
+        share = min(100, round(100 * biggest / cap_usd))
         meter = (
             f'<div class="meter" title="{share}% of the per-run cap">'
             f'<i style="width:{share}%"></i></div>'
@@ -62,7 +62,7 @@ def _tool_card(tool: dict) -> str:
     return (
         f'<div class="card"><span class="mut">{escape(tool["tool"])}</span>'
         f"<b>{money(tool['total']['cost_usd'])}</b>"
-        f"<small>Per-run cap {_cap_text(cap)}</small>"
+        f"<small>Per-run cap {_cap_text(cap_usd)}</small>"
         f"<small>Biggest day {money(biggest)} (a day can hold several runs)</small>"
         f"<small>Per-day cap {_cap_text(tool['per_day_usd'])}</small>{meter}</div>"
     )
@@ -70,9 +70,9 @@ def _tool_card(tool: dict) -> str:
 
 def _stage_table(tool: dict) -> str:
     rows = "".join(
-        f"<tr><td>{escape(stage)}</td><td>{r['calls']}</td><td>{r['cached']}</td>"
-        f"<td>{r['tokens_in']:,}</td><td>{r['tokens_out']:,}</td><td>{money(r['cost_usd'])}</td></tr>"
-        for stage, r in tool["by_stage"].items()
+        f"<tr><td>{escape(stage)}</td><td>{stage_totals['calls']}</td><td>{stage_totals['cached']}</td>"
+        f"<td>{stage_totals['tokens_in']:,}</td><td>{stage_totals['tokens_out']:,}</td><td>{money(stage_totals['cost_usd'])}</td></tr>"
+        for stage, stage_totals in tool["by_stage"].items()
     )
     if not rows:
         return '<p class="mut">No model calls this month.</p>'
@@ -83,20 +83,20 @@ def _stage_table(tool: dict) -> str:
 
 
 def _day_table(tools: list[dict]) -> str:
-    days = sorted({d for t in tools for d in t["by_day"]}, reverse=True)
+    days = sorted({day for tool in tools for day in tool["by_day"]}, reverse=True)
     if not days:
         return ""
     head = "".join(
-        f"<th>{escape(t['tool'])} calls</th><th>{escape(t['tool'])} $</th>" for t in tools
+        f"<th>{escape(tool['tool'])} calls</th><th>{escape(tool['tool'])} $</th>" for tool in tools
     )
     body = ""
     for day in days:
         cells = ""
-        for t in tools:
-            r = t["by_day"].get(day)
+        for tool in tools:
+            day_totals = tool["by_day"].get(day)
             cells += (
-                f"<td>{r['calls']}</td><td>{money(r['cost_usd'])}</td>"
-                if r
+                f"<td>{day_totals['calls']}</td><td>{money(day_totals['cost_usd'])}</td>"
+                if day_totals
                 else "<td></td><td></td>"
             )
         body += f"<tr><td>{escape(day)}</td>{cells}</tr>"
@@ -104,33 +104,35 @@ def _day_table(tools: list[dict]) -> str:
 
 
 def _fetch_section(fetches: dict, month: str) -> str:
-    mt, total = fetches["this_month"], fetches["all_time"]
+    this_month, total = fetches["this_month"], fetches["all_time"]
     cards = [
-        (f"Supadata calls answered ({month})", _count(mt, "supadata", "ok"), "ok"),
+        (f"Supadata calls answered ({month})", _count(this_month, "supadata", "ok"), "ok"),
         (
             f"Rejected: limit (HTTP 429) or error ({month})",
-            _count(mt, "supadata", "error"),
+            _count(this_month, "supadata", "error"),
             "error",
         ),
-        ("No captions in that language", _count(mt, "supadata", "none"), "none"),
+        ("No captions in that language", _count(this_month, "supadata", "none"), "none"),
         ("Answered, all time", _count(total, "supadata", "ok"), "ok"),
         ("Rejected, all time", _count(total, "supadata", "error"), "error"),
     ]
     tiles = "".join(
-        f'<div class="card"><span class="mut">{escape(label)}</span><b class="{cls}">{n}</b></div>'
-        for label, n, cls in cards
+        f'<div class="card"><span class="mut">{escape(label)}</span>'
+        f'<b class="{cls}">{count}</b></div>'
+        for label, count, cls in cards
     )
     columns = [
-        (f, o)
-        for f in sorted({f for day in fetches["by_day"].values() for f in day})
-        for o in OUTCOMES
-        if any(day.get(f, {}).get(o) for day in fetches["by_day"].values())
+        (fetcher, outcome)
+        for fetcher in sorted({fetcher for day in fetches["by_day"].values() for fetcher in day})
+        for outcome in OUTCOMES
+        if any(day.get(fetcher, {}).get(outcome) for day in fetches["by_day"].values())
     ]
-    head = "".join(f"<th>{escape(f)} {o}</th>" for f, o in columns)
+    head = "".join(f"<th>{escape(fetcher)} {outcome}</th>" for fetcher, outcome in columns)
     body = "".join(
         f"<tr><td>{escape(day)}</td>"
         + "".join(
-            f'<td class="{o}">{_count(fetches["by_day"][day], f, o) or ""}</td>' for f, o in columns
+            f'<td class="{outcome}">{_count(fetches["by_day"][day], fetcher, outcome) or ""}</td>'
+            for fetcher, outcome in columns
         )
         + "</tr>"
         for day in sorted(fetches["by_day"], reverse=True)
@@ -149,9 +151,11 @@ def _fetch_section(fetches: dict, month: str) -> str:
 def render(board: dict) -> str:
     spend = board["model_spend"]
     tools = list(spend["tools"].values())
-    cards = "".join(_tool_card(t) for t in tools)
-    stages = "".join(f"<h3>{escape(t['tool'])}, by stage</h3>{_stage_table(t)}" for t in tools)
-    problems = "".join(f'<p class="error">{escape(p)}</p>' for p in board["problems"])
+    cards = "".join(_tool_card(tool) for tool in tools)
+    stages = "".join(
+        f"<h3>{escape(tool['tool'])}, by stage</h3>{_stage_table(tool)}" for tool in tools
+    )
+    problems = "".join(f'<p class="error">{escape(problem)}</p>' for problem in board["problems"])
     return (
         '<!doctype html><meta charset="utf-8"><meta name="viewport" '
         'content="width=device-width,initial-scale=1">'
@@ -170,35 +174,39 @@ def text(board: dict) -> str:
     spend = board["model_spend"]
     out = [f"usage {board['month']}", board["note"], ""]
     out.append(f"model spend: {money(spend['cost_usd'])} this month")
-    for t in spend["tools"].values():
-        r = t["total"]
+    for tool in spend["tools"].values():
+        total = tool["total"]
         out.append(
-            f"  {t['tool']}: {money(r['cost_usd'])}, {r['calls']} calls ({r['cached']} cached), "
-            f"{r['tokens_in']:,} tokens in, {r['tokens_out']:,} out; per-run cap "
-            f"{_cap_text(t['per_run_usd'])}, biggest day {money(t['biggest_day_usd'])}, "
-            f"per-day cap {_cap_text(t['per_day_usd'])}"
+            f"  {tool['tool']}: {money(total['cost_usd'])}, {total['calls']} calls "
+            f"({total['cached']} cached), "
+            f"{total['tokens_in']:,} tokens in, {total['tokens_out']:,} out; per-run cap "
+            f"{_cap_text(tool['per_run_usd'])}, biggest day {money(tool['biggest_day_usd'])}, "
+            f"per-day cap {_cap_text(tool['per_day_usd'])}"
         )
-        for stage, s in t["by_stage"].items():
+        for stage, stage_totals in tool["by_stage"].items():
             out.append(
-                f"    {stage}: {s['calls']} calls, {s['cached']} cached, "
-                f"{s['tokens_in']:,}/{s['tokens_out']:,} tokens, {money(s['cost_usd'])}"
+                f"    {stage}: {stage_totals['calls']} calls, {stage_totals['cached']} cached, "
+                f"{stage_totals['tokens_in']:,}/{stage_totals['tokens_out']:,} tokens, "
+                f"{money(stage_totals['cost_usd'])}"
             )
-        for day, d in sorted(t["by_day"].items(), reverse=True):
-            out.append(f"    {day}: {d['calls']} calls, {money(d['cost_usd'])}")
+        for day, day_totals in sorted(tool["by_day"].items(), reverse=True):
+            out.append(f"    {day}: {day_totals['calls']} calls, {money(day_totals['cost_usd'])}")
     fetches = board["caption_fetches"]
     out += ["", "caption fetches:"]
     for label, table in (("this month", fetches["this_month"]), ("all time", fetches["all_time"])):
         for fetcher in sorted(table):
-            counts = ", ".join(f"{o} {n}" for o, n in sorted(table[fetcher].items()))
+            counts = ", ".join(
+                f"{outcome} {count}" for outcome, count in sorted(table[fetcher].items())
+            )
             out.append(f"  {label}, {fetcher}: {counts}")
     for day in sorted(fetches["by_day"], reverse=True)[:14]:
         cells = ", ".join(
-            f"{f} {o} {n}"
-            for f, t in sorted(fetches["by_day"][day].items())
-            for o, n in sorted(t.items())
+            f"{fetcher} {outcome} {count}"
+            for fetcher, fetcher_counts in sorted(fetches["by_day"][day].items())
+            for outcome, count in sorted(fetcher_counts.items())
         )
         out.append(f"  {day}: {cells}")
     for fetcher, error in sorted(fetches["last_error"].items()):
         out.append(f"  last {fetcher} error: {error}")
-    out += [f"problem: {p}" for p in board["problems"]]
+    out += [f"problem: {problem}" for problem in board["problems"]]
     return "\n".join(out) + "\n"

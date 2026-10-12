@@ -16,15 +16,15 @@ ALLOWED: dict[str, str] = {
 
 
 def _dataclasses():
-    for info in pkgutil.walk_packages(corpuslm.__path__, "corpuslm."):
-        module = importlib.import_module(info.name)
-        for obj in vars(module).values():
+    for module_info in pkgutil.walk_packages(corpuslm.__path__, "corpuslm."):
+        module = importlib.import_module(module_info.name)
+        for member in vars(module).values():
             if (
-                isinstance(obj, type)
-                and dataclasses.is_dataclass(obj)
-                and obj.__module__ == module.__name__
+                isinstance(member, type)
+                and dataclasses.is_dataclass(member)
+                and member.__module__ == module.__name__
             ):
-                yield f"{module.__name__}.{obj.__qualname__}", obj
+                yield f"{module.__name__}.{member.__qualname__}", member
 
 
 def test_every_data_object_is_frozen_with_slots():

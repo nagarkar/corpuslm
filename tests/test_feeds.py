@@ -20,9 +20,9 @@ OTHER = "vidBBBBBBB2"
 
 @pytest.fixture
 def database(tmp_path):
-    d = db.Database(tmp_path / "transcript.sqlite")
-    yield d
-    d.close()
+    database_handle = db.Database(tmp_path / "transcript.sqlite")
+    yield database_handle
+    database_handle.close()
 
 
 @pytest.fixture
@@ -39,7 +39,7 @@ def test_a_feed_is_tracked_once_and_a_second_add_only_refreshes_the_title(store)
     assert feed["kind"] == "playlist" and feed["title"] == "Inbox renamed"
     assert feed["last_scanned_at"] is None and feed["created_at"]
     assert [row["feed_id"] for row in store.feeds()] == [FEED]
-    assert [c["column_name"] for c in store.changes_of("feeds", feed["id"])] == ["title"]
+    assert [change["column_name"] for change in store.changes_of("feeds", feed["id"])] == ["title"]
 
 
 def test_a_feed_is_a_playlist_or_a_channel(store, database):
@@ -87,7 +87,7 @@ def test_a_skip_made_through_an_untracked_feed_is_stopped_where_it_is_made(store
 def test_unskip_lifts_the_skip_without_deleting_the_row_and_a_new_skip_reuses_it(store, database):
     store.add_feed(FEED, "playlist", "Inbox", created_by="cli")
     store.skip_source(VIDEO, "off topic", feed_id=FEED, created_by="cli")
-    assert [r["source_id"] for r in store.skips(feed_id=FEED)] == [VIDEO]
+    assert [skip["source_id"] for skip in store.skips(feed_id=FEED)] == [VIDEO]
     assert store.lift_skip(VIDEO) is True
     assert store.lift_skip(VIDEO) is False
     assert store.skip(VIDEO) is None and store.skips() == []
@@ -95,7 +95,7 @@ def test_unskip_lifts_the_skip_without_deleting_the_row_and_a_new_skip_reuses_it
     assert store.skip_source(VIDEO, "still off topic", created_by="cli") is True
     row = store.skip(VIDEO)
     assert row is not None and row["reason"] == "still off topic" and row["feed_id"] is None
-    columns = [c["column_name"] for c in store.changes_of("source_skips", row["id"])]
+    columns = [change["column_name"] for change in store.changes_of("source_skips", row["id"])]
     assert "lifted_at" in columns and columns.count("reason") == 1
 
 
@@ -127,7 +127,7 @@ def test_remove_member_deletes_one_membership_and_logs_who_removed_it_and_what_i
 def test_a_version_6_database_gains_the_feed_tables_after_a_verified_backup(tmp_path):
     path = tmp_path / "transcript.sqlite"
     db.Database(path).close()
-    conn = sqlite3.connect(path)
+    connection = sqlite3.connect(path)
     for statement in (
         "DROP TRIGGER feeds_change_log",
         "DROP TRIGGER source_skips_change_log",
@@ -135,13 +135,13 @@ def test_a_version_6_database_gains_the_feed_tables_after_a_verified_backup(tmp_
         "DROP TABLE feeds",
         "PRAGMA user_version = 6",
     ):
-        conn.execute(statement)
-    conn.execute(
+        connection.execute(statement)
+    connection.execute(
         "INSERT INTO corpora (id, version, created_at, created_by, schema_version, name) "
         "VALUES ('cor-1', 1, 't', 'test', '6', 'Kept')"
     )
-    conn.commit()
-    conn.close()
+    connection.commit()
+    connection.close()
     opened = db.Database(path)
     try:
         assert opened.migration["from"] == 6 and opened.migration["to"] == db.USER_VERSION == 9

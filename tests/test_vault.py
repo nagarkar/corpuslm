@@ -30,13 +30,13 @@ def test_write_note_replaces_its_own_and_removes_the_old_name_of_the_same_source
     vault.write_note(
         tmp_path, "new name.md", first.replace("old", "new"), "source_id", "s1", marker=MARKER
     )
-    assert [p.name for p in tmp_path.glob("*.md")] == ["new name.md"]
+    assert [path.name for path in tmp_path.glob("*.md")] == ["new name.md"]
     # another kind's marker is not ours to remove
     (tmp_path / "other.md").write_text(
         "---\nytlm: exported\nsource_id: s1\n---\n", encoding="utf-8"
     )
     assert vault.remove_exported(tmp_path, "source_id", "s1", marker=MARKER) == 1
-    assert [p.name for p in tmp_path.glob("*.md")] == ["other.md"]
+    assert [path.name for path in tmp_path.glob("*.md")] == ["other.md"]
 
 
 def test_speaker_properties_are_one_flat_key_per_label():

@@ -78,8 +78,8 @@ class Store:
             (parent_id,),
         )
         if len(columns) == 1:
-            return [r[columns[0]] for r in rows]
-        return [{c: r[c] for c in columns} for r in rows]
+            return [row[columns[0]] for row in rows]
+        return [{column: row[column] for column in columns} for row in rows]
 
     def _write_list(
         self,
@@ -101,7 +101,7 @@ class Store:
         def element(value) -> dict:
             if len(columns) == 1:
                 return {columns[0]: value}
-            return {c: value.get(c, "") for c in columns}
+            return {column: value.get(column, "") for column in columns}
 
         with self.db.transaction():
             for position in range(max(len(old), len(new))):
@@ -129,8 +129,10 @@ class Store:
         return out
 
     def _split(self, changes: dict, lists) -> tuple[dict, dict]:
-        scalar = {k: v for k, v in changes.items() if k not in lists}
-        listed = {k: v for k, v in changes.items() if k in lists}
+        scalar = {
+            field_name: value for field_name, value in changes.items() if field_name not in lists
+        }
+        listed = {field_name: value for field_name, value in changes.items() if field_name in lists}
         return scalar, listed
 
     # ---- sources -----------------------------------------------------------
@@ -165,8 +167,10 @@ class Store:
         args = [kind] if kind else []
         where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
         return [
-            r["id"]
-            for r in self.db.all(f"SELECT id FROM sources {where}ORDER BY created_at, rowid", args)
+            row["id"]
+            for row in self.db.all(
+                f"SELECT id FROM sources {where}ORDER BY created_at, rowid", args
+            )
         ]
 
     def add_source(
@@ -198,8 +202,8 @@ class Store:
             raise ValueError(f"no count by {column!r}")
         where, args = ("WHERE kind = ? ", [kind]) if kind else ("", [])
         return {
-            r["k"]: r["n"]
-            for r in self.db.all(
+            row["k"]: row["n"]
+            for row in self.db.all(
                 f"SELECT {column} AS k, COUNT(*) AS n FROM sources {where}GROUP BY 1", args
             )
         }
@@ -221,12 +225,12 @@ class Store:
         kind reads: those with no members yet and those with a member of that kind."""
         where, args = _of_kind(kind)
         sql = f"SELECT id FROM corpora c {where}ORDER BY rowid"
-        return [r["id"] for r in self.db.all(sql, args)]
+        return [row["id"] for row in self.db.all(sql, args)]
 
     def corpus_names(self, kind: str | None = None) -> list[str]:
         where, args = _of_kind(kind)
         sql = f"SELECT name FROM corpora c {where}ORDER BY name"
-        return [r["name"] for r in self.db.all(sql, args)]
+        return [row["name"] for row in self.db.all(sql, args)]
 
     def corpus_count(self, kind: str | None = None) -> int:
         """How many corpora; with `kind`, only those a tool of that source kind reads."""
@@ -236,11 +240,13 @@ class Store:
     def add_corpus(self, fields: dict[str, Any], *, created_by: str) -> str:
         scalar, listed = self._split(fields, CORPUS_LISTS)
         with self.db.transaction():
-            cid = self.db.insert("corpora", standard_fields("cor", created_by=created_by) | scalar)
+            corpus_id = self.db.insert(
+                "corpora", standard_fields("cor", created_by=created_by) | scalar
+            )
             for name, values in listed.items():
                 table, columns = CORPUS_LISTS[name]
-                self._write_list(table, "corpus_id", cid, columns, values, created_by)
-        return cid
+                self._write_list(table, "corpus_id", corpus_id, columns, values, created_by)
+        return corpus_id
 
     def update_corpus(self, corpus_id: str, changes: dict[str, Any], *, created_by: str = "cli"):
         scalar, listed = self._split(changes, CORPUS_LISTS)
@@ -255,8 +261,8 @@ class Store:
         """The corpus document's members: ingested source rows (without their
         lists), by publication date then id."""
         return [
-            dict(r)
-            for r in self.db.all(
+            dict(row)
+            for row in self.db.all(
                 "SELECT v.* FROM sources v JOIN corpus_members m ON m.source_id = v.id "
                 "WHERE m.corpus_id = ? AND v.status = 'ingested' ORDER BY v.published_at, v.id",
                 (corpus_id,),
@@ -287,8 +293,8 @@ class Store:
         """Each membership of the corpus as stored (its id, source, reason, who added it and
         when), oldest first."""
         return [
-            dict(r)
-            for r in self.db.all(
+            dict(row)
+            for row in self.db.all(
                 "SELECT id, source_id, reason, created_at, created_by, version "
                 "FROM corpus_members WHERE corpus_id = ? ORDER BY created_at, rowid",
                 (corpus_id,),
@@ -309,7 +315,7 @@ class Store:
             )
             if row is None:
                 return False
-            was = {k: row[k] for k in ("corpus_id", "source_id", "reason")} | {
+            was = {column: row[column] for column in ("corpus_id", "source_id", "reason")} | {
                 "added_at": row["created_at"],
                 "added_by": row["created_by"],
             }
@@ -333,8 +339,8 @@ class Store:
         the sources whose status is `ignored` (what a build, a count or a review works from);
         the default keeps every member (a merge moves them all)."""
         return [
-            r["source_id"]
-            for r in self.db.all(
+            row["source_id"]
+            for row in self.db.all(
                 "SELECT m.source_id FROM corpus_members m JOIN sources v ON v.id = m.source_id "
                 "WHERE m.corpus_id = ? "
                 + ("" if include_ignored else "AND v.status <> 'ignored' ")
@@ -353,8 +359,8 @@ class Store:
         (vw_corpus_members): queued, ingested, failed or ignored. An ignored member is counted
         under its own key; callers leave it out of a corpus's member total."""
         return {
-            r["member_status"]: r["n"]
-            for r in self.db.all(
+            row["member_status"]: row["n"]
+            for row in self.db.all(
                 "SELECT member_status, COUNT(*) AS n FROM vw_corpus_members "
                 "WHERE corpus_id = ? GROUP BY member_status",
                 (corpus_id,),
@@ -372,7 +378,7 @@ class Store:
             f"{where}GROUP BY c.id ORDER BY c.name",
             args,
         )
-        return [dict(r) for r in rows]
+        return [dict(row) for row in rows]
 
     def member_sources(self, corpus_id: str, *, ingested_only: bool = False) -> list[dict]:
         """Member source rows (with their lists) plus `member_status` and
@@ -387,10 +393,10 @@ class Store:
             (corpus_id,),
         )
         out = []
-        for r in rows:
-            row = self._source_row(r["id"])
-            row["member_status"] = r["member_status"]
-            row["member_reason"] = r["member_reason"]
+        for membership in rows:
+            row = self._source_row(membership["id"])
+            row["member_status"] = membership["member_status"]
+            row["member_reason"] = membership["member_reason"]
             out.append(row)
         return out
 
@@ -400,7 +406,7 @@ class Store:
             "WHERE m.source_id = ? ORDER BY c.name",
             (source_id,),
         )
-        return [self._corpus_row(r["id"]) for r in rows]
+        return [self._corpus_row(row["id"]) for row in rows]
 
     def merge_corpora(self, into_id: str, from_ids: Sequence[str], *, created_by: str) -> dict:
         """Fold corpora into `into_id` in one transaction. Each membership
@@ -417,46 +423,51 @@ class Store:
             target = self._corpus_row(into_id)
             record = loads(target["metadata"], {})
             kept = list(record.get("merged_from") or [])
-            for cid in from_ids:
-                corpus = self._corpus_row(cid)
+            for corpus_id in from_ids:
+                corpus = self._corpus_row(corpus_id)
                 members = [
-                    dict(r)
-                    for r in self.db.all(
+                    dict(row)
+                    for row in self.db.all(
                         "SELECT id, source_id, reason, created_at, created_by, metadata "
                         "FROM corpus_members WHERE corpus_id = ? ORDER BY created_at, rowid",
-                        (cid,),
+                        (corpus_id,),
                     )
                 ]
                 snapshot = dict(corpus) | {
                     "metadata": loads(corpus["metadata"], {}),
-                    "members": [m | {"metadata": loads(m["metadata"], {})} for m in members],
+                    "members": [
+                        member | {"metadata": loads(member["metadata"], {})} for member in members
+                    ],
                     "merged_at": now_iso(),
                     "merged_by": created_by,
                 }
                 # The answers not yet landed are keyed by card, which hashes the corpus id: they
                 # cannot follow a membership, so the folded corpus carries them in its snapshot.
                 snapshot["review_answers"] = [
-                    {k: a[k] for k in ("card_id", "verdict", "answered_at", "created_at")}
-                    for a in self.review_answers(cid)
+                    {
+                        column: answer[column]
+                        for column in ("card_id", "verdict", "answered_at", "created_at")
+                    }
+                    for answer in self.review_answers(corpus_id)
                 ]
                 kept.append(snapshot)
-                for m in members:
-                    if self.is_member(into_id, m["source_id"]):
-                        self.db.execute("DELETE FROM corpus_members WHERE id = ?", (m["id"],))
+                for member in members:
+                    if self.is_member(into_id, member["source_id"]):
+                        self.db.execute("DELETE FROM corpus_members WHERE id = ?", (member["id"],))
                         already += 1
                         continue
-                    meta = loads(m["metadata"], {}) | {"merged_from": cid}
+                    meta = loads(member["metadata"], {}) | {"merged_from": corpus_id}
                     self.db.update(
                         "corpus_members",
-                        m["id"],
+                        member["id"],
                         {"corpus_id": into_id, "metadata": json.dumps(meta, sort_keys=True)},
                     )
                     moved += 1
-                self.db.execute("DELETE FROM artifacts WHERE corpus_id = ?", (cid,))
-                self.db.execute("DELETE FROM review_answers WHERE corpus_id = ?", (cid,))
+                self.db.execute("DELETE FROM artifacts WHERE corpus_id = ?", (corpus_id,))
+                self.db.execute("DELETE FROM review_answers WHERE corpus_id = ?", (corpus_id,))
                 for table, _ in CORPUS_LISTS.values():
-                    self.db.execute(f"DELETE FROM {table} WHERE corpus_id = ?", (cid,))
-                self.db.execute("DELETE FROM corpora WHERE id = ?", (cid,))
+                    self.db.execute(f"DELETE FROM {table} WHERE corpus_id = ?", (corpus_id,))
+                self.db.execute("DELETE FROM corpora WHERE id = ?", (corpus_id,))
                 removed.append(corpus["name"])
             self.set_corpus_metadata(into_id, record | {"merged_from": kept})
         return {"moved": moved, "already_members": already, "removed": removed}
@@ -469,7 +480,7 @@ class Store:
 
     def feeds(self) -> list[dict]:
         """Every tracked feed, oldest first."""
-        return [dict(r) for r in self.db.all("SELECT * FROM feeds ORDER BY created_at, rowid")]
+        return [dict(row) for row in self.db.all("SELECT * FROM feeds ORDER BY created_at, rowid")]
 
     def add_feed(self, feed_id: str, kind: str, title: str, *, created_by: str) -> bool:
         """Track a playlist or channel; False when it is already tracked (its title is
@@ -495,8 +506,8 @@ class Store:
     def sources_found_through(self, feed_id: str) -> list[str]:
         """The catalog's sources whose `feeds` name this feed, oldest first."""
         return [
-            r["source_id"]
-            for r in self.db.all(
+            row["source_id"]
+            for row in self.db.all(
                 "SELECT source_id FROM source_feeds WHERE feed_id = ? ORDER BY created_at, rowid",
                 (feed_id,),
             )
@@ -517,7 +528,7 @@ class Store:
                 return None
             carriers = self.sources_found_through(feed_id)
             for source_id in carriers:
-                kept = [f for f in self._source_row(source_id)["feeds"] if f != feed_id]
+                kept = [feed for feed in self._source_row(source_id)["feeds"] if feed != feed_id]
                 self.update_source(source_id, {"feeds": kept}, created_by=created_by)
             skips = self.db.all("SELECT * FROM source_skips WHERE feed_id = ?", (feed_id,))
             for skip in skips:
@@ -531,9 +542,9 @@ class Store:
         """One change-log row for a master row about to be deleted: the whole row as the old
         value (its bookkeeping columns as `added_at` and `added_by`), no new value."""
         was = {
-            k: row[k]
-            for k in row.keys()
-            if k not in ("id", "version", "created_at", "created_by", "schema_version")
+            column: row[column]
+            for column in row.keys()
+            if column not in ("id", "version", "created_at", "created_by", "schema_version")
         } | {"added_at": row["created_at"], "added_by": row["created_by"]}
         self.db.insert(
             "change_log",
@@ -559,8 +570,8 @@ class Store:
         """The skips in force, oldest first; only those made through `feed_id` when given."""
         where, args = (" AND feed_id = ?", [feed_id]) if feed_id else ("", [])
         return [
-            dict(r)
-            for r in self.db.all(
+            dict(row)
+            for row in self.db.all(
                 f"SELECT * FROM source_skips WHERE lifted_at IS NULL{where} "
                 "ORDER BY skipped_at, rowid",
                 args,
@@ -633,8 +644,8 @@ class Store:
         """How many attempts each fetcher made per UTC day and outcome, oldest
         day first. Counts only; the detail text never leaves the table."""
         return [
-            dict(r)
-            for r in self.db.all(
+            dict(row)
+            for row in self.db.all(
                 "SELECT substr(created_at, 1, 10) AS day, fetcher, outcome, COUNT(*) AS n, "
                 "MAX(substr(detail, 1, 120)) AS last_detail FROM fetch_attempts "
                 "GROUP BY 1, 2, 3 ORDER BY 1, 2, 3"
@@ -696,8 +707,8 @@ class Store:
     def artifacts_of(self, source_or_corpus_id: str) -> list[dict]:
         """Every artifact row of one source or corpus, by node name."""
         return [
-            dict(r)
-            for r in self.db.all(
+            dict(row)
+            for row in self.db.all(
                 "SELECT * FROM artifacts WHERE owner = ? ORDER BY node", (source_or_corpus_id,)
             )
         ]
@@ -709,18 +720,18 @@ class Store:
         if not nodes:
             return 0
         marks = ", ".join("?" * len(nodes))
-        cur = self.db.execute(
+        cursor = self.db.execute(
             f"DELETE FROM artifacts WHERE owner = ? AND node IN ({marks})",
             (source_or_corpus_id, *nodes),
         )
-        return cur.rowcount
+        return cursor.rowcount
 
     def artifact_health(self) -> dict:
         """Counts for `status`: built per node, stale, AI cleanup drops, and
         provisional transcripts."""
         built = {
-            r["node"]: r["n"]
-            for r in self.db.all(
+            row["node"]: row["n"]
+            for row in self.db.all(
                 "SELECT node, COUNT(*) AS n FROM artifacts WHERE state = 'built' GROUP BY node"
             )
         }
@@ -771,13 +782,13 @@ class Store:
         takes (idx, t0, t1, speaker, text)."""
         return [
             {
-                "idx": r["position"],
-                "t0": r["start_seconds"],
-                "t1": r["end_seconds"],
-                "speaker": r["speaker"],
-                "text": r["text"],
+                "idx": row["position"],
+                "t0": row["start_seconds"],
+                "t1": row["end_seconds"],
+                "speaker": row["speaker"],
+                "text": row["text"],
             }
-            for r in self.db.execute(
+            for row in self.db.execute(
                 "SELECT position, start_seconds, end_seconds, speaker, text FROM segments "
                 "WHERE source_id = ? ORDER BY position",
                 (source_id,),
@@ -828,7 +839,7 @@ class Store:
             + "ORDER BY rank LIMIT ?"
         )
         args = [match] + ([corpus_id] if corpus_id else []) + ([kind] if kind else []) + [limit]
-        return [dict(r) for r in self.db.all(sql, args)]
+        return [dict(row) for row in self.db.all(sql, args)]
 
     # ---- cleaned segments and their search (derived index of a kind whose raw lines stay) ----
 
@@ -868,8 +879,8 @@ class Store:
     def cleaned_source_ids(self) -> list[str]:
         """The sources that have cleaned rows, in id order."""
         return [
-            r["source_id"]
-            for r in self.db.all(
+            row["source_id"]
+            for row in self.db.all(
                 "SELECT DISTINCT source_id FROM cleaned_segments ORDER BY source_id"
             )
         ]
@@ -889,7 +900,7 @@ class Store:
             + "ORDER BY rank, o.id, c.position LIMIT ?"
         )
         args = [match] + ([before] if before else []) + [limit]
-        return [dict(r) for r in self.db.all(sql, args)]
+        return [dict(row) for row in self.db.all(sql, args)]
 
     # ---- locks (coordination) ---------------------------------------------------
 
@@ -907,10 +918,10 @@ class Store:
 
     def refresh_locks(self, holder: str, *, expires_at: str) -> int:
         """The heartbeat: push out the expiry of every lock `holder` holds."""
-        cur = self.db.execute(
+        cursor = self.db.execute(
             "UPDATE locks SET expires_at = ? WHERE holder = ?", (expires_at, holder)
         )
-        return cur.rowcount
+        return cursor.rowcount
 
     def release_lock(self, locked_id: str, holder: str) -> None:
         self.db.execute("DELETE FROM locks WHERE owner = ? AND holder = ?", (locked_id, holder))
@@ -962,8 +973,8 @@ class Store:
     def current_review_verdicts(self, source_id: str) -> dict[str, dict]:
         """key → the verdict in force (the newest row for that key)."""
         return {
-            r["key"]: dict(r)
-            for r in self.db.all(
+            row["key"]: dict(row)
+            for row in self.db.all(
                 "SELECT * FROM vw_current_review_verdicts WHERE source_id = ? ORDER BY key",
                 (source_id,),
             )
@@ -972,8 +983,8 @@ class Store:
     def review_verdict_history(self, source_id: str, key: str) -> list[dict]:
         """Every verdict ever given for one slot, oldest first."""
         return [
-            dict(r)
-            for r in self.db.all(
+            dict(row)
+            for row in self.db.all(
                 "SELECT * FROM review_verdicts WHERE source_id = ? AND key = ? ORDER BY rowid",
                 (source_id, key),
             )
@@ -991,8 +1002,8 @@ class Store:
     def current_speaker_names(self, source_id: str) -> dict[str, str]:
         """role → the owner's name in force for that role."""
         return {
-            r["role"]: r["name"]
-            for r in self.db.all(
+            row["role"]: row["name"]
+            for row in self.db.all(
                 "SELECT role, name FROM vw_current_speaker_verdicts WHERE source_id = ? "
                 "ORDER BY role",
                 (source_id,),
@@ -1028,7 +1039,9 @@ class Store:
         if kind is not None:
             sql += " WHERE kind = ?"
             args = (kind,)
-        return {r["span_norm"]: dict(r) for r in self.db.all(sql + " ORDER BY span_norm", args)}
+        return {
+            row["span_norm"]: dict(row) for row in self.db.all(sql + " ORDER BY span_norm", args)
+        }
 
     def correction_count(self) -> int:
         """Rules in force (distinct normalized spans)."""
@@ -1083,8 +1096,8 @@ class Store:
     def review_answers(self, corpus_id: str) -> list[dict]:
         """The answers saved for one corpus, by card id."""
         return [
-            dict(r)
-            for r in self.db.all(
+            dict(row)
+            for row in self.db.all(
                 "SELECT * FROM review_answers WHERE corpus_id = ? ORDER BY card_id", (corpus_id,)
             )
         ]
@@ -1092,8 +1105,8 @@ class Store:
     def review_answer_counts(self) -> dict[str, int]:
         """corpus id -> how many answers wait to land, for the corpora that have any."""
         return {
-            r["corpus_id"]: r["n"]
-            for r in self.db.all(
+            row["corpus_id"]: row["n"]
+            for row in self.db.all(
                 "SELECT corpus_id, COUNT(*) AS n FROM review_answers GROUP BY corpus_id "
                 "ORDER BY corpus_id"
             )
@@ -1154,8 +1167,8 @@ class Store:
                 "suggestion_probability": row["suggestion_probability"],
                 "model": row["model"],
                 "artifact_sha256": row["artifact_sha256"],
-                "candidates": [c["candidate"] for c in candidates],
-                "probabilities": [c["probability"] for c in candidates],
+                "candidates": [candidate_row["candidate"] for candidate_row in candidates],
+                "probabilities": [candidate_row["probability"] for candidate_row in candidates],
             }
         return out
 
@@ -1231,14 +1244,14 @@ class Store:
             "SELECT COUNT(DISTINCT source_id) AS sources, COUNT(*) AS suggestions, "
             "COUNT(suggestion_probability) AS with_probability FROM model_suggestions"
         )
-        return {k: row[k] for k in ("sources", "suggestions", "with_probability")}
+        return {column: row[column] for column in ("sources", "suggestions", "with_probability")}
 
     # ---- change log (history of master data) ----------------------------------------
 
     def changes_of(self, table: str, row_id: str) -> list[dict]:
         return [
-            dict(r)
-            for r in self.db.all(
+            dict(row)
+            for row in self.db.all(
                 "SELECT column_name, old_value, new_value, row_version, created_at "
                 "FROM change_log WHERE table_name = ? AND row_id = ? ORDER BY rowid",
                 (table, row_id),

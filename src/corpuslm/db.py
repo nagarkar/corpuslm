@@ -412,9 +412,10 @@ def _log_values(table: str, row_id: str, column: str, old: str, new: str, versio
 def _master_trigger(table: str, columns: tuple[str, ...]) -> str:
     body = "\n".join(
         f"    INSERT INTO change_log ({_LOG_COLUMNS})\n"
-        f"    SELECT {_log_values(table, 'new.id', c, f'old.{c}', f'new.{c}', 'new.version')}"
-        f"\n    WHERE old.{c} IS NOT new.{c};"
-        for c in columns
+        "    SELECT "
+        f"{_log_values(table, 'new.id', column, f'old.{column}', f'new.{column}', 'new.version')}"
+        f"\n    WHERE old.{column} IS NOT new.{column};"
+        for column in columns
     )
     return (
         f"CREATE TRIGGER IF NOT EXISTS {table}_change_log AFTER UPDATE ON {table} BEGIN\n"
@@ -540,8 +541,8 @@ def loads(value: str | None, default: Any) -> Any:
         return default
     try:
         return json.loads(value)
-    except (json.JSONDecodeError, TypeError) as e:
-        raise CorruptValue(f"stored JSON does not parse ({e}): {str(value)[:80]!r}") from e
+    except (json.JSONDecodeError, TypeError) as error:
+        raise CorruptValue(f"stored JSON does not parse ({error}): {str(value)[:80]!r}") from error
 
 
 # ---- migrations -------------------------------------------------------------
@@ -682,8 +683,8 @@ V3_TO_V4_RENAMES = [
     "ALTER TABLE video_people RENAME TO source_people;",
     "ALTER TABLE video_sources RENAME TO source_feeds;",
     *(
-        f"ALTER TABLE {t} RENAME COLUMN video_id TO source_id;"
-        for t in (
+        f"ALTER TABLE {table} RENAME COLUMN video_id TO source_id;"
+        for table in (
             "source_tags", "source_topics", "source_people", "source_feeds", "corpus_members",
             "fetch_attempts", "artifacts", "review_verdicts", "speaker_verdicts", "segments",
         )
@@ -694,14 +695,14 @@ V3_TO_V4_RENAMES = [
 ]  # fmt: skip
 
 
-def _v3_to_v4_script(conn: sqlite3.Connection) -> list[str]:
+def _v3_to_v4_script(connection: sqlite3.Connection) -> list[str]:
     drops = [
         f"DROP TRIGGER IF EXISTS {name};"
-        for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type = 'trigger'")
+        for (name,) in connection.execute("SELECT name FROM sqlite_master WHERE type = 'trigger'")
     ]
     drops += [
         f"DROP VIEW IF EXISTS {name};"
-        for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type = 'view'")
+        for (name,) in connection.execute("SELECT name FROM sqlite_master WHERE type = 'view'")
     ]
     drops += ["DROP TABLE IF EXISTS segments_fts;"]
     tail = ["DROP TABLE IF EXISTS corpus_sources;"]
@@ -738,7 +739,7 @@ def _v7_to_v8_script() -> list[str]:
     return [*_statements(CLEANED_SEGMENTS_TABLES), *_statements(CLEANED_SEGMENTS_TRIGGERS)]
 
 
-def _v8_to_v9_script(conn: sqlite3.Connection) -> list[str]:
+def _v8_to_v9_script(connection: sqlite3.Connection) -> list[str]:
     """Rebuild `sources` so its `status` CHECK allows `ignored` (a CHECK cannot be altered in
     place): a new table under another name, every row copied by column name, the old table
     dropped, the new one renamed. Triggers and views are dropped first and rebuilt from SCHEMA,
@@ -747,11 +748,11 @@ def _v8_to_v9_script(conn: sqlite3.Connection) -> list[str]:
     before COMMIT."""
     drops = [
         f"DROP TRIGGER IF EXISTS {name};"
-        for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type = 'trigger'")
+        for (name,) in connection.execute("SELECT name FROM sqlite_master WHERE type = 'trigger'")
     ]
     drops += [
         f"DROP VIEW IF EXISTS {name};"
-        for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type = 'view'")
+        for (name,) in connection.execute("SELECT name FROM sqlite_master WHERE type = 'view'")
     ]
     made = SOURCES_TABLE.replace(
         "CREATE TABLE IF NOT EXISTS sources (", "CREATE TABLE sources_v9 ("
@@ -759,7 +760,7 @@ def _v8_to_v9_script(conn: sqlite3.Connection) -> list[str]:
     scratch = sqlite3.connect(":memory:")
     try:
         scratch.execute(made)
-        columns = ", ".join(r[1] for r in scratch.execute("PRAGMA table_info(sources_v9)"))
+        columns = ", ".join(row[1] for row in scratch.execute("PRAGMA table_info(sources_v9)"))
     finally:
         scratch.close()
     return [
@@ -772,21 +773,27 @@ def _v8_to_v9_script(conn: sqlite3.Connection) -> list[str]:
     ]
 
 
-def _user_version(conn: sqlite3.Connection) -> int:
-    return conn.execute("PRAGMA user_version").fetchone()[0]
+def _user_version(connection: sqlite3.Connection) -> int:
+    return connection.execute("PRAGMA user_version").fetchone()[0]
 
 
-def _tables(conn: sqlite3.Connection) -> set[str]:
-    return {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+def _tables(connection: sqlite3.Connection) -> set[str]:
+    return {
+        row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
 
 
-def _counts(conn: sqlite3.Connection, tables) -> dict[str, int]:
-    have = _tables(conn)
-    return {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in tables if t in have}
+def _counts(connection: sqlite3.Connection, tables) -> dict[str, int]:
+    have = _tables(connection)
+    return {
+        table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        for table in tables
+        if table in have
+    }
 
 
 def backup(
-    conn: sqlite3.Connection, db_path: Path, *, label: str, now: datetime | None = None
+    connection: sqlite3.Connection, db_path: Path, *, label: str, now: datetime | None = None
 ) -> Path:
     """A verified copy of the database under `<workspace>/backups/`, named
     with a UTC timestamp: written through SQLite's backup API to a temp
@@ -797,19 +804,19 @@ def backup(
     directory.mkdir(exist_ok=True)
     stamp = (now or clock.utc_now()).astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
     target = directory / f"{Path(db_path).stem}-{stamp}-{label}.sqlite"
-    n = 1
+    attempt = 1
     while target.exists():
-        n += 1
-        target = directory / f"{Path(db_path).stem}-{stamp}-{label}-{n}.sqlite"
+        attempt += 1
+        target = directory / f"{Path(db_path).stem}-{stamp}-{label}-{attempt}.sqlite"
     partial = target.with_name(target.name + ".partial")
-    dest = sqlite3.connect(str(partial))
+    backup_connection = sqlite3.connect(str(partial))
     try:
-        conn.backup(dest)
-        check = dest.execute("PRAGMA integrity_check").fetchone()[0]
-        want = _counts(conn, OWNER_TABLES)
-        got = _counts(dest, OWNER_TABLES)
+        connection.backup(backup_connection)
+        check = backup_connection.execute("PRAGMA integrity_check").fetchone()[0]
+        want = _counts(connection, OWNER_TABLES)
+        got = _counts(backup_connection, OWNER_TABLES)
     finally:
-        dest.close()
+        backup_connection.close()
     if check != "ok" or want != got:
         partial.unlink(missing_ok=True)
         raise MigrationFailed(
@@ -834,15 +841,15 @@ def prune_backups(db_path: Path, *, keep: int = BACKUPS_KEPT) -> list[str]:
         return []
     pattern = _backup_pattern(Path(db_path).stem)
     ours = []
-    for p in directory.iterdir():
-        m = pattern.match(p.name)
-        if m and p.is_file():
-            ours.append(((m.group(1), int(m.group(3) or 1)), p))
+    for path in directory.iterdir():
+        match = pattern.match(path.name)
+        if match and path.is_file():
+            ours.append(((match.group(1), int(match.group(3) or 1)), path))
     ours.sort()
-    doomed = [p for _, p in ours[: max(0, len(ours) - keep)]]
-    for p in doomed:
-        p.unlink()
-    return [p.name for p in doomed]
+    doomed = [path for _, path in ours[: max(0, len(ours) - keep)]]
+    for path in doomed:
+        path.unlink()
+    return [path.name for path in doomed]
 
 
 def _subject_sha256(kind: str, source_id: str, span: str, role: str) -> str:
@@ -852,72 +859,78 @@ def _subject_sha256(kind: str, source_id: str, span: str, role: str) -> str:
 
 
 def _run_in_transaction(
-    conn: sqlite3.Connection, build, *, from_version: int, to_version: int
+    connection: sqlite3.Connection, build, *, from_version: int, to_version: int
 ) -> bool:
     """Run the statements `build(conn)` returns in one explicit transaction,
     check foreign keys before COMMIT, and set user_version inside the same
     transaction. False when the database is no longer at `from_version`
     once the write lock is held (another process migrated it first)."""
-    previous = conn.isolation_level
-    conn.isolation_level = None  # explicit BEGIN/COMMIT below, nothing implicit
+    previous = connection.isolation_level
+    connection.isolation_level = None  # explicit BEGIN/COMMIT below, nothing implicit
     try:
         # A rebuild renames tables; SQLite asks for foreign keys off meanwhile.
-        conn.execute("PRAGMA foreign_keys=OFF")
-        conn.execute("BEGIN IMMEDIATE")
+        connection.execute("PRAGMA foreign_keys=OFF")
+        connection.execute("BEGIN IMMEDIATE")
         try:
-            if _user_version(conn) != from_version:
-                conn.execute("ROLLBACK")
+            if _user_version(connection) != from_version:
+                connection.execute("ROLLBACK")
                 return False
-            for statement in build(conn):
-                conn.execute(statement)
-            broken = conn.execute("PRAGMA foreign_key_check").fetchall()
+            for statement in build(connection):
+                connection.execute(statement)
+            broken = connection.execute("PRAGMA foreign_key_check").fetchall()
             if broken:
-                raise MigrationFailed(f"foreign key check failed: {[tuple(r) for r in broken][:5]}")
-            conn.execute(f"PRAGMA user_version = {int(to_version)}")
-            conn.execute("COMMIT")
+                raise MigrationFailed(
+                    f"foreign key check failed: {[tuple(row) for row in broken][:5]}"
+                )
+            connection.execute(f"PRAGMA user_version = {int(to_version)}")
+            connection.execute("COMMIT")
             return True
         except BaseException:
-            if conn.in_transaction:
-                conn.execute("ROLLBACK")
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
             raise
     finally:
-        conn.execute("PRAGMA foreign_keys=ON")
-        conn.isolation_level = previous
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.isolation_level = previous
 
 
 def _statements(script: str) -> list[str]:
     """Split a script into complete statements (trigger bodies included)."""
-    out, buf = [], ""
+    out, buffer = [], ""
     for line in script.splitlines(keepends=True):
-        buf += line
-        if sqlite3.complete_statement(buf):
-            if buf.strip():
-                out.append(buf.strip())
-            buf = ""
-    if buf.strip():
-        raise MigrationFailed(f"incomplete SQL statement in migration: {buf.strip()[:80]!r}")
+        buffer += line
+        if sqlite3.complete_statement(buffer):
+            if buffer.strip():
+                out.append(buffer.strip())
+            buffer = ""
+    if buffer.strip():
+        raise MigrationFailed(f"incomplete SQL statement in migration: {buffer.strip()[:80]!r}")
     return out
 
 
-def _v1_to_v2_script(conn: sqlite3.Connection) -> str:
-    present = [t for t in V1_TABLES if t in _tables(conn)]
+def _v1_to_v2_script(connection: sqlite3.Connection) -> str:
+    present = [table for table in V1_TABLES if table in _tables(connection)]
     drops = [
         "DROP TRIGGER IF EXISTS segments_ai;",
         "DROP TRIGGER IF EXISTS segments_ad;",
         "DROP TRIGGER IF EXISTS segments_au;",
         "DROP TABLE IF EXISTS segments_fts;",
     ]
-    renames = [f"ALTER TABLE {t} RENAME TO legacy_v1_{t};" for t in present]
+    renames = [f"ALTER TABLE {table} RENAME TO legacy_v1_{table};" for table in present]
     # A v1 table that never existed has no rows to copy.
-    absent = [f"legacy_v1_{t} " for t in V1_TABLES if t not in present]
-    copies = [s for s in _statements(V1_TO_V2_COPY) if not any(a in s + " " for a in absent)]
+    absent = [f"legacy_v1_{table} " for table in V1_TABLES if table not in present]
+    copies = [
+        statement
+        for statement in _statements(V1_TO_V2_COPY)
+        if not any(absent_table in statement + " " for absent_table in absent)
+    ]
     return "\n".join(
         [
             *drops,
             *renames,
             TABLES,
             *copies,
-            *(f"DROP TABLE legacy_v1_{t};" for t in present),
+            *(f"DROP TABLE legacy_v1_{table};" for table in present),
             "INSERT INTO segments_fts(segments_fts) VALUES ('rebuild');",
             TRIGGERS,
             VIEWS,
@@ -925,24 +938,24 @@ def _v1_to_v2_script(conn: sqlite3.Connection) -> str:
     )
 
 
-def _complete_v1(conn: sqlite3.Connection) -> None:
+def _complete_v1(connection: sqlite3.Connection) -> None:
     """Bring a v1 database to the last v1 shape (the columns added after
     v1 first shipped), so the v2 copy can read every column."""
     for table, columns in V1_ADDED_COLUMNS.items():
-        if table not in _tables(conn):
+        if table not in _tables(connection):
             continue
-        have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
-        for name, decl in columns:
+        have = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+        for name, declaration in columns:
             if name not in have:
-                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+                connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {declaration}")
 
 
-def migrate(conn: sqlite3.Connection, db_path: Path) -> dict:
+def migrate(connection: sqlite3.Connection, db_path: Path) -> dict:
     """Bring the database at `db_path` to USER_VERSION. A new, empty file
     gets the schema; a v1 database is backed up (verified) and rebuilt in
     one transaction, then checked with PRAGMA integrity_check. A newer
     database is declined. Returns what was done."""
-    version = _user_version(conn)
+    version = _user_version(connection)
     if version > USER_VERSION:
         raise NewerDatabase(
             f"{db_path} has schema version {version}; this corpuslm reads up to "
@@ -950,32 +963,37 @@ def migrate(conn: sqlite3.Connection, db_path: Path) -> dict:
         )
     if version == USER_VERSION:
         return {"from": version, "to": version, "backup": None}
-    if not ({"videos", "sources"} & _tables(conn)):
+    if not ({"videos", "sources"} & _tables(connection)):
         _run_in_transaction(
-            conn, lambda c: _statements(SCHEMA), from_version=version, to_version=USER_VERSION
+            connection,
+            lambda column: _statements(SCHEMA),
+            from_version=version,
+            to_version=USER_VERSION,
         )
         return {"from": version, "to": USER_VERSION, "backup": None, "created": True}
-    saved = backup(conn, db_path, label=f"before-v{USER_VERSION}")
+    saved = backup(connection, db_path, label=f"before-v{USER_VERSION}")
     deleted = prune_backups(db_path)  # only after the new one verified
     if version in (4, 5, 6, 7, 8):
         # The v8 -> v9 step rebuilds `sources`, so it checks every table, not only the owner's.
         watched = (
-            sorted(t for t in _tables(conn) if not t.startswith("sqlite_"))
+            sorted(table for table in _tables(connection) if not table.startswith("sqlite_"))
             if version == 8
             else OWNER_TABLES
         )
-        before = _counts(conn, watched)
+        before = _counts(connection, watched)
 
-        def additive(c: sqlite3.Connection) -> list[str]:
+        def additive(column: sqlite3.Connection) -> list[str]:
             return [
                 *(_v4_to_v5_script() if version == 4 else []),
                 *(_v5_to_v6_script() if version <= 5 else []),
                 *(_v6_to_v7_script() if version <= 6 else []),
                 *(_v7_to_v8_script() if version <= 7 else []),
-                *_v8_to_v9_script(c),
+                *_v8_to_v9_script(column),
             ]
 
-        if not _run_in_transaction(conn, additive, from_version=version, to_version=USER_VERSION):
+        if not _run_in_transaction(
+            connection, additive, from_version=version, to_version=USER_VERSION
+        ):
             return {
                 "from": version,
                 "to": USER_VERSION,
@@ -983,9 +1001,9 @@ def migrate(conn: sqlite3.Connection, db_path: Path) -> dict:
                 "backups_deleted": deleted,
                 "by": "another process",
             }
-        check = conn.execute("PRAGMA integrity_check").fetchone()[0]
-        after = _counts(conn, watched)
-        if check != "ok" or any(before[t] != after[t] for t in before):
+        check = connection.execute("PRAGMA integrity_check").fetchone()[0]
+        after = _counts(connection, watched)
+        if check != "ok" or any(before[table] != after[table] for table in before):
             raise MigrationFailed(
                 f"{db_path} after migration: integrity_check {check}; owner rows {before} -> "
                 f"{after}. The verified backup is {saved}."
@@ -998,25 +1016,33 @@ def migrate(conn: sqlite3.Connection, db_path: Path) -> dict:
         }
     if version in (2, 3):
         dropped = (
-            [r[0] for r in conn.execute("SELECT source_id FROM corpus_sources ORDER BY rowid")]
-            if "corpus_sources" in _tables(conn)
+            [
+                row[0]
+                for row in connection.execute("SELECT source_id FROM corpus_sources ORDER BY rowid")
+            ]
+            if "corpus_sources" in _tables(connection)
             else []
         )
-        before = _counts(conn, OWNER_TABLES)
+        before = _counts(connection, OWNER_TABLES)
 
-        def to_v4(c: sqlite3.Connection) -> list[str]:
-            return [*(_statements(V2_TO_V3_TABLE) if version == 2 else []), *_v3_to_v4_script(c)]
+        def to_v4(column: sqlite3.Connection) -> list[str]:
+            return [
+                *(_statements(V2_TO_V3_TABLE) if version == 2 else []),
+                *_v3_to_v4_script(column),
+            ]
 
-        if not _run_in_transaction(conn, to_v4, from_version=version, to_version=USER_VERSION):
+        if not _run_in_transaction(
+            connection, to_v4, from_version=version, to_version=USER_VERSION
+        ):
             return {
                 "from": version,
                 "to": USER_VERSION,
                 "backup": str(saved),
                 "by": "another process",
             }
-        check = conn.execute("PRAGMA integrity_check").fetchone()[0]
-        after = _counts(conn, OWNER_TABLES)
-        if check != "ok" or any(before[t] != after[t] for t in before):
+        check = connection.execute("PRAGMA integrity_check").fetchone()[0]
+        after = _counts(connection, OWNER_TABLES)
+        if check != "ok" or any(before[table] != after[table] for table in before):
             raise MigrationFailed(
                 f"{db_path} after migration: integrity_check {check}; owner rows {before} -> "
                 f"{after}. The verified backup is {saved}."
@@ -1028,14 +1054,14 @@ def migrate(conn: sqlite3.Connection, db_path: Path) -> dict:
             "backups_deleted": deleted,
             "dropped_corpus_feeds": dropped,
         }
-    conn.create_function("corpuslm_subject_sha256", 4, _subject_sha256, deterministic=True)
-    before = _counts(conn, OWNER_TABLES)
+    connection.create_function("corpuslm_subject_sha256", 4, _subject_sha256, deterministic=True)
+    before = _counts(connection, OWNER_TABLES)
 
-    def v1_to_v2(c: sqlite3.Connection) -> list[str]:
-        _complete_v1(c)
-        return _statements(_v1_to_v2_script(c))
+    def v1_to_v2(column: sqlite3.Connection) -> list[str]:
+        _complete_v1(column)
+        return _statements(_v1_to_v2_script(column))
 
-    if not _run_in_transaction(conn, v1_to_v2, from_version=version, to_version=USER_VERSION):
+    if not _run_in_transaction(connection, v1_to_v2, from_version=version, to_version=USER_VERSION):
         return {
             "from": version,
             "to": USER_VERSION,
@@ -1043,9 +1069,9 @@ def migrate(conn: sqlite3.Connection, db_path: Path) -> dict:
             "backups_deleted": deleted,
             "by": "another process",
         }
-    check = conn.execute("PRAGMA integrity_check").fetchone()[0]
-    after = _counts(conn, OWNER_TABLES)
-    if check != "ok" or any(before[t] != after[t] for t in before):
+    check = connection.execute("PRAGMA integrity_check").fetchone()[0]
+    after = _counts(connection, OWNER_TABLES)
+    if check != "ok" or any(before[table] != after[table] for table in before):
         raise MigrationFailed(
             f"{db_path} after migration: integrity_check {check}; owner rows {before} → "
             f"{after}. The verified backup is {saved}."
@@ -1065,17 +1091,17 @@ class Database:
         self._transaction_depth = 0
 
     def insert(self, table: str, row: dict[str, Any]) -> str:
-        cols = ", ".join(row)
+        columns = ", ".join(row)
         placeholders = ", ".join("?" for _ in row)
         self.conn.execute(
-            f"INSERT INTO {table} ({cols}) VALUES ({placeholders})", list(row.values())
+            f"INSERT INTO {table} ({columns}) VALUES ({placeholders})", list(row.values())
         )
         self._maybe_commit()
         return row.get("id", "")
 
     def update(self, table: str, obj_id: str, changes: dict[str, Any]) -> None:
         """Evolve a mutable knowledge object, bumping its version."""
-        sets = ", ".join(f"{c} = ?" for c in changes)
+        sets = ", ".join(f"{column} = ?" for column in changes)
         self.conn.execute(
             f"UPDATE {table} SET {sets}, version = version + 1 WHERE id = ?",
             [*changes.values(), obj_id],
@@ -1083,9 +1109,9 @@ class Database:
         self._maybe_commit()
 
     def execute(self, sql: str, args: tuple | list = ()) -> sqlite3.Cursor:
-        cur = self.conn.execute(sql, args)
+        cursor = self.conn.execute(sql, args)
         self._maybe_commit()
-        return cur
+        return cursor
 
     def one(self, sql: str, args: tuple | list = ()) -> sqlite3.Row | None:
         return self.conn.execute(sql, args).fetchone()
@@ -1119,8 +1145,8 @@ class Database:
         self.conn.close()
 
 
-def _count(conn: sqlite3.Connection, table: str) -> int:
-    return conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+def _count(connection: sqlite3.Connection, table: str) -> int:
+    return connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
 
 
 def inspect(db_path: Path) -> dict:
@@ -1129,21 +1155,21 @@ def inspect(db_path: Path) -> dict:
     of every table. Opens it read-only and never creates, migrates or
     writes it; the caller checks that the file exists first (a `mode=ro`
     URI of a missing file is not an error everywhere)."""
-    conn = sqlite3.connect(f"{Path(db_path).resolve().as_uri()}?mode=ro", uri=True)
+    connection = sqlite3.connect(f"{Path(db_path).resolve().as_uri()}?mode=ro", uri=True)
     try:
         tables = [
-            r[0]
-            for r in conn.execute(
+            row[0]
+            for row in connection.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table' "
                 "AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'segments_fts_%' "
                 "AND name NOT LIKE 'cleaned_segments_fts_%' ORDER BY name"
             )
         ]
         return {
-            "user_version": conn.execute("PRAGMA user_version").fetchone()[0],
-            "journal_mode": conn.execute("PRAGMA journal_mode").fetchone()[0],
-            "integrity_check": conn.execute("PRAGMA integrity_check").fetchone()[0],
-            "tables": {t: _count(conn, t) for t in tables},
+            "user_version": connection.execute("PRAGMA user_version").fetchone()[0],
+            "journal_mode": connection.execute("PRAGMA journal_mode").fetchone()[0],
+            "integrity_check": connection.execute("PRAGMA integrity_check").fetchone()[0],
+            "tables": {table: _count(connection, table) for table in tables},
         }
     finally:
-        conn.close()
+        connection.close()

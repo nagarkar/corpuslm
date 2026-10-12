@@ -30,14 +30,14 @@ from corpuslm import (
 from corpuslm.review_page import KindSetup
 from corpuslm.store import Store
 
-AT = "2026-10-09T10:00:00Z"
+ANSWERED_AT = "2026-10-09T10:00:00Z"
 
 
 @pytest.fixture
 def database(tmp_path):
-    d = db.Database(tmp_path / "transcript.sqlite")
-    yield d
-    d.close()
+    database_handle = db.Database(tmp_path / "transcript.sqlite")
+    yield database_handle
+    database_handle.close()
 
 
 @pytest.fixture
@@ -61,7 +61,12 @@ def corpus(database, store, kinds):
             kinds["bee"].sources_directory,
             source_id,
             document
-            | {"segments": [segment(i, i * 5.0, "wren kiln", speaker="Unknown") for i in range(3)]},
+            | {
+                "segments": [
+                    segment(segment_index, segment_index * 5.0, "wren kiln", speaker="Unknown")
+                    for segment_index in range(3)
+                ]
+            },
             bee_speaker_map(),
         )
         store.update_source(source_id, {"published_at": "2026-03-01T09:00:00.000-08:00"})
@@ -96,13 +101,15 @@ def test_a_source_can_be_ignored_and_a_bogus_status_is_still_rejected(store, dat
 def test_an_ignored_member_is_counted_apart_and_left_out_of_the_member_total(store, corpus):
     ignore(store, SECOND_BEE_SOURCE)
     assert store.member_status_counts(corpus) == {"queued": 1, "ignored": 1}
-    summary = next(r for r in store.corpus_summaries() if r["id"] == corpus)
+    summary = next(
+        summary_row for summary_row in store.corpus_summaries() if summary_row["id"] == corpus
+    )
     assert (summary["members"], summary["ingested"], summary["ignored"]) == (1, 0, 1)
 
 
 def test_the_member_lists_leave_an_ignored_source_out_and_the_catalog_keeps_it(store, corpus):
     ignore(store, SECOND_BEE_SOURCE)
-    assert [m["id"] for m in store.member_sources(corpus)] == [BEE_SOURCE]
+    assert [member["id"] for member in store.member_sources(corpus)] == [BEE_SOURCE]
     assert store.member_source_ids(corpus, include_ignored=False) == [BEE_SOURCE]
     assert store.member_source_ids(corpus) == [BEE_SOURCE, SECOND_BEE_SOURCE]
     assert store.source_ids("bee", include_ignored=False) == [BEE_SOURCE]
@@ -117,10 +124,10 @@ def test_an_ignored_source_has_no_search_hits_and_keeps_its_segments(store, corp
     assert len(store.search("kiln", corpus_id=corpus, limit=10)) == 2
     assert len(store.search_cleaned("kiln", limit=10)) == 2
     ignore(store, SECOND_BEE_SOURCE)
-    assert {h["source_id"] for h in store.search("kiln", corpus_id=corpus, limit=10)} == {
+    assert {hit["source_id"] for hit in store.search("kiln", corpus_id=corpus, limit=10)} == {
         BEE_SOURCE
     }
-    assert {h["source_id"] for h in store.search_cleaned("kiln", limit=10)} == {BEE_SOURCE}
+    assert {hit["source_id"] for hit in store.search_cleaned("kiln", limit=10)} == {BEE_SOURCE}
     assert store.segment_count(SECOND_BEE_SOURCE) == 1  # kept
     store.update_source(SECOND_BEE_SOURCE, {"status": "added"})
     assert len(store.search("kiln", corpus_id=corpus, limit=10)) == 2
@@ -134,8 +141,10 @@ def test_the_review_page_has_no_cards_or_open_items_for_an_ignored_source(
     ignore(store, SECOND_BEE_SOURCE)
     data = review_page.page_data_by_kind(database, kinds, "Walks")
     assert data["open_items"] == 2
-    seen = {i["video_id"] for c in data["cards"] for i in (c.get("items") or [c])}
-    assert SECOND_BEE_SOURCE not in {i for i in seen if isinstance(i, str)}
+    seen = {item["video_id"] for card in data["cards"] for item in (card.get("items") or [card])}
+    assert SECOND_BEE_SOURCE not in {
+        segment_index for segment_index in seen if isinstance(segment_index, str)
+    }
     ignore(store, BEE_SOURCE)
     data = review_page.page_data_by_kind(database, kinds, "Walks")
     assert (data["open_items"], data["cards"]) == (0, [])
@@ -145,11 +154,11 @@ def test_apply_lands_nothing_for_a_card_whose_only_sources_are_ignored(
     database, store, kinds, corpus
 ):
     card = next(
-        c
-        for c in review_page.page_data_by_kind(database, kinds, "Walks")["cards"]
-        if c["kind"] == "ambiguity"
+        card
+        for card in review_page.page_data_by_kind(database, kinds, "Walks")["cards"]
+        if card["kind"] == "ambiguity"
     )
-    store.save_review_answer(corpus, card["id"], "Wren", AT, created_by="test")
+    store.save_review_answer(corpus, card["id"], "Wren", ANSWERED_AT, created_by="test")
     ignore(store, BEE_SOURCE)
     ignore(store, SECOND_BEE_SOURCE)
     report = review_apply.apply(database, kinds, created_by="test", dry_run=True)
@@ -179,12 +188,16 @@ def test_the_suggestion_backfill_reads_no_ignored_source(store, kinds, corpus):
 def _make_version_8(path):
     """Put a database back into its version 8 shape: the old `status` CHECK, `kind` as the last
     column (as an upgraded database has it), user_version 8."""
-    conn = sqlite3.connect(path)
-    conn.execute("PRAGMA foreign_keys=OFF")
-    for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type='trigger'").fetchall():
-        conn.execute(f"DROP TRIGGER {name}")
-    for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type='view'").fetchall():
-        conn.execute(f"DROP VIEW {name}")
+    connection = sqlite3.connect(path)
+    connection.execute("PRAGMA foreign_keys=OFF")
+    for (name,) in connection.execute(
+        "SELECT name FROM sqlite_master WHERE type='trigger'"
+    ).fetchall():
+        connection.execute(f"DROP TRIGGER {name}")
+    for (name,) in connection.execute(
+        "SELECT name FROM sqlite_master WHERE type='view'"
+    ).fetchall():
+        connection.execute(f"DROP VIEW {name}")
     kind_line = "    kind TEXT NOT NULL DEFAULT 'youtube' CHECK (kind IN ('youtube', 'bee')),\n"
     old = (
         db.SOURCES_TABLE.replace(
@@ -197,34 +210,41 @@ def _make_version_8(path):
             "perspective TEXT,\n    " + kind_line.strip().rstrip(",") + "\n) STRICT",
         )
     )
-    conn.execute(old)
-    columns = ", ".join(r[1] for r in conn.execute("PRAGMA table_info(sources_v8)"))
-    conn.execute(f"INSERT INTO sources_v8 ({columns}) SELECT {columns} FROM sources")
-    conn.execute("DROP TABLE sources")
-    conn.execute("ALTER TABLE sources_v8 RENAME TO sources")
+    connection.execute(old)
+    columns = ", ".join(
+        column_row[1] for column_row in connection.execute("PRAGMA table_info(sources_v8)")
+    )
+    connection.execute(f"INSERT INTO sources_v8 ({columns}) SELECT {columns} FROM sources")
+    connection.execute("DROP TABLE sources")
+    connection.execute("ALTER TABLE sources_v8 RENAME TO sources")
     for statement in db._statements(db.SCHEMA):  # the triggers and views, as a v8 file has them
-        conn.execute(statement)
-    conn.execute("PRAGMA user_version = 8")
-    conn.commit()
-    conn.close()
+        connection.execute(statement)
+    connection.execute("PRAGMA user_version = 8")
+    connection.commit()
+    connection.close()
 
 
 def _everything(path):
-    conn = sqlite3.connect(path)
-    conn.row_factory = sqlite3.Row  # rows by column name: the rebuild changes the column order
+    connection = sqlite3.connect(path)
+    connection.row_factory = (
+        sqlite3.Row
+    )  # rows by column name: the rebuild changes the column order
     try:
         tables = sorted(
-            r[0]
-            for r in conn.execute(
+            table_row[0]
+            for table_row in connection.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
             )
         )
         return {
-            t: sorted(repr(sorted(dict(r).items())) for r in conn.execute(f'SELECT * FROM "{t}"'))
-            for t in tables
+            table: sorted(
+                repr(sorted(dict(row).items()))
+                for row in connection.execute(f'SELECT * FROM "{table}"')
+            )
+            for table in tables
         }
     finally:
-        conn.close()
+        connection.close()
 
 
 def test_a_version_8_database_is_rebuilt_with_every_row_and_the_author_tables_unchanged(
@@ -242,7 +262,7 @@ def test_a_version_8_database_is_rebuilt_with_every_row_and_the_author_tables_un
         subject_sha256="c" * 64,
         created_by="test",
     )
-    store.save_review_answer(corpus, "card-x", "Wren", AT, created_by="test")
+    store.save_review_answer(corpus, "card-x", "Wren", ANSWERED_AT, created_by="test")
     store.update_source(BEE_SOURCE, {"tags": ["walk"], "title": "A walk"})
     database.close()
     _make_version_8(path)
@@ -262,8 +282,8 @@ def test_a_version_8_database_is_rebuilt_with_every_row_and_the_author_tables_un
         assert after == before  # every row of every table, the author tables included
         fresh = sqlite3.connect(":memory:")
         fresh.executescript(db.SCHEMA)
-        assert [r[1] for r in opened.all("PRAGMA table_info(sources)")] == [
-            r[1] for r in fresh.execute("PRAGMA table_info(sources)")
+        assert [column_row[1] for column_row in opened.all("PRAGMA table_info(sources)")] == [
+            row[1] for row in fresh.execute("PRAGMA table_info(sources)")
         ]
         # the rebuilt table, its triggers and its views work
         again = Store(opened)
@@ -295,14 +315,14 @@ def test_a_failed_rebuild_rolls_back_and_names_the_backup(
     before = _everything(path)
     real = db._v8_to_v9_script
 
-    def broken(conn):
-        return [*real(conn), "INSERT INTO sources (id) VALUES ('x');"]  # violates NOT NULL
+    def broken(connection):
+        return [*real(connection), "INSERT INTO sources (id) VALUES ('x');"]  # violates NOT NULL
 
     monkeypatch.setattr(db, "_v8_to_v9_script", broken)
     with pytest.raises(sqlite3.IntegrityError):
         db.Database(path)
     monkeypatch.undo()
-    conn = sqlite3.connect(path)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 8
-    conn.close()
+    connection = sqlite3.connect(path)
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 8
+    connection.close()
     assert _everything(path) == before

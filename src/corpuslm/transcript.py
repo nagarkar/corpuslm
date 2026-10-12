@@ -75,13 +75,13 @@ def from_segments(
         if not text:
             continue
         cues.append([start_seconds, float(max(end_seconds, start_seconds)), text, speaker])
-    cues.sort(key=lambda c: c[0])
+    cues.sort(key=lambda cue: cue[0])
     # Auto-captions roll: each cue's end overlaps the next cue's start.
     # Clamp so a segment never outlives its successor; SRT and search
     # both want disjoint spans.
-    for i in range(len(cues) - 1):
-        if cues[i][1] > cues[i + 1][0]:
-            cues[i][1] = cues[i + 1][0]
+    for cue_index in range(len(cues) - 1):
+        if cues[cue_index][1] > cues[cue_index + 1][0]:
+            cues[cue_index][1] = cues[cue_index + 1][0]
     return {
         # Legacy name: the YouTube tool's key; see the module docstring.
         "video_id": source_id,
@@ -91,13 +91,13 @@ def from_segments(
         "speaker_source": speaker_source,
         "segments": [
             {
-                "idx": i,
+                "idx": cue_index,
                 "t0": round(start_seconds, 3),
                 "t1": round(end_seconds, 3),
                 "speaker": speaker,
                 "text": text,
             }
-            for i, (start_seconds, end_seconds, text, speaker) in enumerate(cues)
+            for cue_index, (start_seconds, end_seconds, text, speaker) in enumerate(cues)
         ],
         "words": [],
     }
@@ -130,11 +130,11 @@ def loads(text: str, *, refined_schema: dict | None = None) -> dict:
 
 
 def srt_time(seconds: float) -> str:
-    ms = round(seconds * 1000)
-    h, ms = divmod(ms, 3_600_000)
-    m, ms = divmod(ms, 60_000)
-    s, ms = divmod(ms, 1000)
-    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+    milliseconds = round(seconds * 1000)
+    hours, milliseconds = divmod(milliseconds, 3_600_000)
+    minutes, milliseconds = divmod(milliseconds, 60_000)
+    whole_seconds, milliseconds = divmod(milliseconds, 1000)
+    return f"{hours:02d}:{minutes:02d}:{whole_seconds:02d},{milliseconds:03d}"
 
 
 def to_srt(document: dict, *, max_line_chars: int = 42) -> str:
@@ -152,6 +152,8 @@ def to_srt(document: dict, *, max_line_chars: int = 42) -> str:
 def timestamp(seconds: float) -> str:
     """Human timestamp for notes and search hits: m:ss or h:mm:ss."""
     total = int(seconds)
-    h, rem = divmod(total, 3600)
-    m, s = divmod(rem, 60)
-    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+    hours, remainder = divmod(total, 3600)
+    minutes, whole_seconds = divmod(remainder, 60)
+    return (
+        f"{hours}:{minutes:02d}:{whole_seconds:02d}" if hours else f"{minutes}:{whole_seconds:02d}"
+    )

@@ -14,7 +14,7 @@ def test_write_atomic_replaces_the_file_and_leaves_no_temp(tmp_path):
     files.write_atomic(target, "one")
     files.write_atomic(target, b"two")
     assert target.read_text() == "two"
-    assert [p.name for p in target.parent.iterdir()] == ["note.md"]
+    assert [path.name for path in target.parent.iterdir()] == ["note.md"]
 
 
 def test_a_failed_write_leaves_the_old_file_whole(tmp_path, monkeypatch):
@@ -28,7 +28,7 @@ def test_a_failed_write_leaves_the_old_file_whole(tmp_path, monkeypatch):
     with pytest.raises(OSError):
         files.write_atomic(target, "new")
     assert target.read_text() == "old"
-    assert [p.name for p in tmp_path.iterdir()] == ["note.md"]
+    assert [path.name for path in tmp_path.iterdir()] == ["note.md"]
 
 
 def test_an_existing_file_keeps_its_mode_and_a_given_mode_wins(tmp_path):

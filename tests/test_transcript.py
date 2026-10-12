@@ -10,8 +10,7 @@ import re
 from pathlib import Path
 
 import pytest
-from hypothesis import given
-from hypothesis import strategies as st
+from hypothesis import given, strategies
 
 from corpuslm import schemas, transcript
 from corpuslm.model import Segment
@@ -47,7 +46,10 @@ def test_from_segments_flattens_whitespace_unescapes_and_clamps_overlaps():
         CAPTION,
         "ytlm.transcript/1",
     )
-    assert [s["text"] for s in document["segments"]] == ["hello there & welcome", "second cue"]
+    assert [segment["text"] for segment in document["segments"]] == [
+        "hello there & welcome",
+        "second cue",
+    ]
     assert document["segments"][0]["t1"] == 2.0  # clamped to the next t0
     assert document["segments"][1] == {
         "idx": 1,
@@ -71,7 +73,7 @@ def test_from_segments_takes_stored_segment_mappings_and_keeps_their_speaker():
     document = transcript.from_segments(
         "s", stored, CAPTION, "beelm.transcript/1", speaker_source="diarized"
     )
-    assert [s["speaker"] for s in document["segments"]] == ["Ann", ""]
+    assert [segment["speaker"] for segment in document["segments"]] == ["Ann", ""]
     assert document["speaker_source"] == "diarized"
     assert transcript.loads(transcript.dumps(document)) == document
 
@@ -195,11 +197,13 @@ def test_an_unknown_schema_name_is_named():
 
 # ---- properties -------------------------------------------------------------
 
-_seconds = st.floats(min_value=0, max_value=36_000, allow_nan=False, allow_infinity=False)
-_text = st.text(alphabet=st.sampled_from(list("ab cé\n\t&;amp")), max_size=30)
-_segments = st.lists(
-    st.builds(
-        lambda start_seconds, d, text: Segment(start_seconds, start_seconds + d, text),
+_seconds = strategies.floats(min_value=0, max_value=36_000, allow_nan=False, allow_infinity=False)
+_text = strategies.text(alphabet=strategies.sampled_from(list("ab cé\n\t&;amp")), max_size=30)
+_segments = strategies.lists(
+    strategies.builds(
+        lambda start_seconds, duration_seconds, text: Segment(
+            start_seconds, start_seconds + duration_seconds, text
+        ),
         _seconds,
         _seconds,
         _text,
@@ -209,7 +213,9 @@ _segments = st.lists(
 
 
 def _kept(segments):
-    return [s for s in segments if re.sub(r"\s+", " ", html.unescape(s.text)).strip()]
+    return [
+        segment for segment in segments if re.sub(r"\s+", " ", html.unescape(segment.text)).strip()
+    ]
 
 
 @given(segments=_segments)
@@ -218,28 +224,38 @@ def test_from_segments_yields_sorted_disjoint_valid_segments_that_start_where_th
 ):
     document = transcript.from_segments("vid00000000", segments, CAPTION, "ytlm.transcript/1")
     out = document["segments"]
-    assert [s["idx"] for s in out] == list(range(len(out)))
-    assert sorted(round(s.start_seconds, 3) for s in _kept(segments)) == [s["t0"] for s in out]
-    for a, b in zip(out, out[1:], strict=False):
-        assert a["t0"] <= b["t0"] and a["t1"] <= b["t0"]
-    for s in out:
-        assert s["t0"] <= s["t1"] and s["text"] == s["text"].strip() and "  " not in s["text"]
+    assert [segment["idx"] for segment in out] == list(range(len(out)))
+    assert sorted(round(segment.start_seconds, 3) for segment in _kept(segments)) == [
+        segment["t0"] for segment in out
+    ]
+    for previous, following in zip(out, out[1:], strict=False):
+        assert previous["t0"] <= following["t0"] and previous["t1"] <= following["t0"]
+    for segment in out:
+        assert (
+            segment["t0"] <= segment["t1"]
+            and segment["text"] == segment["text"].strip()
+            and "  " not in segment["text"]
+        )
     transcript.loads(transcript.dumps(document))
 
 
-@given(ms=st.integers(min_value=0, max_value=100 * 3_600_000 - 1))
-def test_an_srt_time_reads_back_to_the_millisecond(ms):
-    m = re.fullmatch(r"(\d{2,}):(\d{2}):(\d{2}),(\d{3})", transcript.srt_time(ms / 1000))
-    assert m
-    h, mi, s, frac = (int(x) for x in m.groups())
-    assert mi < 60 and s < 60
-    assert ((h * 60 + mi) * 60 + s) * 1000 + frac == ms
+@given(milliseconds=strategies.integers(min_value=0, max_value=100 * 3_600_000 - 1))
+def test_an_srt_time_reads_back_to_the_millisecond(milliseconds):
+    match = re.fullmatch(
+        r"(\d{2,}):(\d{2}):(\d{2}),(\d{3})", transcript.srt_time(milliseconds / 1000)
+    )
+    assert match
+    hours, minutes, seconds, milliseconds_part = (int(group) for group in match.groups())
+    assert minutes < 60 and seconds < 60
+    assert ((hours * 60 + minutes) * 60 + seconds) * 1000 + milliseconds_part == milliseconds
 
 
-@given(segments=_segments, width=st.integers(min_value=10, max_value=80))
+@given(segments=_segments, width=strategies.integers(min_value=10, max_value=80))
 def test_every_srt_entry_is_numbered_and_timed_from_its_segment(segments, width):
     document = transcript.from_segments("vid00000000", segments, CAPTION, "ytlm.transcript/1")
-    blocks = [b for b in transcript.to_srt(document, max_line_chars=width).split("\n\n") if b]
+    blocks = [
+        block for block in transcript.to_srt(document, max_line_chars=width).split("\n\n") if block
+    ]
     assert len(blocks) == len(document["segments"])
     for block, segment in zip(blocks, document["segments"], strict=True):
         number, times, *lines = block.rstrip("\n").split("\n")
