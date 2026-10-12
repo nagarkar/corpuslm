@@ -29,8 +29,8 @@ Terms:
   cards, no open items, no search hits, no member listing, no AI cleanup; corpus boards count it
   apart (`ignored`) and leave it out of the member total. Reversible: the tool returns it to
   `ingested` when it has a built transcript, else `added`.
-- **segment**: one timed line of a transcript (`idx`, `t0`, `t1`), never re-cut: edits stay inside it.
-  `segments` keeps the raw lines, never overwritten;
+- **segment**: one timed line of a transcript (`idx`, `t0`, `t1`), never re-cut: edits stay
+  inside it. `segments` keeps the raw lines, never overwritten;
   `cleaned_segments` keeps the cleaned lines the search index reads (view `vw_search_segments`).
 - **artifact**: a file one node of the pipeline built for a source or corpus, a row of
   `artifacts` with its path, sha256, state (`built`, `stale`, `failed`, `skipped`), the hashes of
