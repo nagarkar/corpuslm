@@ -24,14 +24,14 @@ from corpuslm import db, review_apply, review_kinds, review_page
 from corpuslm.review_page import KindSetup
 from corpuslm.store import Store
 
-AT = "2026-10-09T10:00:00Z"
+ANSWERED_AT = "2026-10-09T10:00:00Z"
 
 
 @pytest.fixture
 def database(tmp_path):
-    d = db.Database(tmp_path / "transcript.sqlite")
-    yield d
-    d.close()
+    database_handle = db.Database(tmp_path / "transcript.sqlite")
+    yield database_handle
+    database_handle.close()
 
 
 @pytest.fixture
@@ -64,7 +64,9 @@ def cards(database, kinds):
 
 
 def answer(database, corpus_id, card, verdict):
-    Store(database).save_review_answer(corpus_id, card["id"], verdict, AT, created_by="test")
+    Store(database).save_review_answer(
+        corpus_id, card["id"], verdict, ANSWERED_AT, created_by="test"
+    )
 
 
 def apply(database, kinds, **more):
@@ -73,26 +75,28 @@ def apply(database, kinds, **more):
 
 def test_the_page_reads_each_source_with_its_own_kind(database, kinds, corpus_id):
     found = cards(database, kinds)
-    ambiguity = next(c for c in found if c["kind"] == "ambiguity")
-    urls = {i["video_id"]: i["url"] for i in ambiguity["items"]}
+    ambiguity = next(card for card in found if card["kind"] == "ambiguity")
+    urls = {item["video_id"]: item["url"] for item in ambiguity["items"]}
     assert urls[YOUTUBE_SOURCE] == f"https://www.youtube.com/watch?v={YOUTUBE_SOURCE}&t=12s"
     assert urls[BEE_SOURCE] is None
     assert ambiguity["count"] == 2  # one card, both kinds' places
-    speakers = {c["video_id"]: c for c in found if c["kind"] == "speaker" and c["open"]}
+    speakers = {
+        card["video_id"]: card for card in found if card["kind"] == "speaker" and card["open"]
+    }
     assert set(speakers) == {YOUTUBE_SOURCE, BEE_SOURCE}
 
 
 def test_landed_answers_are_deleted_and_unknown_ones_stay(database, kinds, corpus_id):
     store = Store(database)
     found = cards(database, kinds)
-    ambiguity = next(c for c in found if c["kind"] == "ambiguity")
+    ambiguity = next(card for card in found if card["kind"] == "ambiguity")
     answer(database, corpus_id, ambiguity, "Wren")
-    store.save_review_answer(corpus_id, "card-gone", "x", AT, created_by="test")
-    store.save_review_answer(corpus_id, "card-undone", "", AT, created_by="test")
+    store.save_review_answer(corpus_id, "card-gone", "x", ANSWERED_AT, created_by="test")
+    store.save_review_answer(corpus_id, "card-undone", "", ANSWERED_AT, created_by="test")
     report = apply(database, kinds)
     assert (report.answers_saved, report.verdicts_to_land, report.verdicts_landed) == (2, 2, 2)
     assert report.unknown_cards == 1 and report.sources_waiting_for_ai_cleanup == 2
-    left = [a["card_id"] for a in store.review_answers(corpus_id)]
+    left = [answer["card_id"] for answer in store.review_answers(corpus_id)]
     assert left == ["card-gone"]  # landed and undone answers are gone, the unknown one stays
     assert store.current_review_verdicts(BEE_SOURCE)["amb-0001"]["verdict"] == "Wren"
     assert store.current_review_verdicts(YOUTUBE_SOURCE)["amb-0001"]["verdict"] == "Wren"
@@ -115,13 +119,13 @@ def test_a_landed_answer_marks_the_kinds_stale_nodes(database, kinds, corpus_id)
                 provenance={},
                 created_by="test",
             )
-    ambiguity = next(c for c in cards(database, kinds) if c["kind"] == "ambiguity")
+    ambiguity = next(card for card in cards(database, kinds) if card["kind"] == "ambiguity")
     answer(database, corpus_id, ambiguity, "Ren")
     apply(database, kinds)
     state = {
-        (s, n): (store.artifact(s, n) or {})["state"]
-        for s in (YOUTUBE_SOURCE, BEE_SOURCE)
-        for n in ("pass3", "speaker_map", "model_cleanup")
+        (source_id, node_name): (store.artifact(source_id, node_name) or {})["state"]
+        for source_id in (YOUTUBE_SOURCE, BEE_SOURCE)
+        for node_name in ("pass3", "speaker_map", "model_cleanup")
     }
     assert state[(YOUTUBE_SOURCE, "pass3")] == "stale"
     assert state[(YOUTUBE_SOURCE, "speaker_map")] == "stale"
@@ -133,7 +137,9 @@ def test_a_speaker_answer_calls_the_kinds_rebuilder_and_only_for_its_kind(
     database, kinds, corpus_id
 ):
     speaker = next(
-        c for c in cards(database, kinds) if c["kind"] == "speaker" and c["video_id"] == BEE_SOURCE
+        card
+        for card in cards(database, kinds)
+        if card["kind"] == "speaker" and card["video_id"] == BEE_SOURCE
     )
     answer(database, corpus_id, speaker, "Fern")
     called: dict[str, set[str]] = {}
@@ -149,7 +155,9 @@ def test_a_speaker_answer_calls_the_kinds_rebuilder_and_only_for_its_kind(
 
 def test_a_name_the_owner_picked_is_never_overwritten(database, kinds, corpus_id):
     speaker = next(
-        c for c in cards(database, kinds) if c["kind"] == "speaker" and c["video_id"] == BEE_SOURCE
+        card
+        for card in cards(database, kinds)
+        if card["kind"] == "speaker" and card["video_id"] == BEE_SOURCE
     )
     write_source_map_named(kinds["bee"].sources_directory)
     answer(database, corpus_id, speaker, "Moss")
@@ -166,7 +174,7 @@ def write_source_map_named(directory):
 
 
 def test_only_one_kind_leaves_a_card_that_spans_kinds_for_the_other(database, kinds, corpus_id):
-    ambiguity = next(c for c in cards(database, kinds) if c["kind"] == "ambiguity")
+    ambiguity = next(card for card in cards(database, kinds) if card["kind"] == "ambiguity")
     answer(database, corpus_id, ambiguity, "Wren")
     report = apply(database, kinds, only_kinds=["bee"])
     store = Store(database)
@@ -179,7 +187,7 @@ def test_only_one_kind_leaves_a_card_that_spans_kinds_for_the_other(database, ki
 
 
 def test_a_dry_run_counts_and_writes_nothing(database, kinds, corpus_id):
-    ambiguity = next(c for c in cards(database, kinds) if c["kind"] == "ambiguity")
+    ambiguity = next(card for card in cards(database, kinds) if card["kind"] == "ambiguity")
     answer(database, corpus_id, ambiguity, "Wren")
     report = apply(database, kinds, dry_run=True)
     assert (report.verdicts_to_land, report.verdicts_landed, report.answers_cleared) == (2, 0, 0)
@@ -189,7 +197,7 @@ def test_a_dry_run_counts_and_writes_nothing(database, kinds, corpus_id):
 
 
 def test_a_failed_landing_leaves_every_answer(database, kinds, corpus_id, monkeypatch):
-    ambiguity = next(c for c in cards(database, kinds) if c["kind"] == "ambiguity")
+    ambiguity = next(card for card in cards(database, kinds) if card["kind"] == "ambiguity")
     answer(database, corpus_id, ambiguity, "Wren")
 
     def explode(*args, **more):
@@ -203,7 +211,9 @@ def test_a_failed_landing_leaves_every_answer(database, kinds, corpus_id, monkey
 
 def test_the_owner_name_is_offered_for_the_unnamed_label(database, kinds, corpus_id):
     speaker = next(
-        c for c in cards(database, kinds) if c["kind"] == "speaker" and c["video_id"] == BEE_SOURCE
+        card
+        for card in cards(database, kinds)
+        if card["kind"] == "speaker" and card["video_id"] == BEE_SOURCE
     )
     assert OWNER in speaker["names"]
 
@@ -219,11 +229,11 @@ def test_a_kind_without_its_rebuilder_leaves_its_answers_unlanded(database, kind
             kinds["bee"].sources_directory,
         ),
     }
-    ambiguity = next(c for c in cards(database, needing) if c["kind"] == "ambiguity")
+    ambiguity = next(card for card in cards(database, needing) if card["kind"] == "ambiguity")
     speaker = next(
-        c
-        for c in cards(database, needing)
-        if c["kind"] == "speaker" and c["video_id"] == BEE_SOURCE
+        card
+        for card in cards(database, needing)
+        if card["kind"] == "speaker" and card["video_id"] == BEE_SOURCE
     )
     answer(database, corpus_id, ambiguity, "Wren")
     answer(database, corpus_id, speaker, "Fern")
@@ -255,7 +265,7 @@ def test_a_dry_run_counts_what_a_kind_without_its_rebuilder_would_leave(database
             kinds["bee"].sources_directory,
         ),
     }
-    ambiguity = next(c for c in cards(database, needing) if c["kind"] == "ambiguity")
+    ambiguity = next(card for card in cards(database, needing) if card["kind"] == "ambiguity")
     answer(database, corpus_id, ambiguity, "Wren")
     report = apply(database, needing, dry_run=True, only_kinds=["bee"])
     assert report.verdicts_left_unlanded == {"bee": 1} and report.verdicts_to_land == 0

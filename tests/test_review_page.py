@@ -26,9 +26,9 @@ from corpuslm.store import Store
 
 @pytest.fixture
 def database(tmp_path):
-    d = db.Database(tmp_path / "transcript.sqlite")
-    yield d
-    d.close()
+    database_handle = db.Database(tmp_path / "transcript.sqlite")
+    yield database_handle
+    database_handle.close()
 
 
 @pytest.fixture
@@ -52,11 +52,11 @@ def build(database, sources_directory, kind=BEE_KIND):
 
 def test_one_card_per_distinct_span_across_sources(database, sources_directory, corpus):
     data = build(database, sources_directory)
-    ambiguity_cards = [c for c in data["cards"] if c["kind"] == "ambiguity"]
+    ambiguity_cards = [card for card in data["cards"] if card["kind"] == "ambiguity"]
     assert len(ambiguity_cards) == 1
     card = ambiguity_cards[0]
     assert card["count"] == 2 and card["span_norm"] == "wren"
-    assert [(i["video_id"], i["key"], i["at"]) for i in card["items"]] == [
+    assert [(item["video_id"], item["key"], item["at"]) for item in card["items"]] == [
         (BEE_SOURCE, "amb-0001", "0:05"),
         (SECOND_BEE_SOURCE, "amb-0001", "0:09"),
     ]
@@ -67,9 +67,11 @@ def test_one_card_per_distinct_span_across_sources(database, sources_directory, 
 
 def test_a_kind_without_links_gives_time_labels_only(database, sources_directory, corpus):
     data = build(database, sources_directory)
-    card = next(c for c in data["cards"] if c["kind"] == "ambiguity")
-    speaker = next(c for c in data["cards"] if c["kind"] == "speaker" and c["role"] == "Unknown")
-    assert card["first"]["url"] is None and all(i["url"] is None for i in card["items"])
+    card = next(card for card in data["cards"] if card["kind"] == "ambiguity")
+    speaker = next(
+        card for card in data["cards"] if card["kind"] == "speaker" and card["role"] == "Unknown"
+    )
+    assert card["first"]["url"] is None and all(item["url"] is None for item in card["items"])
     assert speaker["url"] is None and speaker["at"] == "0:05"
     html = review_page.render(data)
     assert "url ? `<a href=" in html and "<span>${esc(at)}</span>" in html
@@ -82,7 +84,7 @@ def test_a_kind_with_links_keeps_the_original_link_script_and_its_footnote(
     database, sources_directory, corpus
 ):
     data = build(database, sources_directory, LINKED_KIND)
-    card = next(c for c in data["cards"] if c["kind"] == "ambiguity")
+    card = next(card for card in data["cards"] if card["kind"] == "ambiguity")
     assert card["first"]["url"] == f"https://example.test/{BEE_SOURCE}?t=5s"
     html = review_page.render(data, links_note=LINKED_KIND.links_note)
     assert "url ? `<a href=" not in html and "const link = (url, at) => `<a href=" in html
@@ -93,7 +95,7 @@ def test_the_unknown_speaker_is_an_open_card_with_the_names_heard_and_offered(
     database, sources_directory, corpus
 ):
     data = build(database, sources_directory)
-    speakers = {c["role"]: c for c in data["cards"] if c["kind"] == "speaker"}
+    speakers = {card["role"]: card for card in data["cards"] if card["kind"] == "speaker"}
     unknown = speakers["Unknown"]
     assert (unknown["open"], unknown["resolved"], unknown["key"]) == (True, False, "spk-1")
     assert unknown["names"] == ["Ren", OWNER]
@@ -106,7 +108,9 @@ def test_summary_headings_and_vocabulary_terms_are_never_offered_as_speaker_name
     database, sources_directory, corpus
 ):
     data = build(database, sources_directory)
-    offered = {name for c in data["cards"] if c["kind"] == "speaker" for name in c["names"]}
+    offered = {
+        name for card in data["cards"] if card["kind"] == "speaker" for name in card["names"]
+    }
     assert offered == {"Ren", OWNER}
     assert not offered & set(SUMMARY_HEADINGS)
 
@@ -118,7 +122,9 @@ def test_a_name_the_owner_already_picked_is_offered_for_the_other_labels(
         source_id=BEE_SOURCE, role="Speaker 2", name="Fern", created_by="test"
     )
     unknown = next(
-        c for c in build(database, sources_directory)["cards"] if c.get("role") == "Unknown"
+        card
+        for card in build(database, sources_directory)["cards"]
+        if card.get("role") == "Unknown"
     )
     assert unknown["names"] == ["Ren", OWNER, "Fern"]
 
@@ -128,7 +134,9 @@ def test_a_kind_can_add_names_to_the_speaker_picker(database, sources_directory,
 
     kind = replace(BEE_KIND, extra_speaker_names=lambda source: ["Moss", "Fern"])
     unknown = next(
-        c for c in build(database, sources_directory, kind)["cards"] if c.get("role") == "Unknown"
+        card
+        for card in build(database, sources_directory, kind)["cards"]
+        if card.get("role") == "Unknown"
     )
     assert unknown["names"] == ["Ren", OWNER, "Moss", "Fern"]
 
@@ -140,7 +148,7 @@ def test_an_owner_named_speaker_is_not_to_do_and_is_listed_first(
         sources_directory, bee_speaker_map(unknown_status="AUTHOR", unknown_name="Fern")
     )
     data = build(database, sources_directory)
-    unknown = next(c for c in data["cards"] if c.get("role") == "Unknown")
+    unknown = next(card for card in data["cards"] if card.get("role") == "Unknown")
     assert (unknown["open"], unknown["resolved"], unknown["current"]) == (False, True, "Fern")
     assert unknown["names"][0] == "Fern"
     assert data["open_items"] == 2
@@ -164,10 +172,12 @@ def test_a_resolved_item_never_rejoins_an_open_card(database, sources_directory,
     (sources_directory / BEE_SOURCE / "transcript.json").write_text(
         json.dumps(bee_transcript(ambiguities=[done]))
     )
-    cards = [c for c in build(database, sources_directory)["cards"] if c["kind"] == "ambiguity"]
-    assert sorted((c["resolved"], c["count"]) for c in cards) == [(False, 1), (True, 1)]
-    open_card = next(c for c in cards if not c["resolved"])
-    assert [i["video_id"] for i in open_card["items"]] == [SECOND_BEE_SOURCE]
+    cards = [
+        card for card in build(database, sources_directory)["cards"] if card["kind"] == "ambiguity"
+    ]
+    assert sorted((card["resolved"], card["count"]) for card in cards) == [(False, 1), (True, 1)]
+    open_card = next(card for card in cards if not card["resolved"])
+    assert [item["video_id"] for item in open_card["items"]] == [SECOND_BEE_SOURCE]
 
 
 def test_capped_and_expired_items_stay_off_the_page(database, sources_directory, corpus):
@@ -177,15 +187,17 @@ def test_capped_and_expired_items_stay_off_the_page(database, sources_directory,
         json.dumps(bee_transcript(ambiguities=[capped, expired]))
     )
     spans = [
-        c["span"] for c in build(database, sources_directory)["cards"] if c["kind"] == "ambiguity"
+        card["span"]
+        for card in build(database, sources_directory)["cards"]
+        if card["kind"] == "ambiguity"
     ]
     assert spans == ["Wren"]  # only the second recording's
 
 
 def test_decisions_map_back_to_one_verdict_per_key(database, sources_directory, corpus):
     data = build(database, sources_directory)
-    card = next(c for c in data["cards"] if c["kind"] == "ambiguity")
-    speaker = next(c for c in data["cards"] if c.get("role") == "Unknown")
+    card = next(card for card in data["cards"] if card["kind"] == "ambiguity")
+    speaker = next(card for card in data["cards"] if card.get("role") == "Unknown")
     verdicts, unknown = review_page.decisions_to_verdicts(
         database,
         sources_directory,
@@ -202,7 +214,10 @@ def test_decisions_map_back_to_one_verdict_per_key(database, sources_directory, 
         kind=BEE_KIND,
     )
     assert unknown == ["nope"]
-    assert [(v["video_id"], v["key"], v["kind"], v["verdict"]) for v in verdicts] == [
+    assert [
+        (verdict["video_id"], verdict["key"], verdict["kind"], verdict["verdict"])
+        for verdict in verdicts
+    ] == [
         (BEE_SOURCE, "amb-0001", "ambiguity", "Ren"),
         (SECOND_BEE_SOURCE, "amb-0001", "ambiguity", "Ren"),
         (BEE_SOURCE, "spk-1", "speaker", "Wren"),
@@ -222,13 +237,19 @@ def test_split_cuts_by_whole_corpora_and_never_trims(database, sources_directory
     store = Store(database)
     add_corpus_of_bee_sources(store, "Drives", [])
     document = review_page.workspace_data(database, sources_directory, kind=BEE_KIND)
-    assert [c["corpus"] for c in document["corpora"]] == ["Walks", "Drives"]  # open items first
+    assert [corpus_entry["corpus"] for corpus_entry in document["corpora"]] == [
+        "Walks",
+        "Drives",
+    ]  # open items first
     assert review_page.split(document, page_bytes=10**7) == [document]
     parts = review_page.split(document, page_bytes=1)
-    assert [[c["corpus"] for c in p["corpora"]] for p in parts] == [["Walks"], ["Drives"]]
-    assert sum(len(c["cards"]) for p in parts for c in p["corpora"]) == len(
-        document["corpora"][0]["cards"]
-    )
+    assert [[corpus_entry["corpus"] for corpus_entry in part["corpora"]] for part in parts] == [
+        ["Walks"],
+        ["Drives"],
+    ]
+    assert sum(
+        len(corpus_entry["cards"]) for part in parts for corpus_entry in part["corpora"]
+    ) == len(document["corpora"][0]["cards"])
 
 
 def test_pages_are_written_atomically_one_file_per_part(
@@ -237,8 +258,11 @@ def test_pages_are_written_atomically_one_file_per_part(
     add_corpus_of_bee_sources(Store(database), "Drives", [])
     document = review_page.workspace_data(database, sources_directory, kind=BEE_KIND)
     written = review_page.write_pages(document, tmp_path / "out" / "page.html", page_bytes=1)
-    assert [w["cards"] for w in written] == [3, 0]
-    assert [w["path"].rsplit("/", 1)[-1] for w in written] == ["page.html", "page-2.html"]
+    assert [written_page["cards"] for written_page in written] == [3, 0]
+    assert [written_page["path"].rsplit("/", 1)[-1] for written_page in written] == [
+        "page.html",
+        "page-2.html",
+    ]
     text = (tmp_path / "out" / "page.html").read_text(encoding="utf-8")
     assert "<title>Corpus review (1/2)</title>" in text
     assert (
@@ -267,7 +291,7 @@ def test_a_workspace_page_lists_only_the_corpora_of_its_kind(database, sources_d
 
     def names(kind):
         data = review_page.workspace_data(database, sources_directory, kind=kind)
-        return [c["corpus"] for c in data["corpora"]]
+        return [corpus_entry["corpus"] for corpus_entry in data["corpora"]]
 
     assert sorted(names(BEE_KIND)) == ["Empty", "Walks"]
     assert sorted(names(LINKED_KIND)) == ["Empty", "Talks"]
@@ -287,4 +311,6 @@ def test_a_kind_with_its_own_schema_reads_documents_the_shared_one_rejects(
     with pytest.raises(schemas.SchemaError):
         build(database, sources_directory)
     kind = replace(BEE_KIND, refined_schema=transcript.with_free_labels())
-    assert any(c["kind"] == "ambiguity" for c in build(database, sources_directory, kind)["cards"])
+    assert any(
+        card["kind"] == "ambiguity" for card in build(database, sources_directory, kind)["cards"]
+    )

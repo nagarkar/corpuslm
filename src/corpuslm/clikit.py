@@ -49,7 +49,7 @@ def verb_summaries(parser: argparse.ArgumentParser, prefix: str = "") -> list[tu
     action = subparsers(parser)
     if action is None:
         return out
-    helps = {a.dest: a.help for a in action._choices_actions}
+    helps = {choice_action.dest: choice_action.help for choice_action in action._choices_actions}
     for name, sub in action.choices.items():
         full = f"{prefix}{name}"
         if subparsers(sub):
@@ -107,23 +107,25 @@ def extract_options(
     seen: set[str] = set()
     values: dict[str, list[str]] = {name: [] for name in valued}
     argv = list(argv)
-    i = 0
-    while i < len(argv):
-        a = argv[i]
-        if a == "--":
-            rest += argv[i:]
+    argument_index = 0
+    while argument_index < len(argv):
+        argument = argv[argument_index]
+        if argument == "--":
+            rest += argv[argument_index:]
             break
-        if a in flags:
-            seen.add(a)
-        elif a in valued and i + 1 < len(argv):
-            values[a].append(argv[i + 1])
-            i += 1
-        elif any(a.startswith(v + "=") for v in valued):
-            name = next(v for v in valued if a.startswith(v + "="))
-            values[name].append(a[len(name) + 1 :])
+        if argument in flags:
+            seen.add(argument)
+        elif argument in valued and argument_index + 1 < len(argv):
+            values[argument].append(argv[argument_index + 1])
+            argument_index += 1
+        elif any(argument.startswith(option_name + "=") for option_name in valued):
+            name = next(
+                option_name for option_name in valued if argument.startswith(option_name + "=")
+            )
+            values[name].append(argument[len(name) + 1 :])
         else:
-            rest.append(a)
-        i += 1
+            rest.append(argument)
+        argument_index += 1
     return rest, seen, values
 
 
@@ -136,8 +138,8 @@ def completion_tree(parser: argparse.ArgumentParser, path: str = "") -> dict[str
         for name, sub in action.choices.items():
             words.append(name)
             out |= completion_tree(sub, f"{path} {name}".strip())
-    for a in parser._actions:
-        words += [o for o in a.option_strings if o.startswith("--")]
+    for parser_action in parser._actions:
+        words += [option for option in parser_action.option_strings if option.startswith("--")]
     out[path] = words
     return out
 
@@ -151,33 +153,35 @@ def bash_completion(
     """A bash completion script generated from the parser each time it is printed (bash 3.2
     compatible: no associative arrays). The global flags are offered everywhere."""
     tree = completion_tree(parser)
-    cases = "\n".join(f'    "{k}") echo "{" ".join(v)}" ;;' for k, v in sorted(tree.items()))
-    known = "|".join(f'"{k}"' for k in sorted(tree) if k)
-    fn = prog.replace("-", "_")
+    cases = "\n".join(
+        f'    "{command}") echo "{" ".join(words)}" ;;' for command, words in sorted(tree.items())
+    )
+    known = "|".join(f'"{command}"' for command in sorted(tree) if command)
+    shell_id = prog.replace("-", "_")
     flags = " ".join(global_flags)
     names = " ".join(launchers)
     return f"""# {prog} bash completion, generated from the argument parser.
 # Load it with: eval "$({launchers[-1]} completion bash)"
-_{fn}_words() {{
+_{shell_id}_words() {{
   case "$1" in
 {cases}
   esac
 }}
-_{fn}_known() {{
+_{shell_id}_known() {{
   case "$1" in
     {known}) return 0 ;;
     *) return 1 ;;
   esac
 }}
-_{fn}() {{
+_{shell_id}() {{
   local path="" next w i
   for ((i = 1; i < COMP_CWORD; i++)); do
     w="${{COMP_WORDS[i]}}"
     case "$w" in -*) continue ;; esac
     if [ -z "$path" ]; then next="$w"; else next="$path $w"; fi
-    if _{fn}_known "$next"; then path="$next"; fi
+    if _{shell_id}_known "$next"; then path="$next"; fi
   done
-  COMPREPLY=($(compgen -W "$(_{fn}_words "$path") {flags}" -- "${{COMP_WORDS[COMP_CWORD]}}"))
+  COMPREPLY=($(compgen -W "$(_{shell_id}_words "$path") {flags}" -- "${{COMP_WORDS[COMP_CWORD]}}"))
 }}
-complete -F _{fn} {names}
+complete -F _{shell_id} {names}
 """

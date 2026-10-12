@@ -172,7 +172,9 @@ def load(path: Path) -> ReviewSettings:
 
 def kind_setups(settings: ReviewSettings) -> dict[str, KindSetup]:
     """Each source kind's review kind and the folder of its per-source documents."""
-    kinds = kinds_for_settings({name: k.owner_first_name for name, k in settings.kinds.items()})
+    kinds = kinds_for_settings(
+        {name: kind_settings.owner_first_name for name, kind_settings in settings.kinds.items()}
+    )
     return {name: KindSetup(kinds[name], settings.kinds[name].directory) for name in kinds}
 
 

@@ -87,7 +87,9 @@ def save_ambiguity_answer(config) -> None:
     settings = review_settings.load(config)
     database = db.Database(settings.database)
     data = review_page.workspace_data_by_kind(database, review_settings.kind_setups(settings))
-    card = next(c for c in data["corpora"][0]["cards"] if c["kind"] == "ambiguity")
+    card = next(
+        candidate for candidate in data["corpora"][0]["cards"] if candidate["kind"] == "ambiguity"
+    )
     Store(database).save_review_answer(
         data["corpora"][0]["corpus_id"], card["id"], "Wren", "2026-10-09T10:00:00Z", created_by="t"
     )
@@ -186,7 +188,9 @@ def test_the_launch_agent_template_names_the_verb_and_the_settings_file_only():
     agent = plistlib.loads(path.read_bytes())
     arguments = agent["ProgramArguments"]
     assert arguments[1:6] == ["-m", "corpuslm.cli", "review", "serve", "--config"]
-    assert not any(a.endswith(".sqlite") for a in arguments)  # the database path is in the file
+    assert not any(
+        argument.endswith(".sqlite") for argument in arguments
+    )  # the database path is in the file
     assert agent["Label"] == "com.nagarkar.corpuslm.review"
     assert agent["RunAtLoad"] is True and agent["KeepAlive"] is True
     assert agent["ThrottleInterval"] == 10

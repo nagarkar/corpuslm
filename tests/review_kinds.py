@@ -46,10 +46,12 @@ def segment(
     }
 
 
-def ambiguity(key: str, idx: int, span: str, pick: str, candidates: list[str], **more) -> dict:
+def ambiguity(
+    key: str, segment_index: int, span: str, pick: str, candidates: list[str], **more
+) -> dict:
     return {
         "key": key,
-        "idx": idx,
+        "idx": segment_index,
         "span": span,
         "pick": pick,
         "candidates": candidates,

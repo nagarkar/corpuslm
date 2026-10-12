@@ -43,9 +43,9 @@ def test_doctor_on_a_missing_file_fails_loudly_and_creates_nothing(tmp_path, cap
 
 def test_doctor_names_a_newer_schema(tmp_path, capsys):
     path = tmp_path / "transcript.sqlite"
-    conn = sqlite3.connect(path)
-    conn.execute(f"PRAGMA user_version = {db.USER_VERSION + 1}")
-    conn.close()
+    connection = sqlite3.connect(path)
+    connection.execute(f"PRAGMA user_version = {db.USER_VERSION + 1}")
+    connection.close()
     assert cli.main(["doctor", str(path), "--json"]) == 1
     assert "newer than this corpuslm" in _board(capsys)["problems"][0]
 

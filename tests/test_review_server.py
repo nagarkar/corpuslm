@@ -91,8 +91,11 @@ def test_the_page_and_health_are_served_and_the_page_is_built_for_each_request(d
 def test_answers_round_trip_set_get_list_delete(server, corpora):
     _, first, second = corpora
     path = f"reviews/{first}/items/card-1"
-    at = "2026-10-09T10:00:00Z"
-    assert call(server, "set", {"path": path, "data": {"verdict": "Wren", "at": at}})[0] == 200
+    answered_at = "2026-10-09T10:00:00Z"
+    assert (
+        call(server, "set", {"path": path, "data": {"verdict": "Wren", "at": answered_at}})[0]
+        == 200
+    )
     assert (
         call(server, "set", {"path": f"reviews/{first}/items/card-2", "data": {"verdict": ""}})[0]
         == 200
@@ -103,7 +106,7 @@ def test_answers_round_trip_set_get_list_delete(server, corpora):
     )
     assert call(server, "get", {"path": path}) == (
         200,
-        {"result": {"verdict": "Wren", "at": at}},
+        {"result": {"verdict": "Wren", "at": answered_at}},
     )
     status, listed = call(server, "list", {"collection": f"reviews/{first}/items"})
     assert [row["id"] for row in listed["result"]] == ["card-1", "card-2"]
@@ -149,14 +152,18 @@ def test_the_server_will_not_bind_a_public_address(documents):
 def test_two_taps_at_once_both_land(server, documents, corpora):
     _, first, _ = corpora
 
-    def tap(n):
-        call(server, "set", {"path": f"reviews/{first}/items/c{n}", "data": {"verdict": str(n)}})
+    def tap(tap_number):
+        call(
+            server,
+            "set",
+            {"path": f"reviews/{first}/items/c{tap_number}", "data": {"verdict": str(tap_number)}},
+        )
 
-    threads = [threading.Thread(target=tap, args=(n,)) for n in range(25)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+    threads = [threading.Thread(target=tap, args=(tap_number,)) for tap_number in range(25)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
     assert len(documents.list(f"reviews/{first}/items")) == 25
 
 
@@ -205,7 +212,7 @@ def test_saved_answers_become_a_decisions_file_that_lands_as_verdicts(tmp_path):
         write_source(sources, BEE_SOURCE, bee_transcript(), bee_speaker_map())
         write_source(sources, SECOND_BEE_SOURCE, bee_transcript())
         data = review_page.page_data(database, sources, "Walks", kind=BEE_KIND)
-        speaker = next(c for c in data["cards"] if c.get("role") == "Unknown")
+        speaker = next(card for card in data["cards"] if card.get("role") == "Unknown")
         documents.set(
             f"{data['collection']}/{speaker['id']}",
             {"verdict": "Wren", "at": "2026-10-09T10:00:00.123Z"},

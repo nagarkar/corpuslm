@@ -22,9 +22,9 @@ def _parser():
 
 
 def test_a_usage_error_exits_one():
-    with pytest.raises(SystemExit) as e:
+    with pytest.raises(SystemExit) as raised:
         _parser().parse_args(["bogus"])
-    assert e.value.code == 1
+    assert raised.value.code == 1
 
 
 def test_help_lists_every_leaf_and_walks_down_to_a_subverb():

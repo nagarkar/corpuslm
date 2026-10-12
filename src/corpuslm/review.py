@@ -127,14 +127,14 @@ def speaker_names(
 
     add(entry.get("name"))
     if entry.get("status") == "NEEDS_AUTHOR" and entry.get("anchor"):
-        for n in re.findall(r"([^;(]+) \(", entry["anchor"]):
-            add(n)
+        for candidate_name in re.findall(r"([^;(]+) \(", entry["anchor"]):
+            add(candidate_name)
     for other in (speaker_map.get("roles") or {}).values():
         add(other.get("name"))
-    for n in kind_names:
-        add(n)
-    for n in picked:
-        add(n)
+    for candidate_name in kind_names:
+        add(candidate_name)
+    for candidate_name in picked:
+        add(candidate_name)
     return names
 
 
@@ -153,32 +153,39 @@ def render_review(
     pending: list[str] = []
     resolved: list[str] = []
     segments = (document or {}).get("segments", [])
-    for a in (document or {}).get("ambiguities") or []:
-        segment = segments[a["idx"]] if a["idx"] < len(segments) else {"t0": 0, "text": ""}
-        if a["status"] == "pending":
-            context = segment["text"].replace(a["pick"], f"**{a['pick']}**", 1)
+    for ambiguity in (document or {}).get("ambiguities") or []:
+        segment = (
+            segments[ambiguity["idx"]]
+            if ambiguity["idx"] < len(segments)
+            else {"t0": 0, "text": ""}
+        )
+        if ambiguity["status"] == "pending":
+            context = segment["text"].replace(ambiguity["pick"], f"**{ambiguity['pick']}**", 1)
             moment = moment_label(kind, source_row, segment["t0"])
             pending += [
-                f'> [!question] {a["key"]} · {moment} · heard "{a["span"]}"',
+                f'> [!question] {ambiguity["key"]} · {moment} · heard "{ambiguity["span"]}"',
                 f"> {context}",
             ]
-            for c in a["candidates"]:
-                pending.append(f"> - [ ] {c}")
+            for candidate in ambiguity["candidates"]:
+                pending.append(f"> - [ ] {candidate}")
             pending += [f"> - [ ] {OTHER}", f"> - [ ] {SKIP}", ""]
-        elif a["status"] in ("resolved", "auto_resolved"):
+        elif ambiguity["status"] in ("resolved", "auto_resolved"):
             origin = (
-                f" (auto-resolved from {a.get('origin', '')})"
-                if a["status"] == "auto_resolved"
+                f" (auto-resolved from {ambiguity.get('origin', '')})"
+                if ambiguity["status"] == "auto_resolved"
                 else ""
             )
-            resolved.append(f'> - {a["key"]} → "{a.get("resolution", a["pick"])}"{origin}')
-        elif a["status"] == "capped":
             resolved.append(
-                f'> - {a["key"]} → "{a["pick"]}" (capped: the model\'s pick '
+                f"> - {ambiguity['key']} → "
+                f'"{ambiguity.get("resolution", ambiguity["pick"])}"{origin}'
+            )
+        elif ambiguity["status"] == "capped":
+            resolved.append(
+                f'> - {ambiguity["key"]} → "{ambiguity["pick"]}" (capped: the model\'s pick '
                 "stands; raise [cleanup].max_new_ambiguities to review it)"
             )
-        elif a["status"] == "expired":
-            resolved.append(f'> - {a["key"]} → "{a["pick"]}" (expired, unreviewed)')
+        elif ambiguity["status"] == "expired":
+            resolved.append(f'> - {ambiguity["key"]} → "{ambiguity["pick"]}" (expired, unreviewed)')
     for role, entry in ((speaker_map or {}).get("roles") or {}).items():
         if entry.get("status") == "NEEDS_AUTHOR":
             heard = f" Heard: {entry['anchor']}" if entry.get("anchor") else ""
@@ -196,9 +203,10 @@ def render_review(
         # rebuilt transcript no longer carries is shown here, with what it said.
         pending += ["> [!warning] Unplaced verdicts (the transcript changed under them)"]
         pending += [
-            f'> - {u["key"]} heard "{u["span"]}" → "{u["verdict"]}"; re-answer '
+            f'> - {unplaced_verdict["key"]} heard "{unplaced_verdict["span"]}" '
+            f'→ "{unplaced_verdict["verdict"]}"; re-answer '
             "the new item if it reappears"
-            for u in unplaced
+            for unplaced_verdict in unplaced
         ]
         pending.append("")
     if not pending and not resolved:
@@ -252,29 +260,29 @@ def parse_note(
             items[key] = None
         key, checked, seen_any = None, [], False
 
-    for i, line in enumerate(text.splitlines()):
-        if i == 0 and line.strip() == "---":
+    for line_number, line in enumerate(text.splitlines()):
+        if line_number == 0 and line.strip() == "---":
             in_front = True
             continue
         if in_front:
             if line.strip() == "---":
                 in_front = False
                 continue
-            m = front_speaker.match(line)
-            if m:
-                speakers[m.group("role")] = m.group("name").replace('\\"', '"')
+            item_match = front_speaker.match(line)
+            if item_match:
+                speakers[item_match.group("role")] = item_match.group("name").replace('\\"', '"')
             continue
-        m = item_line.match(line)
-        if m:
+        item_match = item_line.match(line)
+        if item_match:
             close()
-            key = m.group("key")
+            key = item_match.group("key")
             continue
         if key is not None:
-            b = _BOX.match(line)
-            if b:
+            box_match = _BOX.match(line)
+            if box_match:
                 seen_any = True
-                if b.group("mark") in "xX":
-                    checked.append(b.group("label").strip())
+                if box_match.group("mark") in "xX":
+                    checked.append(box_match.group("label").strip())
                 continue
             if not line.startswith(">"):
                 close()
@@ -367,13 +375,13 @@ def verdict_kind(verdict: str) -> str:
     same span again."""
     from .basic_cleanup import is_dictionary_word
 
-    words = [w.strip(".,;:!?\"'()") for w in verdict.split()]
-    words = [w for w in words if w]
+    words = [word.strip(".,;:!?\"'()") for word in verdict.split()]
+    words = [word for word in words if word]
     if not words:
         return "reading"
-    if any(w[:1].isupper() for w in words):
+    if any(word[:1].isupper() for word in words):
         return "term"
-    if any(not is_dictionary_word(w) for w in words if w.isalpha()):
+    if any(not is_dictionary_word(word) for word in words if word.isalpha()):
         return "term"
     return "reading"
 
@@ -383,15 +391,15 @@ def rekind_corrections(db) -> int:
     is written forward as a new row. Returns the number changed."""
     store = Store(db)
     changed = 0
-    for r in store.current_corrections().values():
-        kind = verdict_kind(r["verdict"])
-        if kind != r["kind"]:
+    for correction in store.current_corrections().values():
+        kind = verdict_kind(correction["verdict"])
+        if kind != correction["kind"]:
             store.append_correction(
-                span_norm=r["span_norm"],
-                verdict=r["verdict"],
+                span_norm=correction["span_norm"],
+                verdict=correction["verdict"],
                 kind=kind,
-                origin_source=r["origin_source"],
-                origin_key=r["origin_key"],
+                origin_source=correction["origin_source"],
+                origin_key=correction["origin_key"],
                 created_by="rekind",
             )
             changed += 1
@@ -409,7 +417,10 @@ def verdicts_for(db, source_id: str) -> dict[str, dict]:
 def term_vocabulary(db) -> dict[str, str]:
     """Correction memory verdicts of kind `term`: mis-hearing → protected form,
     for the basic cleanup (corpuslm.basic_cleanup)."""
-    return {norm: r["verdict"] for norm, r in Store(db).current_corrections(kind="term").items()}
+    return {
+        norm: correction["verdict"]
+        for norm, correction in Store(db).current_corrections(kind="term").items()
+    }
 
 
 # ---- reconcile after a rebuild ----------------------------------------------------
@@ -426,11 +437,11 @@ def candidates_offered(ambiguity: dict) -> list[str]:
     return list(out.values())
 
 
-def apply_resolution(document: dict, a: dict, resolution: str) -> None:
+def apply_resolution(document: dict, ambiguity: dict, resolution: str) -> None:
     if resolution == SKIP:
         return
-    segment = document["segments"][a["idx"]]
-    for needle in (a["pick"], a["span"], *a["candidates"]):
+    segment = document["segments"][ambiguity["idx"]]
+    for needle in (ambiguity["pick"], ambiguity["span"], *ambiguity["candidates"]):
         if needle and needle in segment["text"]:
             segment.setdefault("raw", segment["text"])
             segment["text"] = segment["text"].replace(needle, resolution, 1)
@@ -458,26 +469,33 @@ def reconcile(
     }
     corpus_text = "\n".join(segment["text"] for segment in document["segments"])
     by_norm: dict[str, dict] = {}
-    for a in document.get("ambiguities") or []:
-        by_norm.setdefault(normalize_span(a["span"]), a)
+    for ambiguity in document.get("ambiguities") or []:
+        by_norm.setdefault(normalize_span(ambiguity["span"]), ambiguity)
     placed: set[str] = set()
-    for key, v in verdicts.items():
-        if v["kind"] != "ambiguity":
+    for key, verdict in verdicts.items():
+        if verdict["kind"] != "ambiguity":
             continue
         target = None
-        candidate = next((a for a in document.get("ambiguities") or [] if a["key"] == key), None)
+        candidate = next(
+            (
+                ambiguity
+                for ambiguity in document.get("ambiguities") or []
+                if ambiguity["key"] == key
+            ),
+            None,
+        )
         if candidate and normalize_span(candidate["span"]) == normalize_span(
-            v["span"] or candidate["span"]
+            verdict["span"] or candidate["span"]
         ):
             target = candidate
-        elif v["span"] and normalize_span(v["span"]) in by_norm:
-            target = by_norm[normalize_span(v["span"])]
+        elif verdict["span"] and normalize_span(verdict["span"]) in by_norm:
+            target = by_norm[normalize_span(verdict["span"])]
         if target is None or target["key"] in placed:
             # The basic cleanup's correction memory may already have written this correction
             # into the transcript, so the model never asked again: applied,
             # not lost (owner work is never dropped silently). Checked
             # near the segment the verdict was given on when that is known.
-            index = (loads(v.get("metadata"), {}) or {}).get("idx")
+            index = (loads(verdict.get("metadata"), {}) or {}).get("idx")
             if isinstance(index, int):
                 near = " ".join(
                     segment["text"]
@@ -485,31 +503,31 @@ def reconcile(
                 )
             else:
                 near = corpus_text
-            if v["verdict"] != SKIP and v["verdict"] in near:
+            if verdict["verdict"] != SKIP and verdict["verdict"] in near:
                 counts["already_applied"] += 1
                 continue
             counts["unplaced"] += 1
             counts["unplaced_items"].append(
-                {"key": key, "span": v.get("span", ""), "verdict": v["verdict"]}
+                {"key": key, "span": verdict.get("span", ""), "verdict": verdict["verdict"]}
             )
             continue
         placed.add(target["key"])
         target["status"] = "resolved"
-        target["resolution"] = v["verdict"]
-        target["resolved_at"] = v.get("applied_at") or now_iso(now)
-        apply_resolution(document, target, v["verdict"])
+        target["resolution"] = verdict["verdict"]
+        target["resolved_at"] = verdict.get("applied_at") or now_iso(now)
+        apply_resolution(document, target, verdict["verdict"])
         counts["carried"] += 1
     today = now.astimezone(UTC).strftime("%Y-%m-%d")
-    for a in document.get("ambiguities") or []:
-        if a["status"] != "pending" or a["key"] in placed:
+    for ambiguity in document.get("ambiguities") or []:
+        if ambiguity["status"] != "pending" or ambiguity["key"] in placed:
             continue
-        hit = memory.get(normalize_span(a["span"]))
+        hit = memory.get(normalize_span(ambiguity["span"]))
         if not hit:
             continue
-        a["status"] = "auto_resolved"
-        a["resolution"] = hit["verdict"]
-        a["origin"] = f"{hit['origin_source']} {hit.get('created_at', today)[:10]}"
-        a["resolved_at"] = now_iso(now)
-        apply_resolution(document, a, hit["verdict"])
+        ambiguity["status"] = "auto_resolved"
+        ambiguity["resolution"] = hit["verdict"]
+        ambiguity["origin"] = f"{hit['origin_source']} {hit.get('created_at', today)[:10]}"
+        ambiguity["resolved_at"] = now_iso(now)
+        apply_resolution(document, ambiguity, hit["verdict"])
         counts["auto_resolved"] += 1
     return counts

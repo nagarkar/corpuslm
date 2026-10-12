@@ -138,36 +138,38 @@ def page_data_by_kind(db, kinds: Mapping[str, KindSetup], corpus_name: str) -> d
         t_path = sources_directory / video_id / "transcript.json"
         if not t_path.exists():
             continue
-        t = transcript_loads(t_path.read_text("utf-8"), refined_schema=kind.refined_schema)
-        segments = t["segments"]
-        for a in t.get("ambiguities") or []:
-            if a["status"] in ("capped", "expired"):
+        transcript = transcript_loads(t_path.read_text("utf-8"), refined_schema=kind.refined_schema)
+        segments = transcript["segments"]
+        for ambiguity in transcript.get("ambiguities") or []:
+            if ambiguity["status"] in ("capped", "expired"):
                 continue
             # A pick the arbiter applied stays answerable until the owner
             # answers it (ytlm.arbiter), but is not to-do.
-            jev = a.get("arbiter") if a["status"] == "auto_resolved" else None
-            resolved = a["status"] != "pending" and not jev
-            if a["status"] == "pending":
+            jev = ambiguity.get("arbiter") if ambiguity["status"] == "auto_resolved" else None
+            resolved = ambiguity["status"] != "pending" and not jev
+            if ambiguity["status"] == "pending":
                 open_items += 1
-            segment = segments[a["idx"]]
-            norm = normalize_span(a["span"])
+            segment = segments[ambiguity["idx"]]
+            norm = normalize_span(ambiguity["span"])
             # A resolved item never joins an open card (ytlm.review: never re-asked). A
             # Jev-picked item groups like a pending one, so its card keeps the
             # id it had while pending and an answer saved on the page before
             # Jev ran still lands on it.
-            gkey = norm if not resolved else f"{norm}\x1f{video_id}\x1f{a['key']}"
-            g = groups.get(gkey)
-            if g is None:
-                g = groups[gkey] = {
+            gkey = norm if not resolved else f"{norm}\x1f{video_id}\x1f{ambiguity['key']}"
+            group = groups.get(gkey)
+            if group is None:
+                group = groups[gkey] = {
                     "id": _card_id("amb", corpus["id"], gkey),
                     "kind": "ambiguity",
-                    "span": a["span"],
+                    "span": ambiguity["span"],
                     "span_norm": norm,
                     "resolved": resolved,
-                    "resolution": a.get("resolution", "") if resolved else "",
-                    "candidates": list(dict.fromkeys(a["candidates"])),
-                    "pick": a["pick"],
-                    "context": _context(segment, a["span"], a.get("resolution") or a["pick"]),
+                    "resolution": ambiguity.get("resolution", "") if resolved else "",
+                    "candidates": list(dict.fromkeys(ambiguity["candidates"])),
+                    "pick": ambiguity["pick"],
+                    "context": _context(
+                        segment, ambiguity["span"], ambiguity.get("resolution") or ambiguity["pick"]
+                    ),
                     "first": {
                         "video_id": video_id,
                         "title": kind.source_label(video),
@@ -179,44 +181,46 @@ def page_data_by_kind(db, kinds: Mapping[str, KindSetup], corpus_name: str) -> d
                     "count": 0,
                 }
                 if jev:
-                    g["jev"] = {
-                        "candidate": a["resolution"],
+                    group["jev"] = {
+                        "candidate": ambiguity["resolution"],
                         "p": jev["p_combined"],
                         "overrode": jev["overrode"],
                     }
             if jev:
-                for o in candidates_offered(a):
-                    if o not in g["candidates"]:
-                        g["candidates"].append(o)
-            elif g.get("jev"):
+                for offered_candidate in candidates_offered(ambiguity):
+                    if offered_candidate not in group["candidates"]:
+                        group["candidates"].append(offered_candidate)
+            elif group.get("jev"):
                 # one of the card's places is still pending: the card is to-do
-                del g["jev"]
-            for c in a["candidates"]:
-                if c not in g["candidates"]:
-                    g["candidates"].append(c)
-            g["items"].append(
+                del group["jev"]
+            for candidate in ambiguity["candidates"]:
+                if candidate not in group["candidates"]:
+                    group["candidates"].append(candidate)
+            group["items"].append(
                 {
                     "video_id": video_id,
-                    "key": a["key"],
-                    "idx": a["idx"],
+                    "key": ambiguity["key"],
+                    "idx": ambiguity["idx"],
                     "at": timestamp(segment["t0"]),
                     "url": kind.anchor_url(video, segment["t0"]),
                     "title": kind.source_label(video),
                 }
             )
-            g["count"] += 1
+            group["count"] += 1
         m_path = sources_directory / video_id / "speaker_map.json"
         if m_path.exists():
             picked = store.current_speaker_names(video_id)
-            m = json.loads(m_path.read_text("utf-8"))
-            for role, entry in (m.get("roles") or {}).items():
+            manifest = json.loads(m_path.read_text("utf-8"))
+            for role, entry in (manifest.get("roles") or {}).items():
                 anchor_idx = entry.get("idx")
                 start_seconds = (
                     segments[anchor_idx]["t0"]
                     if isinstance(anchor_idx, int) and anchor_idx < len(segments)
                     else 0.0
                 )
-                names = speaker_names(entry, m, kind.extra_speaker_names(video), picked.values())
+                names = speaker_names(
+                    entry, manifest, kind.extra_speaker_names(video), picked.values()
+                )
                 if entry.get("status") == "NEEDS_AUTHOR":
                     open_items += 1
                 speakers.append(
@@ -242,9 +246,18 @@ def page_data_by_kind(db, kinds: Mapping[str, KindSetup], corpus_name: str) -> d
     # where its FIRST occurrence falls; resolved cards follow the open ones and
     # load behind the page's Resolved filter.
     cards = sorted(
-        groups.values(), key=lambda g: (g["resolved"], g["first"]["order"], g["items"][0]["idx"])
+        groups.values(),
+        key=lambda group: (group["resolved"], group["first"]["order"], group["items"][0]["idx"]),
     )
-    cards += sorted(speakers, key=lambda s: (s["resolved"], not s["open"], s["order"], s["role"]))
+    cards += sorted(
+        speakers,
+        key=lambda speaker: (
+            speaker["resolved"],
+            not speaker["open"],
+            speaker["order"],
+            speaker["role"],
+        ),
+    )
     return {
         "corpus": corpus_name,
         "corpus_id": corpus["id"],
@@ -253,10 +266,12 @@ def page_data_by_kind(db, kinds: Mapping[str, KindSetup], corpus_name: str) -> d
         "open_items": open_items,
         "open_cards": sum(
             1
-            for c in cards
-            if not c["resolved"] and not c.get("jev") and (c["kind"] == "ambiguity" or c["open"])
+            for card in cards
+            if not card["resolved"]
+            and not card.get("jev")
+            and (card["kind"] == "ambiguity" or card["open"])
         ),
-        "resolved_cards": sum(1 for c in cards if c["resolved"]),
+        "resolved_cards": sum(1 for card in cards if card["resolved"]),
         "cards": cards,
     }
 
@@ -281,12 +296,14 @@ def workspace_data_by_kind(db, kinds: Mapping[str, KindSetup]) -> dict:
 
 
 def _workspace_document(corpora: list[dict]) -> dict:
-    corpora.sort(key=lambda c: (-c["open_items"], c["corpus"].lower()))
+    corpora.sort(
+        key=lambda corpus_entry: (-corpus_entry["open_items"], corpus_entry["corpus"].lower())
+    )
     return {
         "title": "Corpus review",
         "corpora": corpora,
-        "open_items": sum(c["open_items"] for c in corpora),
-        "cards": sum(len(c["cards"]) for c in corpora),
+        "open_items": sum(corpus_entry["open_items"] for corpus_entry in corpora),
+        "cards": sum(len(corpus_entry["cards"]) for corpus_entry in corpora),
     }
 
 
@@ -551,8 +568,8 @@ def render(data: dict, *, links_note: str = "", part: int = 1, parts: int = 1) -
     title = data.get("title", "Corpus review") + (f" ({part}/{parts})" if parts > 1 else "")
     payload = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
     options = "".join(
-        f'<option value="{i}">{html.escape(c["corpus"])} · {c["open_cards"]} to do</option>'
-        for i, c in enumerate(data["corpora"])
+        f'<option value="{corpus_index}">{html.escape(corpus_entry["corpus"])} · {corpus_entry["open_cards"]} to do</option>'
+        for corpus_index, corpus_entry in enumerate(data["corpora"])
     )
     return (
         f"<title>{html.escape(title)}</title>\n<style>{_CSS}</style>\n"
@@ -597,8 +614,8 @@ def split(data: dict, *, page_bytes: int, links_note: str = "") -> list[dict]:
             dict(
                 data,
                 corpora=group,
-                open_items=sum(c["open_items"] for c in group),
-                cards=sum(len(c["cards"]) for c in group),
+                open_items=sum(corpus_entry["open_items"] for corpus_entry in group),
+                cards=sum(len(corpus_entry["cards"]) for corpus_entry in group),
             )
             for group in parts
         ]
@@ -622,9 +639,9 @@ def write_pages(
     out = Path(out)
     chunks = split(data, page_bytes=page_bytes, links_note=links_note)
     written = []
-    for n, chunk in enumerate(chunks, start=1):
-        path = out if n == 1 else out.with_name(f"{out.stem}-{n}{out.suffix}")
-        text = render(chunk, links_note=links_note, part=n, parts=len(chunks))
+    for page_number, chunk in enumerate(chunks, start=1):
+        path = out if page_number == 1 else out.with_name(f"{out.stem}-{page_number}{out.suffix}")
+        text = render(chunk, links_note=links_note, part=page_number, parts=len(chunks))
         write_atomic(path, text)
         n_cards = chunk["cards"] if isinstance(chunk.get("cards"), int) else len(chunk["cards"])
         written.append({"path": str(path), "cards": n_cards, "bytes": len(text.encode("utf-8"))})
@@ -672,13 +689,13 @@ def decisions_to_verdicts_by_kind(
         raise ValueError(
             "decisions file: 'decisions' must be an object of card id → {\"verdict\": ...}"
         )
-    by_id = {c["id"]: c for c in data["cards"]}
+    by_id = {card["id"]: card for card in data["cards"]}
     out: list[dict] = []
     unknown: list[str] = []
-    for card_id, d in entries.items():
-        if not isinstance(d, dict) or not isinstance(d.get("verdict", ""), str):
+    for card_id, decision in entries.items():
+        if not isinstance(decision, dict) or not isinstance(decision.get("verdict", ""), str):
             raise ValueError(f'decisions file: entry {card_id!r} must be {{"verdict": str}}')
-        verdict = d.get("verdict", "").strip()
+        verdict = decision.get("verdict", "").strip()
         if not verdict:
             continue
         card = by_id.get(card_id)
@@ -721,20 +738,20 @@ def land_page_verdicts(
     from .review import record_verdict
 
     landed = []
-    for v in verdicts:
+    for verdict in verdicts:
         record_verdict(
             db,
-            source_id=v["video_id"],
-            key=v["key"],
-            kind=v["kind"],
-            verdict=v["verdict"],
-            span=v.get("span", ""),
-            role=v.get("role", ""),
+            source_id=verdict["video_id"],
+            key=verdict["key"],
+            kind=verdict["kind"],
+            verdict=verdict["verdict"],
+            span=verdict.get("span", ""),
+            role=verdict.get("role", ""),
             created_by=created_by,
             answered_through=answered_through,
-            index=v.get("idx"),
+            index=verdict.get("idx"),
         )
-        landed.append(f"{v['video_id']}:{v['key']}")
+        landed.append(f"{verdict['video_id']}:{verdict['key']}")
     return landed
 
 
@@ -758,7 +775,7 @@ def _has_unlinked_card(data: dict) -> bool:
             places = [
                 card.get("url", ""),
                 first.get("url", ""),
-                *(i.get("url", "") for i in card.get("items", [])),
+                *(item.get("url", "") for item in card.get("items", [])),
             ]
             if any(url is None for url in places):
                 return True
