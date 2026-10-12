@@ -97,35 +97,52 @@ def _key(text: str) -> str:
     return normalize_span(text) or text
 
 
-def ai_cleanup_probabilities(a: dict, offered_candidates: list[str]) -> dict[str, float]:
+def ai_cleanup_probabilities(ambiguity: dict, offered_candidates: list[str]) -> dict[str, float]:
     """The AI cleanup's probability per candidate. Prompt v2 gives one per
     candidate; an older item's single confidence goes to its pick and the
     rest is spread evenly over the other candidates."""
-    by_key = {_key(o): o for o in offered_candidates}
-    if a.get("probabilities") is not None:
+    by_key = {
+        _key(offered_candidate): offered_candidate for offered_candidate in offered_candidates
+    }
+    if ambiguity.get("probabilities") is not None:
         out = dict.fromkeys(offered_candidates, 0.0)
-        for c, p in zip(a["candidates"], a["probabilities"], strict=True):
-            out[by_key[_key(c)]] += float(p)
+        for candidate, probability in zip(
+            ambiguity["candidates"], ambiguity["probabilities"], strict=True
+        ):
+            out[by_key[_key(candidate)]] += float(probability)
         return out
-    pick = by_key[_key(a["pick"])]
-    others = [o for o in offered_candidates if o != pick]
-    conf = float(a["confidence"])
-    out = {o: (1 - conf) / len(others) for o in others} if others else {}
-    out[pick] = conf if others else 1.0
+    pick = by_key[_key(ambiguity["pick"])]
+    others = [
+        offered_candidate for offered_candidate in offered_candidates if offered_candidate != pick
+    ]
+    confidence = float(ambiguity["confidence"])
+    out = (
+        {offered_candidate: (1 - confidence) / len(others) for offered_candidate in others}
+        if others
+        else {}
+    )
+    out[pick] = confidence if others else 1.0
     return out
 
 
 def combine(p_clean_up: dict[str, float], p_judge: dict[str, float]) -> dict[str, float]:
     """Multiply per candidate and rescale to sum to 1; all zeros → all zeros."""
-    raw = {o: p_clean_up.get(o, 0.0) * p_judge.get(o, 0.0) for o in p_clean_up}
+    raw = {
+        candidate: p_clean_up.get(candidate, 0.0) * p_judge.get(candidate, 0.0)
+        for candidate in p_clean_up
+    }
     total = sum(raw.values())
-    return {o: (v / total if total else 0.0) for o, v in raw.items()}
+    return {
+        candidate: (probability / total if total else 0.0) for candidate, probability in raw.items()
+    }
 
 
-def precedent(a: dict, offered_candidates: list[str], memory: dict[str, dict]) -> list[dict]:
+def precedent(
+    ambiguity: dict, offered_candidates: list[str], memory: dict[str, dict]
+) -> list[dict]:
     """Correction-memory rules whose span or verdict shares a word (three
     letters or more) with the item's span or candidates."""
-    words = {w for text in (a["span"], *offered_candidates) for w in _words(text)}
+    words = {word for text in (ambiguity["span"], *offered_candidates) for word in _words(text)}
     hits = []
     for span_norm, rule in sorted(memory.items()):
         if words & (_words(span_norm) | _words(rule["verdict"])):
@@ -134,11 +151,11 @@ def precedent(a: dict, offered_candidates: list[str], memory: dict[str, dict]) -
 
 
 def _words(text: str) -> set[str]:
-    return {w for w in re.findall(r"[a-z0-9]+", text.lower()) if len(w) >= 3}
+    return {word for word in re.findall(r"[a-z0-9]+", text.lower()) if len(word) >= 3}
 
 
 def request(
-    a: dict,
+    ambiguity: dict,
     sentence: str,
     *,
     model: str,
@@ -146,21 +163,21 @@ def request(
     memory: dict[str, dict],
     instructions: str,
 ) -> dict:
-    offered_candidates = review.candidates_offered(a)
+    offered_candidates = review.candidates_offered(ambiguity)
     # The sentence as the recognizer produced it: the cleanup's pick is put
     # back to the words heard, bracketed. No separate "heard" field: given a
     # blank and the heard words, Jev copied the mis-hearing (2026-09-29).
     marked = sentence
-    for needle in (a["pick"], a["span"]):
+    for needle in (ambiguity["pick"], ambiguity["span"]):
         if needle and needle in sentence:
-            marked = sentence.replace(needle, f"[{a['span']}]", 1)
+            marked = sentence.replace(needle, f"[{ambiguity['span']}]", 1)
             break
     return {
         "model": model,
         "state": {
             "sentence": marked,
             "protected_names": sorted(protected),
-            "author_precedent": precedent(a, offered_candidates, memory),
+            "author_precedent": precedent(ambiguity, offered_candidates, memory),
         },
         "questions": {
             QUESTION: {
@@ -196,17 +213,17 @@ class ScriptedTransport:
         return json.loads(path.read_text(encoding="utf-8"))
 
 
-def off_reason(s: Settings | None, transport: Transport, *, key_env: str) -> str | None:
+def off_reason(settings: Settings | None, transport: Transport, *, key_env: str) -> str | None:
     """Why the arbiter is off, or None. `key_env` names the environment variable a transport
     named "typesafe" needs."""
-    if s is None:
+    if settings is None:
         return "[arbiter] is absent from config.toml"
-    if not s.enabled:
+    if not settings.enabled:
         return "[arbiter].enabled is false in config.toml"
-    if not s.model:
+    if not settings.model:
         return "[arbiter].model is not set in config.toml"
-    if llm.price_usd(s.model, 0, 0) is None:
-        return f"{s.model} has no price row, so the spend cap cannot be enforced"
+    if llm.price_usd(settings.model, 0, 0) is None:
+        return f"{settings.model} has no price row, so the spend cap cannot be enforced"
     if transport.name == "typesafe" and not os.environ.get(key_env):
         return f"{key_env} is not set in .env"
     return None
@@ -262,55 +279,57 @@ class Arbiter:
             "spend_cap_reached": False,
             "calls": [],
         }
-        for a in document.get("ambiguities") or []:
-            if a["status"] != "pending":
+        for ambiguity in document.get("ambiguities") or []:
+            if ambiguity["status"] != "pending":
                 continue
             try:
                 self._decide(
                     document,
-                    a,
+                    ambiguity,
                     source_id=source_id,
                     protected=protected,
                     memory=memory,
                     stats=stats,
                 )
-            except llm.SpendCapReached as e:
-                stats["error"], stats["spend_cap_reached"] = f"budget: {e}", True
-                stats["cap"] = e.cap
+            except llm.SpendCapReached as error:
+                stats["error"], stats["spend_cap_reached"] = f"budget: {error}", True
+                stats["cap"] = error.cap
                 break
-            except ArbiterError as e:
+            except ArbiterError as error:
                 # this item only: never cached, asked again on the next run
-                stats["error"] = str(e)
+                stats["error"] = str(error)
                 stats["bad"] += 1
-            except (llm.VendorError, llm.NotConfigured) as e:
-                stats["error"] = str(e)
+            except (llm.VendorError, llm.NotConfigured) as error:
+                stats["error"] = str(error)
                 break
         return stats
 
     def _decide(
         self,
         document: dict,
-        a: dict,
+        ambiguity: dict,
         *,
         source_id: str,
         protected: list[str],
         memory: dict[str, dict],
         stats: dict,
     ) -> None:
-        offered_candidates = review.candidates_offered(a)
+        offered_candidates = review.candidates_offered(ambiguity)
         body = request(
-            a,
-            document["segments"][a["idx"]]["text"],
+            ambiguity,
+            document["segments"][ambiguity["idx"]]["text"],
             model=self.settings.model,
             protected=protected,
             memory=memory,
             instructions=self.instructions,
         )
-        tag = f"{source_id}-{a['key']}"
+        tag = f"{source_id}-{ambiguity['key']}"
         reply, call = self._ask(
             body,
             tag=tag,
-            check=lambda r: _check(r, offered_candidates, tag, self.validate_reply, self.judge),
+            check=lambda reply: _check(
+                reply, offered_candidates, tag, self.validate_reply, self.judge
+            ),
         )
         stats["asked"] += 1
         stats["cached"] += call["cached"]
@@ -318,24 +337,26 @@ class Arbiter:
         stats["calls"].append(call)
         answer = reply["answers"][QUESTION]
         choice, p_judge = answer["choice"], answer["probabilities"]
-        p = combine(ai_cleanup_probabilities(a, offered_candidates), p_judge)[choice]
-        if p < self.settings.min_probability:
+        probability = combine(ai_cleanup_probabilities(ambiguity, offered_candidates), p_judge)[
+            choice
+        ]
+        if probability < self.settings.min_probability:
             stats["deferred"] += 1
             return
         model = str(reply.get("model") or self.settings.model)
-        a["status"] = "auto_resolved"
-        a["resolution"] = choice
-        a["origin"] = f"arbiter {model} {p:.2f}"
-        a["resolved_at"] = self._now()
-        a["arbiter"] = {
+        ambiguity["status"] = "auto_resolved"
+        ambiguity["resolution"] = choice
+        ambiguity["origin"] = f"arbiter {model} {probability:.2f}"
+        ambiguity["resolved_at"] = self._now()
+        ambiguity["arbiter"] = {
             "model": model,
             "probabilities": p_judge,
-            "p_combined": round(p, 3),
-            "overrode": choice != a["pick"],
+            "p_combined": round(probability, 3),
+            "overrode": choice != ambiguity["pick"],
         }
-        review.apply_resolution(document, a, choice)
+        review.apply_resolution(document, ambiguity, choice)
         stats["applied"] += 1
-        stats["overrode"] += choice != a["pick"]
+        stats["overrode"] += choice != ambiguity["pick"]
 
     def _ask(self, body: dict, *, tag: str, check) -> tuple[dict, dict]:
         """One question: from the cache, else from the judge. `check` runs before
@@ -355,16 +376,16 @@ class Arbiter:
                 "cached": True,
                 "cost_usd": 0.0,
             }
-        c = self.client
-        c.check_spend_cap(STAGE, tag)
+        client = self.client
+        client.check_spend_cap(STAGE, tag)
         reply = self.transport.send(body, tag=tag)
         self._log(tag, sha256, body, reply)
-        c.calls += 1
+        client.calls += 1
         tokens_in = int((reply.get("usage") or {}).get("input_tokens", 0) or 0)
         cost = llm.price_usd(
             self.settings.model, tokens_in, 0
         )  # null when unknown, never an estimate
-        c.spent_usd += cost or 0.0
+        client.spent_usd += cost or 0.0
         try:
             check(reply)
         except ArbiterError:
@@ -434,8 +455,8 @@ def _check(
     """The reply matches its schema and answers inside the card's candidates."""
     try:
         validate(reply)
-    except ValueError as e:
-        raise ArbiterError(f"{tag}: {e}") from e
+    except ValueError as error:
+        raise ArbiterError(f"{tag}: {error}") from error
     answer = reply["answers"][QUESTION]
     if answer["choice"] not in offered_candidates or not set(answer["probabilities"]) <= set(
         offered_candidates

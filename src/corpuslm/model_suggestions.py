@@ -61,11 +61,11 @@ def suggestions_of(ambiguities: list[dict]) -> list[dict]:
     document's order. A probability is kept only when the model gave one per candidate."""
     out = []
     for item in ambiguities:
-        candidates = [str(c) for c in item["candidates"]]
+        candidates = [str(candidate) for candidate in item["candidates"]]
         given = item.get("probabilities")
         probabilities: list[float | None]
         if given is not None and len(given) == len(candidates):
-            probabilities = [float(p) for p in given]
+            probabilities = [float(probability) for probability in given]
         else:
             probabilities = [None] * len(candidates)
         pick = item["pick"]
@@ -162,7 +162,7 @@ def backfill(
             rows = suggestions_of(ambiguities)
             counts["suggestions_to_record"] += len(rows)
             counts["suggestions_to_record_with_probability"] += sum(
-                1 for r in rows if r["suggestion_probability"] is not None
+                1 for row in rows if row["suggestion_probability"] is not None
             )
             if dry_run:
                 continue
@@ -177,7 +177,7 @@ def backfill(
                 counts["sources_to_record"] -= 1
                 counts["suggestions_to_record"] -= len(rows)
                 counts["suggestions_to_record_with_probability"] -= sum(
-                    1 for r in rows if r["suggestion_probability"] is not None
+                    1 for row in rows if row["suggestion_probability"] is not None
                 )
                 continue
             counts["sources_recorded"] += 1
@@ -189,7 +189,7 @@ def _already_recorded(held: dict[str, dict], ambiguities: list[dict], sha256: st
     if not ambiguities:
         return not held
     return len(held) == len(ambiguities) and all(
-        h["artifact_sha256"] == sha256 for h in held.values()
+        held_verdict["artifact_sha256"] == sha256 for held_verdict in held.values()
     )
 
 

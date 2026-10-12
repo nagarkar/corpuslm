@@ -124,8 +124,8 @@ class Vocabulary:
 
 def _candidates(text: str) -> list[str]:
     out = []
-    for m in _CAPITALISED_RUN.finditer(text or ""):
-        run = m.group(0).strip()
+    for match in _CAPITALISED_RUN.finditer(text or ""):
+        run = match.group(0).strip()
         words = run.split()
         while words and words[0] in _STOP:
             words = words[1:]
@@ -134,7 +134,7 @@ def _candidates(text: str) -> list[str]:
         if not words:
             continue
         term = " ".join(words)
-        if len(term) >= _MIN_TERM and any(len(w) >= _MIN_TERM for w in words):
+        if len(term) >= _MIN_TERM and any(len(word) >= _MIN_TERM for word in words):
             out.append(term)
     return out
 
@@ -165,8 +165,8 @@ def vocabulary_from_texts(
     return Vocabulary(terms=list(terms), substitutions={}, sources=terms)
 
 
-def _norm(s: str) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", s.lower()).strip()
+def _norm(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
 
 
 def _apply_term(text: str, term: str) -> tuple[str, bool]:
@@ -199,7 +199,7 @@ def protect_vocabulary(document: dict, vocab: Vocabulary) -> tuple[dict, dict]:
     """Restore protected spellings, substitute known mis-hearings and mark every protected
     span. Returns the document and a report of counts."""
     terms = sorted(dict.fromkeys(vocab.terms), key=len, reverse=True)
-    subs = {k: v for k, v in vocab.substitutions.items() if k}
+    subs = {variant: replacement for variant, replacement in vocab.substitutions.items() if variant}
     changed_segments = 0
     subs_applied = 0
     for segment in document["segments"]:
@@ -249,10 +249,10 @@ def _symspell():
 
     from symspellpy import SymSpell
 
-    sym = SymSpell(max_dictionary_edit_distance=1, prefix_length=7)
+    spell_checker = SymSpell(max_dictionary_edit_distance=1, prefix_length=7)
     dictionary = files("symspellpy") / "frequency_dictionary_en_82_765.txt"
-    sym.load_dictionary(str(dictionary), term_index=0, count_index=1)
-    return sym
+    spell_checker.load_dictionary(str(dictionary), term_index=0, count_index=1)
+    return spell_checker
 
 
 _TOKEN = re.compile(r"[A-Za-z][a-z]+")
@@ -280,7 +280,7 @@ def spell_fix(document: dict, *, language: str) -> tuple[dict, dict]:
         return document, {"status": "skipped", "reason": f"language is {language or 'unknown'}"}
     from symspellpy import Verbosity
 
-    sym = _symspell()
+    spell_checker = _symspell()
     tokens_changed = 0
     segments_changed = 0
     for segment in document["segments"]:
@@ -288,13 +288,13 @@ def spell_fix(document: dict, *, language: str) -> tuple[dict, dict]:
         protected_spans = segment.get("protected") or []
         masks: list[tuple[int, int]] = []
         for span in protected_spans:
-            for m in re.finditer(re.escape(span), original):
-                masks.append((m.start(), m.end()))
+            for match in re.finditer(re.escape(span), original):
+                masks.append((match.start(), match.end()))
 
-        def fix(m: re.Match, masks=masks) -> str:
+        def fix(match: re.Match, masks=masks) -> str:
             nonlocal tokens_changed
-            word = m.group(0)
-            if any(a <= m.start() < b for a, b in masks):
+            word = match.group(0)
+            if any(mask_start <= match.start() < mask_end for mask_start, mask_end in masks):
                 return word
             if word[0].isupper() or len(word) < 4:
                 return word
@@ -302,10 +302,10 @@ def spell_fix(document: dict, *, language: str) -> tuple[dict, dict]:
             # not a dictionary word AND exactly one dictionary word sits at
             # edit distance 1. "realy" (real / really / relay) is left for
             # a model step, which has the sentence; "elephnts" is fixed here.
-            suggestions = sym.lookup(
+            suggestions = spell_checker.lookup(
                 word, Verbosity.ALL, max_edit_distance=1, include_unknown=False
             )
-            if not suggestions or any(s.distance == 0 for s in suggestions):
+            if not suggestions or any(suggestion.distance == 0 for suggestion in suggestions):
                 return word
             if len(suggestions) != 1:
                 return word

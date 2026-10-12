@@ -200,7 +200,7 @@ def test_a_model_that_takes_no_temperature_is_sent_none(prompt, tmp_path):
 def test_the_client_keeps_everything_under_the_root_it_is_given(prompt, tmp_path):
     script(tmp_path, "t0", json.dumps({"greeting": "hello"}))
     client(tmp_path).complete("greet", prompt, {"word": "hello"}, tag="t0")
-    top = {p.name for p in (tmp_path / "root").iterdir()}
+    top = {path.name for path in (tmp_path / "root").iterdir()}
     assert top == {"llm-cache", "logs"}
 
 
@@ -263,7 +263,9 @@ def test_a_real_transport_with_no_vendor_key_declines_before_any_call(
     caller = Client(
         tmp_path / "root",
         CONFIG,
-        transport=llm.LiteLLMTransport(completion=lambda **kw: pytest.fail("called the vendor")),
+        transport=llm.LiteLLMTransport(
+            completion=lambda **keyword_arguments: pytest.fail("called the vendor")
+        ),
         validator=validate,
     )
     with pytest.raises(llm.NotConfigured, match="GEMINI_API_KEY is not set"):
@@ -312,8 +314,13 @@ def test_a_client_that_never_calls_a_model_writes_no_log(tmp_path):
 
 
 def two_expensive_scripts(tmp_path):
-    for n in range(2):
-        script(tmp_path, f"t{n}", json.dumps({"greeting": "hi"}), tokens=(2_000_000, 2_000_000))
+    for script_number in range(2):
+        script(
+            tmp_path,
+            f"t{script_number}",
+            json.dumps({"greeting": "hi"}),
+            tokens=(2_000_000, 2_000_000),
+        )
 
 
 def test_the_run_cap_stops_after_the_call_that_crossed_it(prompt, tmp_path):
@@ -344,8 +351,8 @@ def write_usage(tmp_path, usd, *, days_ago=0, kind="api", cached=False):
     }
     path = tmp_path / "root" / "logs" / "usage.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a") as f:
-        f.write(json.dumps(line) + "\n")
+    with path.open("a") as usage_file:
+        usage_file.write(json.dumps(line) + "\n")
 
 
 def test_the_day_cap_counts_todays_billed_lines_and_names_itself(prompt, tmp_path):

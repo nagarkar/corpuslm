@@ -14,8 +14,14 @@ from corpuslm.store import Store
 SOURCE = "any-source"
 MODEL = "gemini/gemini-2.5-flash-lite"
 SEGMENTS = [
-    {"idx": i, "t0": float(i), "t1": float(i + 1), "speaker": "Quill", "text": f"line {i} here"}
-    for i in range(6)
+    {
+        "idx": segment_index,
+        "t0": float(segment_index),
+        "t1": float(segment_index + 1),
+        "speaker": "Quill",
+        "text": f"line {segment_index} here",
+    }
+    for segment_index in range(6)
 ]
 EMPTY_REPLY = {"edits": {}, "ambiguities": [], "bindings": []}
 
@@ -81,7 +87,7 @@ class Verdicts(ai_cleanup_chain.NoReview):
         self.value = {}
 
     def verdicts(self, source):
-        return {k: {"verdict": v} for k, v in self.value.items()}
+        return {key: {"verdict": verdict} for key, verdict in self.value.items()}
 
 
 class World:
@@ -309,7 +315,9 @@ def test_a_landed_verdict_is_rebuilt_from_the_cache_and_the_estimate_says_so(wor
     clients = len(world.clients)
     rebuilt = world.build(review=reviewing)
     assert rebuilt != first  # the transcript changed
-    assert [c.calls for c in world.clients[clients:]] == [0]  # the transport was never called
+    assert [client.calls for client in world.clients[clients:]] == [
+        0
+    ]  # the transport was never called
     after = ai_cleanup_chain.estimate(world.context(review=reviewing), {SOURCE: world.spell_fix})
     assert after.sources == 0
 
@@ -376,5 +384,5 @@ def test_building_the_ai_cleanup_records_its_suggestions(world):
     again = world.build(review=reviewing)
     assert again != sha256
     rows = world.store.model_suggestions(SOURCE)
-    assert {r["artifact_sha256"] for r in rows.values()} == {again}
+    assert {row["artifact_sha256"] for row in rows.values()} == {again}
     assert len(rows) == len(held) and rows["amb-0001"]["suggestion"] == "lime"

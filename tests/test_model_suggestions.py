@@ -27,9 +27,9 @@ from corpuslm.store import Store
 
 @pytest.fixture
 def database(tmp_path):
-    d = db.Database(tmp_path / "transcript.sqlite")
-    yield d
-    d.close()
+    database_handle = db.Database(tmp_path / "transcript.sqlite")
+    yield database_handle
+    database_handle.close()
 
 
 @pytest.fixture
@@ -157,7 +157,7 @@ def test_a_rebuilt_artifact_replaces_its_rows_and_a_second_backfill_writes_nothi
     assert (third.sources_recorded, third.sources_already_recorded) == (1, 1)
     held = store.model_suggestions(BEE_SOURCE)
     assert sorted(held) == ["amb-0001", "amb-0002"]
-    assert {h["artifact_sha256"] for h in held.values()} == {sha256}
+    assert {held_row["artifact_sha256"] for held_row in held.values()} == {sha256}
     assert held["amb-0001"]["suggestion_probability"] == 0.9
     assert store.model_suggestion_counts() == {
         "sources": 2,
@@ -209,16 +209,16 @@ def test_an_artifact_with_no_ambiguities_clears_the_rows_of_the_one_before(store
 def test_a_version_5_database_gains_the_tables_after_a_verified_backup(tmp_path):
     path = tmp_path / "transcript.sqlite"
     db.Database(path).close()
-    conn = sqlite3.connect(path)
-    conn.execute("DROP TABLE model_suggestion_candidates")
-    conn.execute("DROP TABLE model_suggestions")
-    conn.execute("PRAGMA user_version = 5")
-    conn.execute(
+    connection = sqlite3.connect(path)
+    connection.execute("DROP TABLE model_suggestion_candidates")
+    connection.execute("DROP TABLE model_suggestions")
+    connection.execute("PRAGMA user_version = 5")
+    connection.execute(
         "INSERT INTO corpora (id, version, created_at, created_by, schema_version, name) "
         "VALUES ('cor-1', 1, 't', 'test', '5', 'Kept')"
     )
-    conn.commit()
-    conn.close()
+    connection.commit()
+    connection.close()
     opened = db.Database(path)
     try:
         assert opened.migration["from"] == 5 and opened.migration["to"] == db.USER_VERSION == 9
@@ -253,7 +253,11 @@ def test_the_verb_prints_counts_only_and_a_second_run_records_nothing(config, ca
     assert cli.main(["suggestions", "record", "--config", str(config), "--json"]) == 0
     board = json.loads(capsys.readouterr().out)
     assert board["sources_recorded"] == 1 and board["database_suggestions"] == 1
-    assert all(isinstance(v, int) for k, v in board.items() if k.startswith(("sources", "sugg")))
+    assert all(
+        isinstance(value, int)
+        for key, value in board.items()
+        if key.startswith(("sources", "sugg"))
+    )
     assert "Wren" not in json.dumps(board) and "wren" not in json.dumps(board)
     assert cli.main(["suggestions", "record", "--config", str(config), "--json"]) == 0
     again = json.loads(capsys.readouterr().out)

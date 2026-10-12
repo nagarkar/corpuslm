@@ -69,16 +69,16 @@ def test_registered_directories_are_searched_after_the_built_in_one(tmp_path, mo
     prompts.register_directory(tmp_path / "mine")  # a repeat is ignored
     assert prompts.search_directories() == [prompts.BUILT_IN_DIRECTORY, tmp_path / "mine"]
     assert prompts.load("greeting").path.parent == tmp_path / "mine"
-    assert [p.id for p in prompts.list_prompts() if p.path.parent == tmp_path / "mine"] == [
-        "greeting"
-    ]
+    assert [
+        prompt.id for prompt in prompts.list_prompts() if prompt.path.parent == tmp_path / "mine"
+    ] == ["greeting"]
 
 
 def test_several_directories_are_searched_and_a_released_version_is_never_shadowed(tmp_path):
     write_prompt(tmp_path / "one", version=1)
     write_prompt(tmp_path / "two", prompt_id="other", version=1)
     both = [tmp_path / "one", tmp_path / "two"]
-    assert {p.id for p in prompts.list_prompts(both)} == {"greeting", "other"}
+    assert {prompt.id for prompt in prompts.list_prompts(both)} == {"greeting", "other"}
     write_prompt(tmp_path / "two", version=1, body="Different {word}.\n")
     with pytest.raises(prompts.PromptError, match="in two places"):
         prompts.load("greeting", directories=both)

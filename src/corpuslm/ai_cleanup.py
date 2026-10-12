@@ -118,13 +118,13 @@ def render(document: dict, batch: Batch, *, scheme: SpeakerScheme) -> str:
     """The batch as `[index] text` lines, read-only context first. With fixed labels each line
     also shows its label (`[index] label: text`), because the model must see them."""
 
-    def line(i: int, mark: str) -> str:
-        segment = document["segments"][i]
+    def line(segment_index: int, mark: str) -> str:
+        segment = document["segments"][segment_index]
         label = f"{segment['role']}: " if scheme.fixed_labels and segment.get("role") else ""
-        return f"[{i}] {mark}{label}{segment['text']}"
+        return f"[{segment_index}] {mark}{label}{segment['text']}"
 
-    lines = [line(i, "(context) ") for i in range(*batch.context)]
-    lines += [line(i, "") for i in range(batch.start, batch.end)]
+    lines = [line(segment_index, "(context) ") for segment_index in range(*batch.context)]
+    lines += [line(segment_index, "") for segment_index in range(batch.start, batch.end)]
     return "\n".join(lines)
 
 
@@ -134,15 +134,15 @@ def role_summary(document: dict, *, upto: int, bindings: list[dict], scheme: Spe
         role = segment.get("role")
         if role:
             counts[role] = counts.get(role, 0) + 1
-    names = {b["role"]: b["name"] for b in bindings if b.get("name")}
+    names = {binding["role"]: binding["name"] for binding in bindings if binding.get("name")}
     if not counts and not names:
         return "(none yet)"
     parts = []
     for role in _summary_order(scheme, [*counts, *names]):
-        bit = f"{role}: {counts.get(role, 0)} segments so far"
+        role_phrase = f"{role}: {counts.get(role, 0)} segments so far"
         if role in names:
-            bit += f", named {names[role]}"
-        parts.append(bit)
+            role_phrase += f", named {names[role]}"
+        parts.append(role_phrase)
     return "; ".join(parts)
 
 
@@ -150,9 +150,9 @@ def _summary_order(scheme: SpeakerScheme, present: list[str]) -> list[str]:
     """Scheme labels first, in the scheme's order (the unresolved one included); for fixed
     labels, any other label after them in the order first seen."""
     seen = list(dict.fromkeys(present))
-    ordered = [x for x in scheme.labels if x in seen]
+    ordered = [label for label in scheme.labels if label in seen]
     if scheme.fixed_labels:
-        ordered += [x for x in seen if x not in scheme.labels]
+        ordered += [label for label in seen if label not in scheme.labels]
     return ordered
 
 
@@ -177,11 +177,13 @@ def check_bounds(
             )
     if scheme.fixed_labels and document is not None:
         for index_raw, label in (reply.get("roles") or {}).items():
-            idx = int(index_raw)
-            if idx in editable and label[0] != document["segments"][idx].get("role"):
+            segment_index = int(index_raw)
+            if segment_index in editable and label[0] != document["segments"][segment_index].get(
+                "role"
+            ):
                 raise ValueError(
-                    f"roles: {label[0]!r} would relabel segment {idx} from "
-                    f"{document['segments'][idx].get('role')!r}; the labels are fixed"
+                    f"roles: {label[0]!r} would relabel segment {segment_index} from "
+                    f"{document['segments'][segment_index].get('role')!r}; the labels are fixed"
                 )
     for item in reply.get("ambiguities") or []:
         if int(item["idx"]) not in editable:
@@ -198,16 +200,20 @@ def check_bounds(
                 f"bindings: index {item['idx']} is outside batch {batch.number} "
                 f"[{batch.context[0]}, {batch.end})"
             )
-    for a in reply.get("ambiguities") or []:
-        probs = a.get("probabilities")
+    for ambiguity in reply.get("ambiguities") or []:
+        probs = ambiguity.get("probabilities")
         if probs is None:
             continue  # a prompt v1 reply: one confidence for the pick
-        if len(probs) != len(a["candidates"]):
-            raise ValueError(f"ambiguities: idx {a['idx']} needs one probability per candidate")
+        if len(probs) != len(ambiguity["candidates"]):
+            raise ValueError(
+                f"ambiguities: idx {ambiguity['idx']} needs one probability per candidate"
+            )
         if sum(probs) <= 0:
-            raise ValueError(f"ambiguities: idx {a['idx']} probabilities sum to zero")
-        if a["pick"] not in a["candidates"]:
-            raise ValueError(f"ambiguities: idx {a['idx']} pick is not one of its candidates")
+            raise ValueError(f"ambiguities: idx {ambiguity['idx']} probabilities sum to zero")
+        if ambiguity["pick"] not in ambiguity["candidates"]:
+            raise ValueError(
+                f"ambiguities: idx {ambiguity['idx']} pick is not one of its candidates"
+            )
 
 
 def apply(
@@ -220,15 +226,15 @@ def apply(
 
     def check(index_raw, what: str, allowed: range = editable) -> int:
         try:
-            idx = int(index_raw)
-        except (TypeError, ValueError) as e:
-            raise BatchError(f"{what}: index {index_raw!r} is not an integer") from e
-        if idx not in allowed:
+            segment_index = int(index_raw)
+        except (TypeError, ValueError) as error:
+            raise BatchError(f"{what}: index {index_raw!r} is not an integer") from error
+        if segment_index not in allowed:
             raise BatchError(
-                f"{what}: index {idx} is outside batch {batch.number} "
+                f"{what}: index {segment_index} is outside batch {batch.number} "
                 f"[{allowed.start}, {allowed.stop})"
             )
-        return idx
+        return segment_index
 
     stats = {
         "edits": 0,
@@ -243,8 +249,8 @@ def apply(
         if int(index_raw) not in editable:
             stats["stray_edits"] = stats.get("stray_edits", 0) + 1
             continue
-        idx = check(index_raw, "edits")
-        segment = segments[idx]
+        segment_index = check(index_raw, "edits")
+        segment = segments[segment_index]
         new = str(text).strip()
         if not new:
             stats["protected_violations"] += 0
@@ -260,13 +266,14 @@ def apply(
         if int(index_raw) in range(*batch.context):
             stats["context_roles_ignored"] = stats.get("context_roles_ignored", 0) + 1
             continue
-        idx = check(index_raw, "roles")
+        segment_index = check(index_raw, "roles")
         role, confidence = label[0], float(label[1])
-        segment = segments[idx]
+        segment = segments[segment_index]
         if scheme.fixed_labels:
             if role != segment.get("role"):
                 raise BatchError(
-                    f"roles: {role!r} would relabel segment {idx} from {segment.get('role')!r}; "
+                    f"roles: {role!r} would relabel segment {segment_index} "
+                    f"from {segment.get('role')!r}; "
                     "the labels are fixed"
                 )
             continue  # a confirmation changes nothing
@@ -278,50 +285,54 @@ def apply(
             segment["speaker"] = role
         stats["roles"] += 1
     ambiguities = document.setdefault("ambiguities", [])
-    for a in reply.get("ambiguities") or []:
-        idx = check(a["idx"], "ambiguities")
-        text = segments[idx]["text"]
+    for ambiguity in reply.get("ambiguities") or []:
+        segment_index = check(ambiguity["idx"], "ambiguities")
+        text = segments[segment_index]["text"]
         if (
-            a["span"] not in text
-            and a["pick"] not in text
-            and not any(c in text for c in a["candidates"])
+            ambiguity["span"] not in text
+            and ambiguity["pick"] not in text
+            and not any(candidate in text for candidate in ambiguity["candidates"])
         ):
             # no anchor in the segment, counted
             stats["dropped_ambiguities"] += 1
             continue
         item = {
             "key": f"amb-{next_key:04d}",
-            "idx": idx,
-            "span": a["span"],
-            "candidates": list(a["candidates"]),
-            "pick": a["pick"],
-            "confidence": round(float(a.get("confidence", 0)), 3),
+            "idx": segment_index,
+            "span": ambiguity["span"],
+            "candidates": list(ambiguity["candidates"]),
+            "pick": ambiguity["pick"],
+            "confidence": round(float(ambiguity.get("confidence", 0)), 3),
             "status": "pending",
         }
-        if a.get("probabilities") is not None:
-            total = sum(a["probabilities"])
-            item["probabilities"] = [round(p / total, 3) for p in a["probabilities"]]
-            item["confidence"] = item["probabilities"][a["candidates"].index(a["pick"])]
+        if ambiguity.get("probabilities") is not None:
+            total = sum(ambiguity["probabilities"])
+            item["probabilities"] = [
+                round(probability / total, 3) for probability in ambiguity["probabilities"]
+            ]
+            item["confidence"] = item["probabilities"][
+                ambiguity["candidates"].index(ambiguity["pick"])
+            ]
         ambiguities.append(item)
         next_key += 1
         stats["ambiguities"] += 1
-    known = {s.get("role") for s in segments}
-    for b in reply.get("bindings") or []:
-        idx = check(
-            b["idx"],
+    known = {segment.get("role") for segment in segments}
+    for binding in reply.get("bindings") or []:
+        segment_index = check(
+            binding["idx"],
             "bindings",
             range(batch.context[0], batch.end) if batch.context[1] else editable,
         )
-        if scheme.fixed_labels and b["role"] not in known:
+        if scheme.fixed_labels and binding["role"] not in known:
             stats["dropped_bindings"] += 1  # a name for a label no segment carries
-        elif b["anchor"] and b["anchor"] in segments[idx]["text"]:
+        elif binding["anchor"] and binding["anchor"] in segments[segment_index]["text"]:
             stats["bindings"].append(
                 {
-                    "role": b["role"],
-                    "name": b["name"],
-                    "idx": idx,
-                    "anchor": b["anchor"],
-                    "confidence": round(float(b.get("confidence", 0.8)), 3),
+                    "role": binding["role"],
+                    "name": binding["name"],
+                    "idx": segment_index,
+                    "anchor": binding["anchor"],
+                    "confidence": round(float(binding.get("confidence", 0.8)), 3),
                 }
             )
         else:
@@ -335,11 +346,16 @@ def drop_unanchored(document: dict) -> int:
     candidates no longer appear in its segment (an overlapping substitution rewrote it) has
     nothing to ask about: dropped and counted, never a failed transcript."""
     kept, dropped = [], 0
-    for a in document.get("ambiguities") or []:
-        text = document["segments"][a["idx"]]["text"]
-        needles = [a["span"], a["pick"], *a["candidates"], a.get("resolution", "")]
+    for ambiguity in document.get("ambiguities") or []:
+        text = document["segments"][ambiguity["idx"]]["text"]
+        needles = [
+            ambiguity["span"],
+            ambiguity["pick"],
+            *ambiguity["candidates"],
+            ambiguity.get("resolution", ""),
+        ]
         if any(number and number in text for number in needles):
-            kept.append(a)
+            kept.append(ambiguity)
         else:
             dropped += 1
     document["ambiguities"] = kept
@@ -349,12 +365,16 @@ def drop_unanchored(document: dict) -> int:
 def cap_ambiguities(document: dict, *, max_new: int) -> int:
     """Beyond the cap the model's pick stands and the item is marked capped, lowest
     confidence first kept pending. Returns the capped count."""
-    pending = [a for a in document.get("ambiguities") or [] if a["status"] == "pending"]
+    pending = [
+        ambiguity
+        for ambiguity in document.get("ambiguities") or []
+        if ambiguity["status"] == "pending"
+    ]
     if max_new <= 0 or len(pending) <= max_new:
         return 0
-    pending.sort(key=lambda a: a["confidence"])
+    pending.sort(key=lambda ambiguity: ambiguity["confidence"])
     capped = 0
-    for a in pending[max_new:]:
-        a["status"] = "capped"
+    for ambiguity in pending[max_new:]:
+        ambiguity["status"] = "capped"
         capped += 1
     return capped

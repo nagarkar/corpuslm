@@ -63,9 +63,13 @@ def ordered_labels(scheme: SpeakerScheme, present: Iterable[str]) -> list[str]:
     """The labels in `present`, scheme labels first in scheme order (never the unresolved
     one), then, for fixed labels only, any other label in the order first seen."""
     seen = list(dict.fromkeys(present))
-    out = [x for x in scheme.labels if x != scheme.unresolved_label and x in seen]
+    out = [label for label in scheme.labels if label != scheme.unresolved_label and label in seen]
     if scheme.fixed_labels:
-        out += [x for x in seen if x not in scheme.labels and x != scheme.unresolved_label]
+        out += [
+            label
+            for label in seen
+            if label not in scheme.labels and label != scheme.unresolved_label
+        ]
     return out
 
 
@@ -93,19 +97,19 @@ def build_map(
             roles[role] = {"name": owner_names[role], "status": "AUTHOR"}
             continue
         names = {}
-        for b in bindings:
-            if b.get("role") == role and b.get("name"):
-                names.setdefault(b["name"], b)
+        for binding in bindings:
+            if binding.get("role") == role and binding.get("name"):
+                names.setdefault(binding["name"], binding)
         if len(names) == 1:
-            name, b = next(iter(names.items()))
-            confidence = float(b.get("confidence", 0.8))
+            name, binding = next(iter(names.items()))
+            confidence = float(binding.get("confidence", 0.8))
             if confidence >= LOW_CONFIDENCE:
                 roles[role] = {
                     "name": name,
                     "status": "INFERRED",
                     "confidence": confidence,
-                    "anchor": b.get("anchor", ""),
-                    "idx": int(b.get("idx", 0)),
+                    "anchor": binding.get("anchor", ""),
+                    "idx": int(binding.get("idx", 0)),
                 }
                 continue
             # a weak binding is a question for the owner, not a fact
@@ -117,7 +121,9 @@ def build_map(
         key_n += 1
         entry = {"name": "", "status": "NEEDS_AUTHOR", "key": f"{scheme.review_key_prefix}-{key_n}"}
         if names:
-            entry["anchor"] = "; ".join(f"{n} ({b.get('anchor', '')})" for n, b in names.items())
+            entry["anchor"] = "; ".join(
+                f"{name} ({binding.get('anchor', '')})" for name, binding in names.items()
+            )
         roles[role] = entry
     return {
         scheme.source_id_key: source_row["id"],
@@ -126,12 +132,12 @@ def build_map(
     }
 
 
-def apply_map(document: dict, m: dict, *, scheme: SpeakerScheme) -> dict:
+def apply_map(document: dict, speaker_map: dict, *, scheme: SpeakerScheme) -> dict:
     for segment in document["segments"]:
         role = segment.get("role")
         if not role:
             continue
-        entry = m["roles"].get(role)
+        entry = speaker_map["roles"].get(role)
         if scheme.unresolved_label is not None and role == scheme.unresolved_label:
             segment["speaker"] = ""
         elif entry and entry.get("name"):
@@ -141,13 +147,17 @@ def apply_map(document: dict, m: dict, *, scheme: SpeakerScheme) -> dict:
     return document
 
 
-def review_items(m: dict) -> list[str]:
-    return [e["key"] for e in m["roles"].values() if e.get("status") == "NEEDS_AUTHOR"]
+def review_items(speaker_map: dict) -> list[str]:
+    return [
+        entry["key"]
+        for entry in speaker_map["roles"].values()
+        if entry.get("status") == "NEEDS_AUTHOR"
+    ]
 
 
-def display_names(m: dict) -> dict[str, str]:
+def display_names(speaker_map: dict) -> dict[str, str]:
     """label to what a note shows: the name, else the label."""
-    return {role: (e.get("name") or role) for role, e in m["roles"].items()}
+    return {role: (entry.get("name") or role) for role, entry in speaker_map["roles"].items()}
 
 
 def bee_scheme(owner_first_name: str) -> SpeakerScheme:
