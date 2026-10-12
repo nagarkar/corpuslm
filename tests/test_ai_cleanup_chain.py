@@ -78,8 +78,8 @@ class Report:
     def __init__(self):
         self.counts, self.errors, self.notes, self.stopped_by = {}, {}, {}, ""
 
-    def count(self, node, number=1):
-        self.counts[node] = self.counts.get(node, 0) + number
+    def count(self, node, amount=1):
+        self.counts[node] = self.counts.get(node, 0) + amount
 
 
 class Verdicts(ai_cleanup_chain.NoReview):
