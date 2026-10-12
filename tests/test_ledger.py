@@ -28,7 +28,7 @@ from corpuslm import ledger, schemas
 
 
 def usage_event(**over):
-    e = {
+    event = {
         "stage": "cleanup",
         "prompt_id": "cleanup",
         "model": "gemini/gemini-2.5-flash",
@@ -40,24 +40,26 @@ def usage_event(**over):
         "tag": "vidAAAAAAA1 batch 1",
         "outcome": "ok",
     }
-    e.update(over)
-    return e
+    event.update(over)
+    return event
 
 
 def trace_event(**over):
-    e = {
+    event = {
         "argv": ["run", "--now"],
         "client": "cli",
         "workspace": "/Volumes/X6/ytlm",
         "seconds": 1.5,
         "exit_code": 0,
     }
-    e.update(over)
-    return e
+    event.update(over)
+    return event
 
 
 def lines(path: Path) -> list[dict]:
-    return [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines() if x.strip()]
+    return [
+        json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
+    ]
 
 
 # 1. One JSON line per event, with `at`; off-switches --------------------------
@@ -73,44 +75,44 @@ def test_the_rotation_size_generations_and_defaults_are_the_documented_ones():
 def test_usage_and_trace_write_one_line_each_with_at(tmp_path):
     # ytlm's design rules: "JSONL files under logs/ ... one line per event";
     # schemas require `at` (ISO, UTC)
-    d = tmp_path / "logs"
-    led = ledger.Ledger(d)
+    logs_directory = tmp_path / "logs"
+    led = ledger.Ledger(logs_directory)
     led.usage(usage_event())
     led.usage(usage_event(kind="chat", cost_usd=None, cached=True))
     led.trace(trace_event())
-    u = lines(d / "usage.jsonl")
-    t = lines(d / "trace.jsonl")
-    assert len(u) == 2 and len(t) == 1
-    for row in u + t:
+    usage_lines = lines(logs_directory / "usage.jsonl")
+    trace_lines = lines(logs_directory / "trace.jsonl")
+    assert len(usage_lines) == 2 and len(trace_lines) == 1
+    for row in usage_lines + trace_lines:
         assert isinstance(row["at"], str)
         datetime.fromisoformat(row["at"].replace("Z", "+00:00"))
-    assert {k: v for k, v in u[0].items() if k != "at"} == usage_event()
-    assert u[1]["cost_usd"] is None and u[1]["kind"] == "chat"
-    assert {k: v for k, v in t[0].items() if k != "at"} == trace_event()
+    assert {key: value for key, value in usage_lines[0].items() if key != "at"} == usage_event()
+    assert usage_lines[1]["cost_usd"] is None and usage_lines[1]["kind"] == "chat"
+    assert {key: value for key, value in trace_lines[0].items() if key != "at"} == trace_event()
     # each line is a standalone JSON document
-    raw = (d / "usage.jsonl").read_text(encoding="utf-8")
+    raw = (logs_directory / "usage.jsonl").read_text(encoding="utf-8")
     assert raw.count("\n") == 2
 
 
 def test_db_perf_off_by_default_writes_nothing(tmp_path):
     # "db-perf.jsonl ... off by default ([logs].db_perf, currently false)"
-    d = tmp_path / "logs"
-    led = ledger.Ledger(d)
+    logs_directory = tmp_path / "logs"
+    led = ledger.Ledger(logs_directory)
     led.usage(usage_event())
     led.trace(trace_event())
-    assert not (d / "db-perf.jsonl").exists()
+    assert not (logs_directory / "db-perf.jsonl").exists()
 
 
 @pytest.mark.parametrize("off", ["usage", "trace"])
 def test_section_switched_off_writes_nothing(tmp_path, off):
     # "each with an off-switch under a [logs] section in config.toml"
-    d = tmp_path / "logs"
-    led = ledger.Ledger(d, {off: False})
+    logs_directory = tmp_path / "logs"
+    led = ledger.Ledger(logs_directory, {off: False})
     led.usage(usage_event())
     led.trace(trace_event())
-    on = "trace" if off == "usage" else "usage"
-    assert not (d / f"{off}.jsonl").exists()
-    assert len(lines(d / f"{on}.jsonl")) == 1
+    other_section = "trace" if off == "usage" else "usage"
+    assert not (logs_directory / f"{off}.jsonl").exists()
+    assert len(lines(logs_directory / f"{other_section}.jsonl")) == 1
 
 
 # 2. Rotation -------------------------------------------------------------------
@@ -118,36 +120,44 @@ def test_section_switched_off_writes_nothing(tmp_path, off):
 
 def test_rotation_keeps_two_generations_and_never_more(tmp_path):
     # "rotated at 5 MB with two generations kept"
-    d = tmp_path / "logs"
-    d.mkdir()
-    led = ledger.Ledger(d)
-    live = d / "usage.jsonl"
+    logs_directory = tmp_path / "logs"
+    logs_directory.mkdir()
+    led = ledger.Ledger(logs_directory)
+    live = logs_directory / "usage.jsonl"
     filler = "x" * ledger.ROTATE_BYTES
-    for i in range(4):
+    for round_number in range(4):
         # a full live file, marked with its round number on line one
-        live.write_text(json.dumps({"marker": i}) + "\n" + filler + "\n", encoding="utf-8")
-        led.usage(usage_event(tag=f"round {i}"))
-    rotated = sorted(p for p in d.iterdir() if p.name.startswith("usage") and p != live)
+        live.write_text(
+            json.dumps({"marker": round_number}) + "\n" + filler + "\n", encoding="utf-8"
+        )
+        led.usage(usage_event(tag=f"round {round_number}"))
+    rotated = sorted(
+        rotated_path
+        for rotated_path in logs_directory.iterdir()
+        if rotated_path.name.startswith("usage") and rotated_path != live
+    )
     assert len(rotated) == ledger.GENERATIONS  # .1 and .2, never a third
     markers = set()
-    for p in rotated:
-        first = p.read_text(encoding="utf-8").splitlines()[0]
+    for rotated_path in rotated:
+        first = rotated_path.read_text(encoding="utf-8").splitlines()[0]
         markers.add(json.loads(first)["marker"])
     assert markers == {2, 3}  # the two newest generations kept
-    names = {p.name for p in rotated}
+    names = {rotated_path.name for rotated_path in rotated}
     assert names == {"usage.jsonl.1", "usage.jsonl.2"}
-    newest = json.loads((d / "usage.jsonl.1").read_text(encoding="utf-8").splitlines()[0])
+    newest = json.loads(
+        (logs_directory / "usage.jsonl.1").read_text(encoding="utf-8").splitlines()[0]
+    )
     assert newest["marker"] == 3
     # the live file stays under the limit after rotation
     assert (not live.exists()) or live.stat().st_size < ledger.ROTATE_BYTES
 
 
 def test_no_rotation_below_limit(tmp_path):
-    d = tmp_path / "logs"
-    led = ledger.Ledger(d)
+    logs_directory = tmp_path / "logs"
+    led = ledger.Ledger(logs_directory)
     for _ in range(5):
         led.usage(usage_event())
-    assert sorted(p.name for p in d.iterdir()) == ["usage.jsonl"]
+    assert sorted(path.name for path in logs_directory.iterdir()) == ["usage.jsonl"]
 
 
 # 3. Best effort --------------------------------------------------------------
@@ -171,25 +181,29 @@ def test_unwritable_directory_does_not_raise(tmp_path):
     [
         usage_event(kind="bogus"),  # enum api | chat
         usage_event(tokens_in=-1),  # minimum 0
-        {k: v for k, v in usage_event().items() if k != "model"},  # required
+        {key: value for key, value in usage_event().items() if key != "model"},  # required
         usage_event(extra_field=1),  # additionalProperties false
     ],
 )
 def test_malformed_usage_event_raises(tmp_path, bad):
     # coding.md "Failure"/"validate every artifact at write"; the line schema rejects it
-    d = tmp_path / "logs"
-    led = ledger.Ledger(d)
+    logs_directory = tmp_path / "logs"
+    led = ledger.Ledger(logs_directory)
     with pytest.raises(schemas.SchemaError):
         led.usage(bad)
-    assert not (d / "usage.jsonl").exists() or lines(d / "usage.jsonl") == []
+    assert (
+        not (logs_directory / "usage.jsonl").exists() or lines(logs_directory / "usage.jsonl") == []
+    )
 
 
 def test_malformed_trace_event_raises(tmp_path):
-    d = tmp_path / "logs"
-    led = ledger.Ledger(d)
+    logs_directory = tmp_path / "logs"
+    led = ledger.Ledger(logs_directory)
     with pytest.raises(schemas.SchemaError):
         led.trace(trace_event(argv="run --now"))  # argv must be an array
-    assert not (d / "trace.jsonl").exists() or lines(d / "trace.jsonl") == []
+    assert (
+        not (logs_directory / "trace.jsonl").exists() or lines(logs_directory / "trace.jsonl") == []
+    )
 
 
 # 5. read() -------------------------------------------------------------------
@@ -202,44 +216,48 @@ def test_read_missing_file_is_empty(tmp_path):
 def test_read_skips_and_counts_malformed_lines(tmp_path, capsys):
     # read(): "a malformed line is skipped, never raised, so a damaged ledger
     # still reads, and the number skipped is printed as one note on stderr"
-    d = tmp_path / "logs"
-    led = ledger.Ledger(d)
+    logs_directory = tmp_path / "logs"
+    led = ledger.Ledger(logs_directory)
     led.usage(usage_event(tag="first"))
     led.usage(usage_event(tag="second"))
-    p = d / "usage.jsonl"
-    good = p.read_text(encoding="utf-8").splitlines()
+    usage_path = logs_directory / "usage.jsonl"
+    good = usage_path.read_text(encoding="utf-8").splitlines()
     damaged = [
         good[0],
         "{this is not json",
         json.dumps({"at": "2026-10-03T00:00:00Z", "stage": "x"}),  # fails the line schema
         good[1],
     ]
-    p.write_text("\n".join(damaged) + "\n", encoding="utf-8")
-    out = ledger.read(p)
-    assert [r["tag"] for r in out] == ["first", "second"]
-    err = capsys.readouterr().err
-    assert "2 malformed" in err and "usage.jsonl" in err
+    usage_path.write_text("\n".join(damaged) + "\n", encoding="utf-8")
+    out = ledger.read(usage_path)
+    assert [record["tag"] for record in out] == ["first", "second"]
+    error_output = capsys.readouterr().err
+    assert "2 malformed" in error_output and "usage.jsonl" in error_output
 
 
 def test_read_returns_what_was_written(tmp_path, capsys):
-    d = tmp_path / "logs"
-    led = ledger.Ledger(d)
+    logs_directory = tmp_path / "logs"
+    led = ledger.Ledger(logs_directory)
     led.trace(trace_event(exit_code=1))
-    out = ledger.read(d / "trace.jsonl")
+    out = ledger.read(logs_directory / "trace.jsonl")
     assert len(out) == 1
     assert out[0]["exit_code"] == 1 and out[0]["argv"] == ["run", "--now"]
     assert "malformed" not in capsys.readouterr().err
 
 
 def test_read_with_rotated_reads_older_generations_first(tmp_path):
-    d = tmp_path / "logs"
-    led = ledger.Ledger(d)
+    logs_directory = tmp_path / "logs"
+    led = ledger.Ledger(logs_directory)
     for tag in ("old", "mid", "new"):
         led.usage(usage_event(tag=tag))
-    path = d / "usage.jsonl"
+    path = logs_directory / "usage.jsonl"
     older = path.read_text().splitlines()
     path.write_text(older[2] + "\n")
     path.with_name("usage.jsonl.1").write_text(older[1] + "\n")
     path.with_name("usage.jsonl.2").write_text(older[0] + "\n")
-    assert [e["tag"] for e in ledger.read(path)] == ["new"]
-    assert [e["tag"] for e in ledger.read(path, with_rotated=True)] == ["old", "mid", "new"]
+    assert [record["tag"] for record in ledger.read(path)] == ["new"]
+    assert [record["tag"] for record in ledger.read(path, with_rotated=True)] == [
+        "old",
+        "mid",
+        "new",
+    ]

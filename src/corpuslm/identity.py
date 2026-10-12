@@ -10,9 +10,9 @@ import re
 from typing import Any
 
 
-def canonical_sha256(obj: Any) -> str:
+def canonical_sha256(value: Any) -> str:
     """SHA-256 of canonical JSON: keys sorted, no whitespace, UTF-8."""
-    text = json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    text = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 

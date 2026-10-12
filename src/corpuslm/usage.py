@@ -81,18 +81,18 @@ def _add(row: dict, line: dict) -> None:
 
 def _caps(settings_file: Path | None) -> dict:
     """The two spend caps from a tool's own settings file; None where it sets none."""
-    caps: dict = {"per_run_usd": None, "per_day_usd": None, "problem": ""}
+    spend_caps: dict = {"per_run_usd": None, "per_day_usd": None, "problem": ""}
     if settings_file is None:
-        return caps
+        return spend_caps
     try:
         table = tomllib.loads(settings_file.read_text("utf-8")).get("llm", {})
     except (OSError, tomllib.TOMLDecodeError) as error:
-        return caps | {"problem": f"cannot read {settings_file}: {type(error).__name__}"}
+        return spend_caps | {"problem": f"cannot read {settings_file}: {type(error).__name__}"}
     for key, name in (("per_run_usd", "max_usd_per_run"), ("per_day_usd", "max_usd_per_day")):
         value = table.get(name) if isinstance(table, dict) else None
         if isinstance(value, int | float) and not isinstance(value, bool):
-            caps[key] = float(value)
-    return caps
+            spend_caps[key] = float(value)
+    return spend_caps
 
 
 def tool_spend(tool: str, folder: Path, settings_file: Path | None, month: str) -> dict:
@@ -101,24 +101,24 @@ def tool_spend(tool: str, folder: Path, settings_file: Path | None, month: str) 
     found = path.exists() or path.with_name("usage.jsonl.1").exists()
     total, by_stage, by_day = _empty(), {}, {}
     for line in ledger.read(path, with_rotated=True):
-        at = str(line.get("at", ""))
-        if not at.startswith(month):
+        timestamp = str(line.get("at", ""))
+        if not timestamp.startswith(month):
             continue
         _add(total, line)
         _add(by_stage.setdefault(str(line.get("stage", "?")), _empty()), line)
-        _add(by_day.setdefault(at[:10], _empty()), line)
-    caps = _caps(settings_file)
-    problems = [caps.pop("problem")] if caps["problem"] else []
-    caps.pop("problem", None)
+        _add(by_day.setdefault(timestamp[:10], _empty()), line)
+    spend_caps = _caps(settings_file)
+    problems = [spend_caps.pop("problem")] if spend_caps["problem"] else []
+    spend_caps.pop("problem", None)
     if not found:
         problems.append(f"{tool}: no usage.jsonl in {folder}")
     return {
         "tool": tool,
         "ledger": str(path),
         "ledger_found": found,
-        **caps,
+        **spend_caps,
         "total": total,
-        "biggest_day_usd": max((d["cost_usd"] for d in by_day.values()), default=0.0),
+        "biggest_day_usd": max((day["cost_usd"] for day in by_day.values()), default=0.0),
         "by_stage": dict(sorted(by_stage.items())),
         "by_day": dict(sorted(by_day.items())),
         "problems": problems,
@@ -142,17 +142,19 @@ def fetch_usage(database: Path, month: str) -> dict:
     except sqlite3.Error as error:
         board["problems"].append(f"cannot read fetch attempts: {error}")
         return board
-    for r in rows:
-        fetcher, outcome, n = r["fetcher"], r["outcome"], r["n"]
+    for row in rows:
+        fetcher, outcome, count = row["fetcher"], row["outcome"], row["n"]
         if fetcher.startswith("metadata:"):
             continue
-        board["by_day"].setdefault(r["day"], {}).setdefault(fetcher, {})[outcome] = n
-        slots = [board["all_time"]] + ([board["this_month"]] if r["day"].startswith(month) else [])
+        board["by_day"].setdefault(row["day"], {}).setdefault(fetcher, {})[outcome] = count
+        slots = [board["all_time"]] + (
+            [board["this_month"]] if row["day"].startswith(month) else []
+        )
         for table in slots:
             table.setdefault(fetcher, {}).setdefault(outcome, 0)
-            table[fetcher][outcome] += n
+            table[fetcher][outcome] += count
         if outcome == "error":
-            board["last_error"][fetcher] = r["last_detail"]
+            board["last_error"][fetcher] = row["last_detail"]
     return board
 
 
@@ -172,10 +174,11 @@ def board(
     return {
         "month": month,
         "model_spend": {
-            "tools": {t["tool"]: t for t in tools},
-            "cost_usd": round(sum(t["total"]["cost_usd"] for t in tools), 6),
+            "tools": {tool["tool"]: tool for tool in tools},
+            "cost_usd": round(sum(tool["total"]["cost_usd"] for tool in tools), 6),
         },
         "caption_fetches": fetches,
         "note": NOTE,
-        "problems": [p for t in tools for p in t["problems"]] + fetches["problems"],
+        "problems": [problem for tool in tools for problem in tool["problems"]]
+        + fetches["problems"],
     }

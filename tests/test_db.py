@@ -30,8 +30,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
-from hypothesis import given, settings
-from hypothesis import strategies as st
+from hypothesis import given, settings, strategies
 
 from corpuslm import db
 from corpuslm.store import Store
@@ -52,9 +51,9 @@ def dbpath(tmp_path):
 
 @pytest.fixture
 def database(dbpath):
-    d = db.Database(dbpath)
-    yield d
-    d.close()
+    database_handle = db.Database(dbpath)
+    yield database_handle
+    database_handle.close()
 
 
 @pytest.fixture
@@ -62,11 +61,13 @@ def store(database):
     return Store(database)
 
 
-def _video(store: Store, vid: str = VIDEO_ID, **changes) -> str:
-    assert store.add_source(vid, f"https://www.youtube.com/watch?v={vid}", created_by="cli")
+def _video(store: Store, video_id: str = VIDEO_ID, **changes) -> str:
+    assert store.add_source(
+        video_id, f"https://www.youtube.com/watch?v={video_id}", created_by="cli"
+    )
     if changes:
-        store.update_source(vid, changes)
-    return vid
+        store.update_source(video_id, changes)
+    return video_id
 
 
 def _corpus(store: Store, name: str = "Dharma", **extra) -> str:
@@ -84,10 +85,15 @@ def _corpus(store: Store, name: str = "Dharma", **extra) -> str:
 
 
 def _verdict(
-    store: Store, vid=VIDEO_ID, key="amb-0001", verdict="Dharma", sha256=HASH_A, kind="ambiguity"
+    store: Store,
+    video_id=VIDEO_ID,
+    key="amb-0001",
+    verdict="Dharma",
+    sha256=HASH_A,
+    kind="ambiguity",
 ):
     return store.append_review_verdict(
-        source_id=vid,
+        source_id=video_id,
         key=key,
         kind=kind,
         verdict=verdict,
@@ -119,15 +125,15 @@ def test_every_table_is_strict(database):
         "SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
     )
     checked = 0
-    for r in rows:
-        name, sql = r[0], r[1] or ""
+    for table_row in rows:
+        name, sql = table_row[0], table_row[1] or ""
         if sql.upper().startswith("CREATE VIRTUAL TABLE") or "segments_fts" in name:
             continue  # FTS5 index and its shadow tables are owned by SQLite
         assert "STRICT" in sql.upper(), f"{name} is not STRICT"
         checked += 1
     # every table named in the Tables section (excluding segments_fts) exists
-    names = {r[0] for r in rows}
-    for t in (
+    names = {row[0] for row in rows}
+    for table_name in (
         "sources",
         "source_tags",
         "source_topics",
@@ -147,7 +153,7 @@ def test_every_table_is_strict(database):
         "segments",
         "cleaned_segments",
     ):
-        assert t in names, t
+        assert table_name in names, table_name
     assert checked >= 18
 
 
@@ -170,10 +176,10 @@ def test_video_status_outside_enum_is_rejected(store, database):
 def test_member_reason_outside_enum_is_rejected(store):
     # corpus_members.reason: "one of author, discovered, consumer"
     _video(store)
-    cid = _corpus(store)
+    corpus_id = _corpus(store)
     with pytest.raises(sqlite3.IntegrityError):
-        store.add_member(cid, VIDEO_ID, "bogus", created_by="cli")
-    assert not store.is_member(cid, VIDEO_ID)
+        store.add_member(corpus_id, VIDEO_ID, "bogus", created_by="cli")
+    assert not store.is_member(corpus_id, VIDEO_ID)
 
 
 def test_corrupt_json_metadata_is_rejected(store, database):
@@ -194,7 +200,7 @@ def test_fetch_attempt_for_unknown_video_is_rejected(store):
 
 def test_review_verdict_for_unknown_video_is_rejected(store):
     with pytest.raises(sqlite3.IntegrityError):
-        _verdict(store, vid="noSuchVideo")
+        _verdict(store, video_id="noSuchVideo")
 
 
 # 4. db.loads -----------------------------------------------------------------
@@ -227,7 +233,10 @@ def test_two_verdicts_for_one_slot_keep_both_rows_newest_in_force(store):
     assert first != second
     history = store.review_verdict_history(VIDEO_ID, "amb-0001")
     assert len(history) == 2
-    assert [h["verdict"] for h in history] == ["Dharma", "Dhamma"]  # oldest first
+    assert [verdict_entry["verdict"] for verdict_entry in history] == [
+        "Dharma",
+        "Dhamma",
+    ]  # oldest first
     current = store.current_review_verdicts(VIDEO_ID)
     assert set(current) == {"amb-0001"}
     assert current["amb-0001"]["verdict"] == "Dhamma"
@@ -237,8 +246,8 @@ def test_two_verdicts_for_one_slot_keep_both_rows_newest_in_force(store):
 def test_newest_in_force_with_many_rewrites(store):
     # same rule, several rewrites in quick succession (same timestamp second)
     _video(store)
-    for v in ["one", "two", "three", "four", "five"]:
-        _verdict(store, verdict=v)
+    for text in ["one", "two", "three", "four", "five"]:
+        _verdict(store, verdict=text)
     assert store.current_review_verdicts(VIDEO_ID)["amb-0001"]["verdict"] == "five"
     assert len(store.review_verdict_history(VIDEO_ID, "amb-0001")) == 5
 
@@ -250,11 +259,15 @@ def test_previous_subject_sha256_lineage(store):
     _verdict(store, verdict="first", sha256=HASH_A)
     _verdict(store, verdict="second", sha256=HASH_A)  # same content, changed answer
     _verdict(store, verdict="third", sha256=HASH_B)  # different content
-    h = store.review_verdict_history(VIDEO_ID, "amb-0001")
-    assert [r["subject_sha256"] for r in h] == [HASH_A, HASH_A, HASH_B]
-    assert h[0]["previous_subject_sha256"] is None  # first in slot
-    assert h[1]["previous_subject_sha256"] is None  # same hash as the slot's current
-    assert h[2]["previous_subject_sha256"] == HASH_A
+    verdict_history = store.review_verdict_history(VIDEO_ID, "amb-0001")
+    assert [verdict_entry["subject_sha256"] for verdict_entry in verdict_history] == [
+        HASH_A,
+        HASH_A,
+        HASH_B,
+    ]
+    assert verdict_history[0]["previous_subject_sha256"] is None  # first in slot
+    assert verdict_history[1]["previous_subject_sha256"] is None  # same hash as the slot's current
+    assert verdict_history[2]["previous_subject_sha256"] == HASH_A
     assert store.current_review_verdicts(VIDEO_ID)["amb-0001"]["previous_subject_sha256"] == HASH_A
 
 
@@ -262,8 +275,8 @@ def test_lineage_is_per_slot(store):
     _video(store)
     _verdict(store, key="amb-0001", sha256=HASH_A)
     _verdict(store, key="amb-0002", sha256=HASH_B)
-    h = store.review_verdict_history(VIDEO_ID, "amb-0002")
-    assert h[0]["previous_subject_sha256"] is None
+    verdict_history = store.review_verdict_history(VIDEO_ID, "amb-0002")
+    assert verdict_history[0]["previous_subject_sha256"] is None
 
 
 def _fill_append_only(store):
@@ -353,10 +366,10 @@ def test_current_corrections_newest_per_span(store):
         origin_key="amb-0003",
         created_by="cli",
     )
-    cur = store.current_corrections()
-    assert set(cur) == {"darma", "sutta"}
-    assert cur["darma"]["verdict"] == "Dhamma"
-    assert cur["darma"]["kind"] == "reading"
+    corrections = store.current_corrections()
+    assert set(corrections) == {"darma", "sutta"}
+    assert corrections["darma"]["verdict"] == "Dhamma"
+    assert corrections["darma"]["kind"] == "reading"
     assert store.correction_count() == 2
     # kind filters the rules IN FORCE: the superseded 'term' row for darma is not in force
     assert set(store.current_corrections(kind="term")) == {"sutta"}
@@ -380,48 +393,52 @@ def test_correction_kind_outside_enum_is_rejected(store):
 # 7. Master data change log ---------------------------------------------------
 
 
-def _list_changes(store, vid):
+def _list_changes(store, video_id):
     # The spec leaves open whether a list change is filed under the master table or
     # the list table ("table_name: the master or list table"); accept either.
     def tagrows(table):
         return [
-            r
-            for r in store.changes_of(table, vid)
-            if r.get("column_name") in ("tags", "tag", "source_tags")
+            row
+            for row in store.changes_of(table, video_id)
+            if row.get("column_name") in ("tags", "tag", "source_tags")
         ]
 
-    a, b = tagrows("sources"), tagrows("source_tags")
-    return a if len(a) >= len(b) else b
+    first_changes, second_changes = tagrows("sources"), tagrows("source_tags")
+    return first_changes if len(first_changes) >= len(second_changes) else second_changes
 
 
 def test_title_change_is_logged_with_old_and_new(store):
     # "a trigger writes every changed column to change_log (old value, new value, row version)"
     _video(store)
     store.update_source(VIDEO_ID, {"title": "First title"})
-    v1 = store.source(VIDEO_ID)["version"]
+    first_version = store.source(VIDEO_ID)["version"]
     store.update_source(VIDEO_ID, {"title": "Second title"})
-    v2 = store.source(VIDEO_ID)["version"]
-    assert v2 == v1 + 1  # "version bumps on every update"
-    rows = [r for r in store.changes_of("sources", VIDEO_ID) if r["column_name"] == "title"]
+    second_version = store.source(VIDEO_ID)["version"]
+    assert second_version == first_version + 1  # "version bumps on every update"
+    rows = [row for row in store.changes_of("sources", VIDEO_ID) if row["column_name"] == "title"]
     match = [
-        r for r in rows if r["old_value"] == "First title" and r["new_value"] == "Second title"
+        row
+        for row in rows
+        if row["old_value"] == "First title" and row["new_value"] == "Second title"
     ]
     assert len(match) == 1
     # changes_of('sources', VID) already scopes table and row; row_version when exposed
     if "row_version" in match[0]:
-        assert match[0]["row_version"] == v2  # "the master row's version after the change"
+        assert (
+            match[0]["row_version"] == second_version
+        )  # "the master row's version after the change"
 
 
 def test_unchanged_column_is_not_logged(store):
     _video(store)
     store.update_source(VIDEO_ID, {"title": "T", "channel_title": "C"})
     store.update_source(VIDEO_ID, {"title": "T2"})
-    cols = [
-        r["column_name"]
-        for r in store.changes_of("sources", VIDEO_ID)
-        if r["new_value"] == "C" or r["old_value"] == "C"
+    column_names = [
+        row["column_name"]
+        for row in store.changes_of("sources", VIDEO_ID)
+        if row["new_value"] == "C" or row["old_value"] == "C"
     ]
-    assert cols == ["channel_title"]  # only the update that changed it
+    assert column_names == ["channel_title"]  # only the update that changed it
 
 
 def test_tags_change_logs_removed_and_added_elements(store):
@@ -429,11 +446,11 @@ def test_tags_change_logs_removed_and_added_elements(store):
     # new_value NULL for removed; row_id is the parent's id
     _video(store)
     store.update_source(VIDEO_ID, {"tags": ["alpha", "beta"]})
-    n0 = len(_list_changes(store, VIDEO_ID))
+    change_count_before = len(_list_changes(store, VIDEO_ID))
     store.update_source(VIDEO_ID, {"tags": ["alpha", "gamma"]})
-    new = _list_changes(store, VIDEO_ID)[n0:]
-    removed = sorted(r["old_value"] for r in new if r["new_value"] is None)
-    added = sorted(r["new_value"] for r in new if r["old_value"] is None)
+    new = _list_changes(store, VIDEO_ID)[change_count_before:]
+    removed = sorted(row["old_value"] for row in new if row["new_value"] is None)
+    added = sorted(row["new_value"] for row in new if row["old_value"] is None)
     assert removed == ["beta"]
     assert added == ["gamma"]
 
@@ -457,10 +474,10 @@ def test_video_lists_round_trip_in_order(store):
     topics = ["impermanence", "attachment"]
     people = [{"name": "Ajahn X", "role": "host"}, {"name": "Guest Y", "role": ""}]
     store.update_source(VIDEO_ID, {"tags": tags, "topics": topics, "people": people})
-    v = store.source(VIDEO_ID)
-    assert v["tags"] == tags
-    assert v["topics"] == topics
-    assert v["people"] == people
+    source = store.source(VIDEO_ID)
+    assert source["tags"] == tags
+    assert source["topics"] == topics
+    assert source["people"] == people
     store.update_source(VIDEO_ID, {"tags": ["only"]})
     assert store.source(VIDEO_ID)["tags"] == ["only"]
     assert store.source(VIDEO_ID)["topics"] == topics
@@ -468,10 +485,10 @@ def test_video_lists_round_trip_in_order(store):
 
 def test_fresh_video_lists_are_empty(store):
     _video(store)
-    v = store.source(VIDEO_ID)
-    assert v["tags"] == [] and v["topics"] == [] and v["people"] == []
-    assert v["status"] == "added"
-    assert v["version"] == 1
+    source = store.source(VIDEO_ID)
+    assert source["tags"] == [] and source["topics"] == [] and source["people"] == []
+    assert source["status"] == "added"
+    assert source["version"] == 1
 
 
 def test_add_source_twice_returns_false(store):
@@ -483,15 +500,15 @@ def test_add_source_twice_returns_false(store):
 
 
 def test_corpus_lists_round_trip(store):
-    cid = _corpus(store, topic=["meditation", "ethics"], perspective=["Theravada"])
-    c = store.corpus(cid)
-    assert c["name"] == "Dharma"
-    assert c["topic"] == ["meditation", "ethics"]
-    assert c["perspective"] == ["Theravada"]
-    store.update_corpus(cid, {"topic": ["ethics", "meditation", "wisdom"]})
-    c = store.corpus(cid)
-    assert c["topic"] == ["ethics", "meditation", "wisdom"]
-    assert c["perspective"] == ["Theravada"]
+    corpus_id = _corpus(store, topic=["meditation", "ethics"], perspective=["Theravada"])
+    corpus = store.corpus(corpus_id)
+    assert corpus["name"] == "Dharma"
+    assert corpus["topic"] == ["meditation", "ethics"]
+    assert corpus["perspective"] == ["Theravada"]
+    store.update_corpus(corpus_id, {"topic": ["ethics", "meditation", "wisdom"]})
+    corpus = store.corpus(corpus_id)
+    assert corpus["topic"] == ["ethics", "meditation", "wisdom"]
+    assert corpus["perspective"] == ["Theravada"]
 
 
 # 9. Membership status derived ------------------------------------------------
@@ -499,7 +516,7 @@ def test_corpus_lists_round_trip(store):
 
 def test_member_status_derived_from_video_status(store):
     # "added -> queued, ingested -> ingested, anything else -> failed"
-    cid = _corpus(store)
+    corpus_id = _corpus(store)
     statuses = {
         "vid00000001": "added",
         "vid00000002": "ingested",
@@ -507,14 +524,16 @@ def test_member_status_derived_from_video_status(store):
         "vid00000004": "no_captions",
         "vid00000005": "unavailable",
     }
-    for vid, status in statuses.items():
-        _video(store, vid)
+    for video_id, status in statuses.items():
+        _video(store, video_id)
         if status != "added":
-            store.update_source(vid, {"status": status})
-        store.add_member(cid, vid, "author", created_by="cli")
-    counts = {k: v for k, v in store.member_status_counts(cid).items() if v}
+            store.update_source(video_id, {"status": status})
+        store.add_member(corpus_id, video_id, "author", created_by="cli")
+    counts = {
+        status: count for status, count in store.member_status_counts(corpus_id).items() if count
+    }
     assert counts == {"queued": 1, "ingested": 1, "failed": 3}
-    by_vid = {m["id"]: m for m in store.member_sources(cid)}
+    by_vid = {member["id"]: member for member in store.member_sources(corpus_id)}
     expected = {
         "vid00000001": "queued",
         "vid00000002": "ingested",
@@ -522,13 +541,15 @@ def test_member_status_derived_from_video_status(store):
         "vid00000004": "failed",
         "vid00000005": "failed",
     }
-    assert {k: by_vid[k]["member_status"] for k in expected} == expected
-    assert all(m["member_reason"] == "author" for m in by_vid.values())
-    ingested = store.member_sources(cid, ingested_only=True)
-    assert [m["id"] for m in ingested] == ["vid00000002"]
+    assert {video_id: by_vid[video_id]["member_status"] for video_id in expected} == expected
+    assert all(member["member_reason"] == "author" for member in by_vid.values())
+    ingested = store.member_sources(corpus_id, ingested_only=True)
+    assert [member["id"] for member in ingested] == ["vid00000002"]
     # status follows the video: one fact, one place
     store.update_source("vid00000001", {"status": "ingested"})
-    counts = {k: v for k, v in store.member_status_counts(cid).items() if v}
+    counts = {
+        status: count for status, count in store.member_status_counts(corpus_id).items() if count
+    }
     assert counts == {"ingested": 2, "failed": 3}
 
 
@@ -538,7 +559,7 @@ def test_member_status_derived_from_video_status(store):
 def test_artifacts_for_video_and_corpus_owner(store):
     # artifacts: "exactly one of source_id and corpus_id is set"; "owner: generated"
     _video(store)
-    cid = _corpus(store)
+    corpus_id = _corpus(store)
     store.record_artifact(
         VIDEO_ID,
         "transcript",
@@ -550,7 +571,7 @@ def test_artifacts_for_video_and_corpus_owner(store):
         created_by="runner",
     )
     store.record_artifact(
-        cid,
+        corpus_id,
         "corpus_note",
         path="corpora/x/note.md",
         sha256=HASH_B,
@@ -559,11 +580,15 @@ def test_artifacts_for_video_and_corpus_owner(store):
         provenance={},
         created_by="runner",
     )
-    a = store.artifact(VIDEO_ID, "transcript")
-    assert a is not None and a["state"] == "built" and a["sha256"] == HASH_A
-    assert a["path"] == "videos/x/transcript.json"
-    c = store.artifact(cid, "corpus_note")
-    assert c is not None and c["sha256"] == HASH_B
+    transcript_artifact = store.artifact(VIDEO_ID, "transcript")
+    assert (
+        transcript_artifact is not None
+        and transcript_artifact["state"] == "built"
+        and transcript_artifact["sha256"] == HASH_A
+    )
+    assert transcript_artifact["path"] == "videos/x/transcript.json"
+    corpus_note = store.artifact(corpus_id, "corpus_note")
+    assert corpus_note is not None and corpus_note["sha256"] == HASH_B
     assert store.artifact(VIDEO_ID, "corpus_note") is None
     assert store.mark_stale(VIDEO_ID, "transcript") is True
     assert store.artifact(VIDEO_ID, "transcript")["state"] == "stale"
@@ -634,12 +659,12 @@ def test_search_finds_text_with_start_seconds(store):
     assert store.segment_count() == 2
     hits = store.search("eightfold", corpus_id=None, limit=10)
     assert len(hits) == 1
-    h = hits[0]
-    assert h["source_id"] == VIDEO_ID
-    assert h["start_seconds"] == 4.5
-    assert h["end_seconds"] == 9.25
-    assert h["position"] == 1
-    assert h["title"] == "Talk one"
+    hit = hits[0]
+    assert hit["source_id"] == VIDEO_ID
+    assert hit["start_seconds"] == 4.5
+    assert hit["end_seconds"] == 9.25
+    assert hit["position"] == 1
+    assert hit["title"] == "Talk one"
 
 
 def test_replace_segments_rebuilds_whole(store):
@@ -673,14 +698,14 @@ def test_search_corpus_filter_excludes_non_members(store):
         SECOND_VIDEO_ID,
         [{"idx": 0, "t0": 7.0, "t1": 8.0, "speaker": "", "text": "eightfold again"}],
     )
-    cid = _corpus(store)
-    store.add_member(cid, SECOND_VIDEO_ID, "author", created_by="cli")
-    assert {h["source_id"] for h in store.search("eightfold", corpus_id=None, limit=10)} == {
+    corpus_id = _corpus(store)
+    store.add_member(corpus_id, SECOND_VIDEO_ID, "author", created_by="cli")
+    assert {hit["source_id"] for hit in store.search("eightfold", corpus_id=None, limit=10)} == {
         VIDEO_ID,
         SECOND_VIDEO_ID,
     }
-    hits = store.search("eightfold", corpus_id=cid, limit=10)
-    assert [h["source_id"] for h in hits] == [SECOND_VIDEO_ID]
+    hits = store.search("eightfold", corpus_id=corpus_id, limit=10)
+    assert [hit["source_id"] for hit in hits] == [SECOND_VIDEO_ID]
     assert hits[0]["start_seconds"] == 7.0
 
 
@@ -698,15 +723,15 @@ def test_run_lifecycle(store):
     # runs: "opened running and closed once as ok or error"; finished_at "NULL exactly while
     # running"
     rid = store.open_run("workspace", created_by="cli")
-    r = store.run(rid)
-    assert r["status"] == "running"
-    assert r["finished_at"] is None
-    assert r["scope"] == "workspace"
+    run = store.run(rid)
+    assert run["status"] == "running"
+    assert run["finished_at"] is None
+    assert run["scope"] == "workspace"
     store.close_run(rid, status="ok", sources=3, failed_items=0)
-    r = store.run(rid)
-    assert r["status"] == "ok"
-    assert r["finished_at"] is not None
-    assert r["sources"] == 3 and r["failed_items"] == 0
+    run = store.run(rid)
+    assert run["status"] == "ok"
+    assert run["finished_at"] is not None
+    assert run["sources"] == 3 and run["failed_items"] == 0
 
 
 def test_close_run_with_running_status_raises(store):
@@ -717,18 +742,18 @@ def test_close_run_with_running_status_raises(store):
 
 def test_last_successful_run_ignores_errors_and_takes_newest(store):
     assert store.last_successful_run() is None
-    r1 = store.open_run("workspace", created_by="cli")
-    store.close_run(r1, status="ok", sources=1, failed_items=0)
+    first_run = store.open_run("workspace", created_by="cli")
+    store.close_run(first_run, status="ok", sources=1, failed_items=0)
     time.sleep(1.1)
-    r2 = store.open_run("corpus:c1", created_by="cli")
-    store.close_run(r2, status="error", sources=2, failed_items=1, detail="boom")
-    assert store.last_successful_run()["id"] == r1
+    second_run = store.open_run("corpus:c1", created_by="cli")
+    store.close_run(second_run, status="error", sources=2, failed_items=1, detail="boom")
+    assert store.last_successful_run()["id"] == first_run
     time.sleep(1.1)
-    r3 = store.open_run("videos:2", created_by="cli")
-    store.close_run(r3, status="ok", sources=2, failed_items=0)
-    r4 = store.open_run("workspace", created_by="cli")  # still running: not successful
-    assert store.last_successful_run()["id"] == r3
-    assert store.run(r4)["status"] == "running"
+    third_run = store.open_run("videos:2", created_by="cli")
+    store.close_run(third_run, status="ok", sources=2, failed_items=0)
+    fourth_run = store.open_run("workspace", created_by="cli")  # still running: not successful
+    assert store.last_successful_run()["id"] == third_run
+    assert store.run(fourth_run)["status"] == "running"
 
 
 # 13. Migration of a v1 database ----------------------------------------------
@@ -737,15 +762,16 @@ V1_TS = "2026-05-01T10:00:00Z"
 
 
 def _build_v1(path: Path) -> None:
-    conn = sqlite3.connect(path)
-    conn.executescript(SCHEMA_V1.read_text(encoding="utf-8"))
+    connection = sqlite3.connect(path)
+    connection.executescript(SCHEMA_V1.read_text(encoding="utf-8"))
     base = dict(version=1, created_at=V1_TS, created_by="cli", schema_version="1", metadata="{}")
 
     def ins(table, row):
         row = {**base, **row}
-        cols = ", ".join(row)
-        conn.execute(
-            f"INSERT INTO {table} ({cols}) VALUES ({', '.join('?' * len(row))})", list(row.values())
+        column_list = ", ".join(row)
+        connection.execute(
+            f"INSERT INTO {table} ({column_list}) VALUES ({', '.join('?' * len(row))})",
+            list(row.values()),
         )
 
     ins(
@@ -882,21 +908,21 @@ def _build_v1(path: Path) -> None:
         (0, 0.0, 3.0, "welcome everyone"),
         (1, 3.0, 7.5, "the noble eightfold path"),
     ]:
-        conn.execute(
+        connection.execute(
             "INSERT INTO segments (video_id, idx, t0, t1, speaker, text) VALUES (?,?,?,?,?,?)",
             (VIDEO_ID, index, start_seconds, end_seconds, "Host", text),
         )
-    conn.commit()
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 0
-    conn.close()
+    connection.commit()
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 0
+    connection.close()
 
 
 def _rows(path: Path, sql: str):
-    conn = sqlite3.connect(path)
+    connection = sqlite3.connect(path)
     try:
-        return conn.execute(sql).fetchall()
+        return connection.execute(sql).fetchall()
     finally:
-        conn.close()
+        connection.close()
 
 
 RV_SQL = "SELECT id, source_id, key, kind, verdict, created_at FROM review_verdicts ORDER BY id"
@@ -907,55 +933,70 @@ RV_SQL_V1 = RV_SQL.replace("source_id", "video_id")
 def migrated(dbpath):
     _build_v1(dbpath)
     original_rv = _rows(dbpath, RV_SQL_V1)
-    d = db.Database(dbpath)
-    yield d, Store(d), original_rv
-    d.close()
+    database_handle = db.Database(dbpath)
+    yield database_handle, Store(database_handle), original_rv
+    database_handle.close()
 
 
 def test_v1_upgrades_to_user_version(migrated, dbpath):
     # "upgrades an older database in place"
-    d, _, _ = migrated
-    assert d.one("PRAGMA user_version")[0] == db.USER_VERSION
-    assert d.one("PRAGMA integrity_check")[0] == "ok"
-    assert d.all("PRAGMA foreign_key_check") == []
+    database_handle, _, _ = migrated
+    assert database_handle.one("PRAGMA user_version")[0] == db.USER_VERSION
+    assert database_handle.one("PRAGMA integrity_check")[0] == "ok"
+    assert database_handle.all("PRAGMA foreign_key_check") == []
 
 
 def test_v1_backup_is_verified_and_complete(migrated, dbpath):
     # "first a backup ... to <workspace>/backups/<db file stem>-<UTC timestamp>-before-v4.sqlite ...
     #  verified with PRAGMA integrity_check and a row count of every owner table"
     _, _, original_rv = migrated
-    bdir = dbpath.parent / db.BACKUPS_DIRNAME
+    backups_directory = dbpath.parent / db.BACKUPS_DIRNAME
     assert db.BACKUPS_DIRNAME == "backups"
-    files = [p for p in bdir.iterdir() if p.is_file() and p.suffix == ".sqlite"]
+    files = [
+        path for path in backups_directory.iterdir() if path.is_file() and path.suffix == ".sqlite"
+    ]
     assert len(files) == 1
-    b = files[0]
-    assert b.name.startswith("transcript-") and b.name.endswith("-before-v9.sqlite")
-    assert _rows(b, "PRAGMA integrity_check")[0][0] == "ok"
-    assert _rows(b, RV_SQL_V1) == original_rv
-    assert _rows(b, "SELECT COUNT(*) FROM speaker_verdicts")[0][0] == 1
-    assert _rows(b, "SELECT COUNT(*) FROM corrections")[0][0] == 2
-    assert _rows(b, "PRAGMA user_version")[0][0] == 0  # the copy is from before
+    backup_path = files[0]
+    assert backup_path.name.startswith("transcript-") and backup_path.name.endswith(
+        "-before-v9.sqlite"
+    )
+    assert _rows(backup_path, "PRAGMA integrity_check")[0][0] == "ok"
+    assert _rows(backup_path, RV_SQL_V1) == original_rv
+    assert _rows(backup_path, "SELECT COUNT(*) FROM speaker_verdicts")[0][0] == 1
+    assert _rows(backup_path, "SELECT COUNT(*) FROM corrections")[0][0] == 2
+    assert _rows(backup_path, "PRAGMA user_version")[0][0] == 0  # the copy is from before
 
 
 def test_v1_owner_decisions_survive(migrated):
     # every review verdict and correction survives with the same id, verdict, created_at
     _, store, _ = migrated
-    cur = store.current_review_verdicts(VIDEO_ID)
-    assert set(cur) == {"amb-0001", "spk-1"}
-    assert (cur["amb-0001"]["id"], cur["amb-0001"]["verdict"], cur["amb-0001"]["created_at"]) == (
+    verdicts = store.current_review_verdicts(VIDEO_ID)
+    assert set(verdicts) == {"amb-0001", "spk-1"}
+    assert (
+        verdicts["amb-0001"]["id"],
+        verdicts["amb-0001"]["verdict"],
+        verdicts["amb-0001"]["created_at"],
+    ) == (
         "rv_1",
         "Dharma",
         "2026-05-02T09:00:00Z",
     )
-    assert (cur["spk-1"]["id"], cur["spk-1"]["verdict"], cur["spk-1"]["created_at"]) == (
+    assert (
+        verdicts["spk-1"]["id"],
+        verdicts["spk-1"]["verdict"],
+        verdicts["spk-1"]["created_at"],
+    ) == (
         "rv_2",
         "Ajahn X",
         "2026-05-02T09:01:00Z",
     )
-    assert cur["spk-1"]["source"] == "phone page"
-    assert cur["amb-0001"]["span"] == "darma"
+    assert verdicts["spk-1"]["source"] == "phone page"
+    assert verdicts["amb-0001"]["span"] == "darma"
     cors = store.current_corrections()
-    assert {k: (v["id"], v["verdict"], v["kind"], v["created_at"]) for k, v in cors.items()} == {
+    assert {
+        key: (row["id"], row["verdict"], row["kind"], row["created_at"])
+        for key, row in cors.items()
+    } == {
         "darma": ("cor_1", "Dharma", "term", "2026-05-02T09:00:00Z"),
         "sutra": ("cor_2", "sutta", "reading", "2026-05-02T09:02:00Z"),
     }
@@ -965,21 +1006,21 @@ def test_v1_owner_decisions_survive(migrated):
 
 def test_v1_migration_writes_no_change_log(migrated):
     # "creates triggers and views (so the copy writes no change-log rows)"
-    d, _, _ = migrated
-    assert d.one("SELECT COUNT(*) FROM change_log")[0] == 0
+    database_handle, _, _ = migrated
+    assert database_handle.one("SELECT COUNT(*) FROM change_log")[0] == 0
 
 
 def test_v1_lists_read_back_through_store(migrated):
     _, store, _ = migrated
-    v = store.source(VIDEO_ID)
-    assert v["tags"] == ["zen", "breath"]
-    assert v["topics"] == ["impermanence"]
-    assert v["people"] == [{"name": "Ajahn X", "role": "host"}]
-    assert v["title"] == "Old talk"
-    assert v["duration_seconds"] == 3600
-    c = store.corpus("crp_1")
-    assert c["topic"] == ["meditation", "ethics"]
-    assert c["perspective"] == ["Theravada"]
+    source = store.source(VIDEO_ID)
+    assert source["tags"] == ["zen", "breath"]
+    assert source["topics"] == ["impermanence"]
+    assert source["people"] == [{"name": "Ajahn X", "role": "host"}]
+    assert source["title"] == "Old talk"
+    assert source["duration_seconds"] == 3600
+    corpus = store.corpus("crp_1")
+    assert corpus["topic"] == ["meditation", "ethics"]
+    assert corpus["perspective"] == ["Theravada"]
 
 
 def test_v1_empty_perspective_reads_as_none(migrated):
@@ -991,7 +1032,7 @@ def test_v1_empty_perspective_reads_as_none(migrated):
 
 def test_v1_members_status_derived_and_search_works(migrated):
     _, store, _ = migrated
-    by_vid = {m["id"]: m for m in store.member_sources("crp_1")}
+    by_vid = {member["id"]: member for member in store.member_sources("crp_1")}
     assert by_vid[VIDEO_ID]["member_status"] == "ingested"
     assert by_vid[SECOND_VIDEO_ID]["member_status"] == "queued"
     assert by_vid[SECOND_VIDEO_ID]["member_reason"] == "discovered"
@@ -1001,20 +1042,20 @@ def test_v1_members_status_derived_and_search_works(migrated):
     assert hits[0]["start_seconds"] == 3.0
     assert hits[0]["position"] == 1
     assert len(store.search("eightfold", corpus_id="crp_1", limit=10)) == 1
-    a = store.artifact(VIDEO_ID, "transcript")
-    assert a is not None and a["sha256"] == HASH_A
+    transcript_artifact = store.artifact(VIDEO_ID, "transcript")
+    assert transcript_artifact is not None and transcript_artifact["sha256"] == HASH_A
 
 
 def test_v1_reopen_is_a_noop(migrated, dbpath):
-    d, _, _ = migrated
-    d.close()
-    d2 = db.Database(dbpath)
+    database_handle, _, _ = migrated
+    database_handle.close()
+    reopened_database = db.Database(dbpath)
     try:
-        assert d2.one("PRAGMA user_version")[0] == db.USER_VERSION
-        assert d2.one("SELECT COUNT(*) FROM review_verdicts")[0] == 2
+        assert reopened_database.one("PRAGMA user_version")[0] == db.USER_VERSION
+        assert reopened_database.one("SELECT COUNT(*) FROM review_verdicts")[0] == 2
     finally:
-        d2.close()
-    files = [p for p in (dbpath.parent / "backups").iterdir() if p.suffix == ".sqlite"]
+        reopened_database.close()
+    files = [path for path in (dbpath.parent / "backups").iterdir() if path.suffix == ".sqlite"]
     assert len(files) == 1  # no second backup for a current database
 
 
@@ -1024,25 +1065,25 @@ def test_v1_reopen_is_a_noop(migrated, dbpath):
 def test_newer_database_is_declined_untouched(dbpath):
     # "declines a database whose version is newer than this code (NewerDatabase; nothing is
     # touched)"
-    d = db.Database(dbpath)
-    s = Store(d)
-    _video(s, title="Keep me")
-    d.close()
-    conn = sqlite3.connect(dbpath)
-    conn.execute(f"PRAGMA user_version = {db.USER_VERSION + 1}")
-    conn.commit()
-    dump_before = list(conn.iterdump())
-    conn.close()
+    database_handle = db.Database(dbpath)
+    store = Store(database_handle)
+    _video(store, title="Keep me")
+    database_handle.close()
+    connection = sqlite3.connect(dbpath)
+    connection.execute(f"PRAGMA user_version = {db.USER_VERSION + 1}")
+    connection.commit()
+    dump_before = list(connection.iterdump())
+    connection.close()
     with pytest.raises(db.NewerDatabase):
         db.Database(dbpath)
-    conn = sqlite3.connect(dbpath)
+    connection = sqlite3.connect(dbpath)
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == db.USER_VERSION + 1
-        assert list(conn.iterdump()) == dump_before
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == db.USER_VERSION + 1
+        assert list(connection.iterdump()) == dump_before
     finally:
-        conn.close()
-    bdir = dbpath.parent / "backups"
-    assert not bdir.exists() or not any(bdir.iterdir())
+        connection.close()
+    backups_directory = dbpath.parent / "backups"
+    assert not backups_directory.exists() or not any(backups_directory.iterdir())
 
 
 # 15. canonical_sha256 --------------------------------------------------------
@@ -1050,7 +1091,7 @@ def test_newer_database_is_declined_untouched(dbpath):
 
 def test_canonical_sha256_matches_hand_computation():
     # "SHA-256 of canonical JSON (keys sorted, no whitespace, UTF-8)"
-    obj = {
+    json_object = {
         "type": "ambiguity",
         "source_id": VIDEO_ID,
         "span": "dhárma é",
@@ -1063,9 +1104,11 @@ def test_canonical_sha256_matches_hand_computation():
         "type": "ambiguity",
     }
     expected = hashlib.sha256(
-        json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        json.dumps(json_object, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
+            "utf-8"
+        )
     ).hexdigest()
-    assert db.canonical_sha256(obj) == expected
+    assert db.canonical_sha256(json_object) == expected
     assert db.canonical_sha256(reordered) == expected
     assert len(expected) == 64
     assert (
@@ -1073,10 +1116,11 @@ def test_canonical_sha256_matches_hand_computation():
     )
 
 
-_json = st.recursive(
-    st.none() | st.booleans() | st.integers() | st.text(max_size=8),
+_json = strategies.recursive(
+    strategies.none() | strategies.booleans() | strategies.integers() | strategies.text(max_size=8),
     lambda children: (
-        st.lists(children, max_size=4) | st.dictionaries(st.text(max_size=6), children, max_size=4)
+        strategies.lists(children, max_size=4)
+        | strategies.dictionaries(strategies.text(max_size=6), children, max_size=4)
     ),
     max_leaves=12,
 )
@@ -1089,23 +1133,26 @@ HASH_DEADLINE = timedelta(seconds=2)
 
 
 @settings(deadline=HASH_DEADLINE)
-@given(obj=st.dictionaries(st.text(max_size=6), _json, max_size=6), data=st.data())
-def test_canonical_sha256_ignores_key_order(obj, data):
+@given(
+    json_object=strategies.dictionaries(strategies.text(max_size=6), _json, max_size=6),
+    data=strategies.data(),
+)
+def test_canonical_sha256_ignores_key_order(json_object, data):
     """Property (written with the code; docs/design/storage-schema.md, "A
     verdict carries the content hash of what it judged"): the content hash
     of a JSON object does not depend on the order its keys were written in.
     (That ytlm's runner hash is the same function is tested in ytlm.)"""
-    keys = data.draw(st.permutations(list(obj)))
-    shuffled = {k: obj[k] for k in keys}
-    assert db.canonical_sha256(shuffled) == db.canonical_sha256(obj)
-    assert re.fullmatch(r"[0-9a-f]{64}", db.canonical_sha256(obj))
+    keys = data.draw(strategies.permutations(list(json_object)))
+    shuffled = {key: json_object[key] for key in keys}
+    assert db.canonical_sha256(shuffled) == db.canonical_sha256(json_object)
+    assert re.fullmatch(r"[0-9a-f]{64}", db.canonical_sha256(json_object))
 
 
 @settings(deadline=HASH_DEADLINE)
-@given(a=_json, b=_json)
-def test_different_json_values_get_different_hashes(a, b):
-    if json.dumps(a, sort_keys=True) != json.dumps(b, sort_keys=True):
-        assert db.canonical_sha256(a) != db.canonical_sha256(b)
+@given(first_value=_json, second_value=_json)
+def test_different_json_values_get_different_hashes(first_value, second_value):
+    if json.dumps(first_value, sort_keys=True) != json.dumps(second_value, sort_keys=True):
+        assert db.canonical_sha256(first_value) != db.canonical_sha256(second_value)
 
 
 def test_the_hash_properties_carry_an_explicit_deadline():
@@ -1134,10 +1181,10 @@ def _doc_sections() -> dict[str, dict]:
     out: dict[str, dict] = {}
     current = None
     for line in DOC.read_text(encoding="utf-8").splitlines():
-        m = re.match(r"^### `([a-z_]+)`( \(view\))?$", line)
-        if m:
-            current = out[m.group(1)] = {
-                "view": bool(m.group(2)),
+        heading_match = re.match(r"^### `([a-z_]+)`( \(view\))?$", line)
+        if heading_match:
+            current = out[heading_match.group(1)] = {
+                "view": bool(heading_match.group(2)),
                 "history": None,
                 "columns": [],
                 "same_as": None,
@@ -1147,14 +1194,14 @@ def _doc_sections() -> dict[str, dict]:
             current = None
         if current is None:
             continue
-        h = re.match(r"^History: (.+)\.$", line)
-        if h:
-            current["history"] = h.group(1)
-        s = re.match(r"^Every column of `([a-z_]+)`", line)
-        if s:
-            current["same_as"] = s.group(1)
+        history_match = re.match(r"^History: (.+)\.$", line)
+        if history_match:
+            current["history"] = history_match.group(1)
+        columns_match = re.match(r"^Every column of `([a-z_]+)`", line)
+        if columns_match:
+            current["same_as"] = columns_match.group(1)
         if line.startswith("| ") and not line.startswith(("| column |", "|---")):
-            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
             current["columns"].append(tuple(cells))
     return out
 
@@ -1162,24 +1209,24 @@ def _doc_sections() -> dict[str, dict]:
 def test_the_schema_document_mirrors_the_code():
     """coding.md, "Storage and migrations": the stored schema is defined in
     code; its doc mirrors it and a test fails if they differ."""
-    conn = sqlite3.connect(":memory:")
-    conn.executescript(db.SCHEMA)
+    connection = sqlite3.connect(":memory:")
+    connection.executescript(db.SCHEMA)
     objects = {
         name: kind
-        for name, kind in conn.execute(
+        for name, kind in connection.execute(
             "SELECT name, type FROM sqlite_master WHERE type IN ('table', 'view') "
             "AND name NOT LIKE '%segments_fts%'"
         )
     }
     document = _doc_sections()
     assert set(document) == set(objects)
-    history = {t: "master" for t in db.MASTER_COLUMNS}
-    history |= {t: "append-only" for t in db.APPEND_ONLY}
+    history = {table_name: "master" for table_name in db.MASTER_COLUMNS}
+    history |= {table_name: "append-only" for table_name in db.APPEND_ONLY}
     history |= {
-        t: f"list `{name}` of `{p}`"
-        for t, p, name in (
-            (t, "sources" if parent == "source_id" else "corpora", name)
-            for t, parent, name, _ in db.LIST_TABLES
+        table_name: f"list `{name}` of `{parent_name}`"
+        for table_name, parent_name, name in (
+            (table_name, "sources" if parent == "source_id" else "corpora", name)
+            for table_name, parent, name, _ in db.LIST_TABLES
         )
     }
     history |= {
@@ -1194,50 +1241,59 @@ def test_the_schema_document_mirrors_the_code():
     for name, kind in objects.items():
         section = document[name]
         assert section["view"] == (kind == "view"), name
-        cols = conn.execute(f"PRAGMA table_xinfo({name})").fetchall()
+        columns = connection.execute(f"PRAGMA table_xinfo({name})").fetchall()
         if section["same_as"]:
-            same = [c[1] for c in conn.execute(f"PRAGMA table_xinfo({section['same_as']})")]
-            assert [c[1] for c in cols] == same, name
+            same = [
+                column[1]
+                for column in connection.execute(f"PRAGMA table_xinfo({section['same_as']})")
+            ]
+            assert [column[1] for column in columns] == same, name
             continue
         if kind == "table":
             assert section["history"] == history[name], name
         want = []
-        for _, col, typ, notnull, _, pk, _ in cols:
+        for _, column_name, column_type, notnull, _, primary_key, _ in columns:
             if (
                 kind == "table"
-                and col in BASE
+                and column_name in BASE
                 and section["columns"][:1] == [("(base)", "", "", "")]
             ):
                 continue
-            null = "" if kind == "view" else ("no" if notnull or pk else "yes")
-            want.append((col, typ, null))
-        got = [(c, t, n) for c, t, n, _ in section["columns"] if c != "(base)"]
+            null = "" if kind == "view" else ("no" if notnull or primary_key else "yes")
+            want.append((column_name, column_type, null))
+        got = [
+            (column_name, column_type, nullable)
+            for column_name, column_type, nullable, _ in section["columns"]
+            if column_name != "(base)"
+        ]
         assert got == want, name
-        sql = conn.execute("SELECT sql FROM sqlite_master WHERE name = ?", (name,)).fetchone()[0]
+        sql = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE name = ?", (name,)
+        ).fetchone()[0]
         checks = dict(re.findall(r"CHECK \((\w+) IN \(([^)]*)\)\)", sql))
-        for col, _type, _null, meaning in section["columns"]:
-            if kind == "table" and col in checks:
-                for value in re.findall(r"'([^']*)'", checks[col]):
-                    assert f"`{value}`" in meaning, (name, col, value)
+        for column_name, _type, _null, meaning in section["columns"]:
+            if kind == "table" and column_name in checks:
+                for value in re.findall(r"'([^']*)'", checks[column_name]):
+                    assert f"`{value}`" in meaning, (name, column_name, value)
 
 
 def test_master_data_logs_every_column_but_the_identity_ones():
     """architecture.md, "History and identity": master data keeps a
     field-level change log by trigger; a column left out would change
     without a trace."""
-    conn = sqlite3.connect(":memory:")
-    conn.executescript(db.SCHEMA)
+    connection = sqlite3.connect(":memory:")
+    connection.executescript(db.SCHEMA)
     for table, logged in db.MASTER_COLUMNS.items():
-        columns = [c[1] for c in conn.execute(f"PRAGMA table_xinfo({table})")]
-        expected = [c for c in columns if c not in BASE or c == "metadata"]
+        columns = [column[1] for column in connection.execute(f"PRAGMA table_xinfo({table})")]
+        expected = [column for column in columns if column not in BASE or column == "metadata"]
         if table == "corpus_members":
-            expected = [c for c in expected if c not in ("corpus_id", "source_id")]
+            expected = [column for column in expected if column not in ("corpus_id", "source_id")]
         if table == "review_answers":
-            expected = [c for c in expected if c not in ("corpus_id", "card_id")]
+            expected = [column for column in expected if column not in ("corpus_id", "card_id")]
         if table == "feeds":
-            expected = [c for c in expected if c != "feed_id"]
+            expected = [column for column in expected if column != "feed_id"]
         if table == "source_skips":
-            expected = [c for c in expected if c != "source_id"]
+            expected = [column for column in expected if column != "source_id"]
         assert sorted(logged) == sorted(expected), table
 
 
@@ -1255,12 +1311,12 @@ def test_no_module_but_the_repository_speaks_sql():
     and writes of a store (storage-schema.md, "One module owns the store")."""
     offenders = []
     for path in sorted(SRC.rglob("*.py")):
-        rel = path.relative_to(SRC).as_posix()
-        if rel in ("db.py", "store.py") or rel in NOT_YET:
+        relative_path = path.relative_to(SRC).as_posix()
+        if relative_path in ("db.py", "store.py") or relative_path in NOT_YET:
             continue
-        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             if SQL.search(line) or RAW_ACCESS.search(line):
-                offenders.append(f"{rel}:{n}: {line.strip()}")
+                offenders.append(f"{relative_path}:{line_number}: {line.strip()}")
     assert offenders == []
 
 
@@ -1269,17 +1325,17 @@ def test_a_database_another_process_upgraded_meanwhile_is_left_to_it(tmp_path, m
     explicit transaction; the version is re-read once the write lock is held,
     so a second process never rebuilds an already upgraded database."""
     path = tmp_path / "transcript.sqlite"
-    conn = sqlite3.connect(path)
-    conn.executescript((Path(__file__).parent / "fixtures" / "schema_v1.sql").read_text())
-    conn.close()
+    connection = sqlite3.connect(path)
+    connection.executescript((Path(__file__).parent / "fixtures" / "schema_v1.sql").read_text())
+    connection.close()
     real_backup = db.backup
     others = []
 
-    def backup_while_another_process_migrates(c, p, *, label):
-        saved = real_backup(c, p, label=label)
+    def backup_while_another_process_migrates(connection, database_path, *, label):
+        saved = real_backup(connection, database_path, label=label)
         if not others:  # the other process opens and upgrades first
-            others.append(p)
-            db.Database(p).close()
+            others.append(database_path)
+            db.Database(database_path).close()
         return saved
 
     monkeypatch.setattr(db, "backup", backup_while_another_process_migrates)
@@ -1293,28 +1349,32 @@ def test_a_database_another_process_upgraded_meanwhile_is_left_to_it(tmp_path, m
 # 16. Backup retention: the newest three (owner ruling 2026-10-03) ----------
 
 
-def _old_backups(dbpath, n: int) -> list[str]:
-    bdir = dbpath.parent / db.BACKUPS_DIRNAME
-    bdir.mkdir(exist_ok=True)
-    names = [f"{dbpath.stem}-2026010{i}T000000Z-before-v4.sqlite" for i in range(1, n + 1)]
+def _old_backups(dbpath, count: int) -> list[str]:
+    backups_directory = dbpath.parent / db.BACKUPS_DIRNAME
+    backups_directory.mkdir(exist_ok=True)
+    names = [f"{dbpath.stem}-2026010{day}T000000Z-before-v4.sqlite" for day in range(1, count + 1)]
     for name in names:
-        (bdir / name).write_bytes(b"old")
-    (bdir / "notes.txt").write_text("the owner's")
-    (bdir / "other-20260101T000000Z-x.sqlite").write_bytes(b"not ours")
+        (backups_directory / name).write_bytes(b"old")
+    (backups_directory / "notes.txt").write_text("the owner's")
+    (backups_directory / "other-20260101T000000Z-x.sqlite").write_bytes(b"not ours")
     return names
 
 
 def test_a_verified_backup_leaves_the_newest_three(dbpath):
     old = _old_backups(dbpath, 4)
     _build_v1(dbpath)
-    d = db.Database(dbpath)
-    d.close()
-    assert sorted(d.migration["backups_deleted"]) == old[:2]
-    bdir = dbpath.parent / db.BACKUPS_DIRNAME
-    ours = sorted(p.name for p in bdir.iterdir() if p.name.startswith(f"{dbpath.stem}-"))
+    database_handle = db.Database(dbpath)
+    database_handle.close()
+    assert sorted(database_handle.migration["backups_deleted"]) == old[:2]
+    backups_directory = dbpath.parent / db.BACKUPS_DIRNAME
+    ours = sorted(
+        path.name for path in backups_directory.iterdir() if path.name.startswith(f"{dbpath.stem}-")
+    )
     assert len(ours) == 3 and ours[:2] == old[2:]
-    assert ours[2] == Path(d.migration["backup"]).name
-    assert (bdir / "notes.txt").exists() and (bdir / "other-20260101T000000Z-x.sqlite").exists()
+    assert ours[2] == Path(database_handle.migration["backup"]).name
+    assert (backups_directory / "notes.txt").exists() and (
+        backups_directory / "other-20260101T000000Z-x.sqlite"
+    ).exists()
 
 
 def test_an_existing_database_gains_the_new_video_detail_unknown(tmp_path):
@@ -1324,15 +1384,15 @@ def test_an_existing_database_gains_the_new_video_detail_unknown(tmp_path):
     docs/design/storage-schema.md, "Migrations"). Moved from ytlm's
     tests/test_digest.py (nagarkar/ytlm#50)."""
     path = tmp_path / "transcript.sqlite"
-    conn = sqlite3.connect(path)
-    conn.executescript(SCHEMA_V1.read_text())
+    connection = sqlite3.connect(path)
+    connection.executescript(SCHEMA_V1.read_text())
     for column in ("topics", "people", "perspective"):
-        conn.execute(f"ALTER TABLE videos DROP COLUMN {column}")
-    conn.execute(
+        connection.execute(f"ALTER TABLE videos DROP COLUMN {column}")
+    connection.execute(
         "INSERT INTO videos (id, created_at, created_by, schema_version, url) "
         "VALUES ('x', '2026-09-01T00:00:00Z', 'cli', '1', 'u')"
     )
-    conn.commit()
-    conn.close()
+    connection.commit()
+    connection.close()
     video = Store(db.Database(path)).source("x")
     assert (video["topics"], video["people"], video["perspective"]) == ([], [], None)

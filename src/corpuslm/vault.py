@@ -91,7 +91,7 @@ def render_corpus_note(
         values = corpus.get(key) or []
         if values:
             lines.append(f"{key}:")
-            lines += [f"  - {yaml_string(v)}" for v in values]
+            lines += [f"  - {yaml_string(value)}" for value in values]
     lines += [
         "---",
         "",

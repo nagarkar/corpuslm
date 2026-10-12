@@ -36,11 +36,11 @@ def test_each_named_error_says_whether_retrying_is_pointless(error, permanent):
 
 
 def test_a_track_is_frozen_and_its_raw_body_does_not_count_for_equality():
-    a = CaptionTrack("v", "en", True, "ytapi", (Segment(0.0, 1.0, "hi"),), raw={"a": 1})
-    b = CaptionTrack("v", "en", True, "ytapi", (Segment(0.0, 1.0, "hi"),), raw={"b": 2})
-    assert a == b
+    first_track = CaptionTrack("v", "en", True, "ytapi", (Segment(0.0, 1.0, "hi"),), raw={"a": 1})
+    second_track = CaptionTrack("v", "en", True, "ytapi", (Segment(0.0, 1.0, "hi"),), raw={"b": 2})
+    assert first_track == second_track
     with pytest.raises(dataclasses.FrozenInstanceError):
-        a.language = "fr"  # type: ignore[misc]
+        first_track.language = "fr"  # type: ignore[misc]
 
 
 def test_metadata_defaults_to_an_unknown_date():

@@ -38,9 +38,9 @@ def _corpus(store, name):
 def test_a_corpus_name_is_found_whatever_its_case_and_outer_spaces(store):
     """Fixture class "duplicate": "Dharma" and " dharma " are one corpus
     (docs/design/corpus-model.md)."""
-    cid = _corpus(store, "Dharma")
-    assert store.corpus_by_name(" dharma ")["id"] == cid
-    assert store.corpus_by_name("DHARMA")["id"] == cid
+    corpus_id = _corpus(store, "Dharma")
+    assert store.corpus_by_name(" dharma ")["id"] == corpus_id
+    assert store.corpus_by_name("DHARMA")["id"] == corpus_id
     assert store.corpus_by_name("dharma", exact=True) is None
 
 
@@ -93,43 +93,45 @@ def test_merging_corpora_moves_every_membership_and_keeps_each_folded_corpus_who
     move (a video already in the target keeps the target's row), each folded
     corpus's row, lists and members are kept under the target's
     `metadata.merged_from` (written to the change log), and the folded rows go."""
-    a, b, into = (_corpus(store, n) for n in ("Physics/A", "Physics/B", "Physics"))
-    store.update_corpus(a, {"topic": ["Entropy"], "person": "Ann"})
+    first_corpus, second_corpus, into = (
+        _corpus(store, name) for name in ("Physics/A", "Physics/B", "Physics")
+    )
+    store.update_corpus(first_corpus, {"topic": ["Entropy"], "person": "Ann"})
     for video_id in ("vidAAAAAAA1", "vidAAAAAAA2", "vidAAAAAAA3"):
         _video(store, video_id)
-    moved_member = store.add_member(a, "vidAAAAAAA1", "author", created_by="cli")
-    store.add_member(b, "vidAAAAAAA2", "discovered", created_by="cli")
-    store.add_member(b, "vidAAAAAAA3", "author", created_by="cli")
+    moved_member = store.add_member(first_corpus, "vidAAAAAAA1", "author", created_by="cli")
+    store.add_member(second_corpus, "vidAAAAAAA2", "discovered", created_by="cli")
+    store.add_member(second_corpus, "vidAAAAAAA3", "author", created_by="cli")
     store.add_member(into, "vidAAAAAAA3", "author", created_by="cli")
     store.record_artifact(
-        a, "corpus_note", path="n.md", sha256="0" * 64, state="built",
+        first_corpus, "corpus_note", path="n.md", sha256="0" * 64, state="built",
         inputs={}, provenance={}, created_by="cli",
     )  # fmt: skip
 
-    board = store.merge_corpora(into, [a, b], created_by="cli")
+    board = store.merge_corpora(into, [first_corpus, second_corpus], created_by="cli")
 
     assert board == {"moved": 2, "already_members": 1, "removed": ["Physics/A", "Physics/B"]}
-    assert store.corpus(a) is None and store.corpus(b) is None
-    assert store.artifact(a, "corpus_note") is None
+    assert store.corpus(first_corpus) is None and store.corpus(second_corpus) is None
+    assert store.artifact(first_corpus, "corpus_note") is None
     assert sorted(store.member_source_ids(into)) == ["vidAAAAAAA1", "vidAAAAAAA2", "vidAAAAAAA3"]
     row = store.db.one("SELECT * FROM corpus_members WHERE id = ?", (moved_member,))
     assert row["corpus_id"] == into and row["reason"] == "author"
-    assert db.loads(row["metadata"], {})["merged_from"] == a
+    assert db.loads(row["metadata"], {})["merged_from"] == first_corpus
     kept = db.loads(store.corpus(into)["metadata"], {})["merged_from"]
-    assert [k["name"] for k in kept] == ["Physics/A", "Physics/B"]
+    assert [corpus["name"] for corpus in kept] == ["Physics/A", "Physics/B"]
     assert kept[0]["topic"] == ["Entropy"]
-    assert kept[0]["person"] == "Ann" and kept[0]["id"] == a
-    assert [m["source_id"] for m in kept[1]["members"]] == ["vidAAAAAAA2", "vidAAAAAAA3"]
+    assert kept[0]["person"] == "Ann" and kept[0]["id"] == first_corpus
+    assert [member["source_id"] for member in kept[1]["members"]] == ["vidAAAAAAA2", "vidAAAAAAA3"]
     assert kept[1]["members"][0]["reason"] == "discovered"
-    logged = [c["column_name"] for c in store.changes_of("corpora", into)]
+    logged = [change["column_name"] for change in store.changes_of("corpora", into)]
     assert "metadata" in logged
 
 
 def test_a_corpus_is_not_merged_into_itself(store):
-    a = _corpus(store, "A")
+    corpus = _corpus(store, "A")
     with pytest.raises(ValueError, match="into itself"):
-        store.merge_corpora(a, [a], created_by="cli")
-    assert store.corpus(a) is not None
+        store.merge_corpora(corpus, [corpus], created_by="cli")
+    assert store.corpus(corpus) is not None
 
 
 def test_dropping_a_videos_transcript_rows_empties_its_segments_index_and_named_artifacts(store):
@@ -149,12 +151,16 @@ def test_dropping_a_videos_transcript_rows_empties_its_segments_index_and_named_
                 inputs={}, provenance={}, created_by="cli",
             )  # fmt: skip
     assert store.segment_count(VIDEO_ID) == 1 and store.segment_count() == 2
-    assert [a["node"] for a in store.artifacts_of(VIDEO_ID)] == ["captions", "metadata", "pass3"]
+    assert [artifact["node"] for artifact in store.artifacts_of(VIDEO_ID)] == [
+        "captions",
+        "metadata",
+        "pass3",
+    ]
 
     assert store.delete_segments(VIDEO_ID) == 1
     assert store.delete_artifacts(VIDEO_ID, ["captions", "pass3", "srt"]) == 2
 
     assert store.segment_count(VIDEO_ID) == 0 and store.segment_count(other) == 1
-    assert [h["source_id"] for h in store.search("dharma", corpus_id=None, limit=5)] == [other]
-    assert [a["node"] for a in store.artifacts_of(VIDEO_ID)] == ["metadata"]
+    assert [hit["source_id"] for hit in store.search("dharma", corpus_id=None, limit=5)] == [other]
+    assert [artifact["node"] for artifact in store.artifacts_of(VIDEO_ID)] == ["metadata"]
     assert len(store.artifacts_of(other)) == 3

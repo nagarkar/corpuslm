@@ -4,5 +4,9 @@ inherit a git hook's environment."""
 
 import os
 
-for key in [k for k in os.environ if k.startswith("GIT_") or k.endswith("_DB")]:
+for key in [
+    variable_name
+    for variable_name in os.environ
+    if variable_name.startswith("GIT_") or variable_name.endswith("_DB")
+]:
     os.environ.pop(key, None)

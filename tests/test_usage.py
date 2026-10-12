@@ -99,17 +99,17 @@ def test_cost_unknown_and_chat_calls_are_counted_never_summed(settings):
 def test_reading_the_board_changes_nothing(settings):
     files = [settings.database, *settings.usage.ledgers.values()]
     before = {
-        p: [(f.name, f.read_bytes()) for f in sorted(p.rglob("*")) if f.is_file()]
-        if p.is_dir()
-        else p.read_bytes()
-        for p in files
+        path: [(file.name, file.read_bytes()) for file in sorted(path.rglob("*")) if file.is_file()]
+        if path.is_dir()
+        else path.read_bytes()
+        for path in files
     }
     usage.board(settings, now=NOW)
     after = {
-        p: [(f.name, f.read_bytes()) for f in sorted(p.rglob("*")) if f.is_file()]
-        if p.is_dir()
-        else p.read_bytes()
-        for p in files
+        path: [(file.name, file.read_bytes()) for file in sorted(path.rglob("*")) if file.is_file()]
+        if path.is_dir()
+        else path.read_bytes()
+        for path in files
     }
     assert before == after
 
@@ -120,8 +120,8 @@ def test_a_missing_ledger_or_database_is_a_problem_and_nothing_is_created(settin
     for extra in tmp_path.glob("transcript.sqlite-*"):
         extra.unlink()
     board = usage.board(settings, now=NOW)
-    assert any("beelm: no usage.jsonl" in p for p in board["problems"])
-    assert any("does not exist" in p for p in board["problems"])
+    assert any("beelm: no usage.jsonl" in problem for problem in board["problems"])
+    assert any("does not exist" in problem for problem in board["problems"])
     assert not settings.database.exists()
 
 

@@ -45,7 +45,9 @@ class Ledger:
     ):
         self.directory = Path(directory)
         self.clock = clock
-        self.enabled = DEFAULTS | {k: bool(v) for k, v in (logs_config or {}).items()}
+        self.enabled = DEFAULTS | {
+            log_name: bool(enabled) for log_name, enabled in (logs_config or {}).items()
+        }
 
     def usage(self, event: dict) -> None:
         self._write("usage", event)
@@ -66,8 +68,8 @@ class Ledger:
             path = self.directory / f"{name.replace('_', '-')}.jsonl"
             self._rotate(path)
             line = json.dumps(record, ensure_ascii=False, sort_keys=True)
-            with path.open("a", encoding="utf-8") as f:
-                f.write(line + "\n")
+            with path.open("a", encoding="utf-8") as file:
+                file.write(line + "\n")
         except OSError:
             return  # best effort, never fatal
 
@@ -75,9 +77,9 @@ class Ledger:
     def _rotate(path: Path) -> None:
         if not path.exists() or path.stat().st_size < ROTATE_BYTES:
             return
-        for n in range(GENERATIONS, 0, -1):
-            older = path.with_name(f"{path.name}.{n}")
-            newer = path if n == 1 else path.with_name(f"{path.name}.{n - 1}")
+        for generation in range(GENERATIONS, 0, -1):
+            older = path.with_name(f"{path.name}.{generation}")
+            newer = path if generation == 1 else path.with_name(f"{path.name}.{generation - 1}")
             if newer.exists():
                 os.replace(newer, older)
 
@@ -90,7 +92,9 @@ def read(path: Path, *, with_rotated: bool = False) -> list[dict]:
     name = path.stem.replace("-", "_") + "_line"
     files = [path]
     if with_rotated:
-        files = [path.with_name(f"{path.name}.{n}") for n in range(GENERATIONS, 0, -1)] + files
+        files = [
+            path.with_name(f"{path.name}.{generation}") for generation in range(GENERATIONS, 0, -1)
+        ] + files
     out: list[dict] = []
     for file in files:
         out.extend(_read_file(file, name))
