@@ -214,8 +214,8 @@ class CountingReport:
     def __init__(self):
         self.counts, self.errors, self.notes, self.stopped_by = {}, {}, {}, ""
 
-    def count(self, node, times=1):
-        self.counts[node] = self.counts.get(node, 0) + times
+    def count(self, node, amount=1):
+        self.counts[node] = self.counts.get(node, 0) + amount
 
 
 def _through_model_cleanup(store, tmp_path):

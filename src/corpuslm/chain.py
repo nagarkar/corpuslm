@@ -199,7 +199,7 @@ class Report(Protocol):
     notes: dict[str, str]
     stopped_by: str
 
-    def count(self, node: str, n: int = 1) -> None: ...
+    def count(self, node: str, amount: int = 1) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
