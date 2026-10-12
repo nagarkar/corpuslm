@@ -112,41 +112,48 @@ def apply(
     touched: set[str] = set()
     for corpus_id in store.review_answer_counts():
         corpus = store.corpus(corpus_id)
-        if corpus is None or not any(m["kind"] in allowed for m in store.member_sources(corpus_id)):
+        if corpus is None or not any(
+            member["kind"] in allowed for member in store.member_sources(corpus_id)
+        ):
             continue
         decisions = decisions_document(store, corpus_id)
         # Every kind's sources are read, so a card that spans kinds is whole; only the verdicts of
         # the allowed kinds land, and a card with a source of another kind keeps its answer for
         # that kind's own apply.
         everything, unknown = decisions_to_verdicts_by_kind(db, kinds, corpus["name"], decisions)
-        verdicts = [v for v in everything if _kind_of(store, v["video_id"]) in landing]
+        verdicts = [
+            verdict for verdict in everything if _kind_of(store, verdict["video_id"]) in landing
+        ]
         held_back = {
-            v["card_id"]
-            for v in everything
-            if _kind_of(store, v["video_id"]) not in landing and not _already_in_force(store, v)
+            verdict["card_id"]
+            for verdict in everything
+            if _kind_of(store, verdict["video_id"]) not in landing
+            and not _already_in_force(store, verdict)
         }
-        for v in everything:
-            kind_name = _kind_of(store, v["video_id"])
-            if kind_name in needing and not _already_in_force(store, v):
+        for verdict in everything:
+            kind_name = _kind_of(store, verdict["video_id"])
+            if kind_name in needing and not _already_in_force(store, verdict):
                 left_unlanded[kind_name] = left_unlanded.get(kind_name, 0) + 1
-        fresh = [v for v in verdicts if not _already_in_force(store, v)]
-        landed_cards = {v["card_id"] for v in verdicts} - held_back
+        fresh = [verdict for verdict in verdicts if not _already_in_force(store, verdict)]
+        landed_cards = {verdict["card_id"] for verdict in verdicts} - held_back
         empty_cards = {
-            card_id for card_id, d in decisions["decisions"].items() if not d["verdict"].strip()
+            card_id
+            for card_id, decision in decisions["decisions"].items()
+            if not decision["verdict"].strip()
         }
         totals["corpora"] += 1
         totals["answers_saved"] += sum(
-            1 for d in decisions["decisions"].values() if d["verdict"].strip()
+            1 for decision in decisions["decisions"].values() if decision["verdict"].strip()
         )
         totals["unknown_cards"] += len(unknown)
         totals["verdicts_to_land"] += len(fresh)
-        for v in fresh:
-            kind_name = _kind_of(store, v["video_id"])
-            touched.add(v["video_id"])
-            if v["kind"] == "speaker":
-                speaker_sources.setdefault(kind_name, set()).add(v["video_id"])
+        for verdict in fresh:
+            kind_name = _kind_of(store, verdict["video_id"])
+            touched.add(verdict["video_id"])
+            if verdict["kind"] == "speaker":
+                speaker_sources.setdefault(kind_name, set()).add(verdict["video_id"])
             else:
-                waiting.add(v["video_id"])
+                waiting.add(verdict["video_id"])
         if dry_run:
             continue
         with store.transaction():

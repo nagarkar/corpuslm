@@ -22,10 +22,10 @@ SOURCE = {"id": BEE_SOURCE}
 
 @pytest.fixture
 def database(tmp_path):
-    d = db.Database(tmp_path / "transcript.sqlite")
-    Store(d).add_source(BEE_SOURCE, "transcripts/a.md", created_by="test", kind="bee")
-    yield d
-    d.close()
+    database_handle = db.Database(tmp_path / "transcript.sqlite")
+    Store(database_handle).add_source(BEE_SOURCE, "transcripts/a.md", created_by="test", kind="bee")
+    yield database_handle
+    database_handle.close()
 
 
 def test_a_kind_without_links_renders_time_labels_only():
@@ -189,8 +189,8 @@ def test_a_verdict_the_text_already_carries_is_applied_not_lost():
 
 
 def test_candidates_offered_merge_candidates_that_differ_only_in_case_or_punctuation():
-    a = ambiguity("amb-0001", 0, "wren", "Wren,", ["wren", "Ren", "REN."])
-    assert review.candidates_offered(a) == ["Wren,", "Ren"]
+    ambiguity_card = ambiguity("amb-0001", 0, "wren", "Wren,", ["wren", "Ren", "REN."])
+    assert review.candidates_offered(ambiguity_card) == ["Wren,", "Ren"]
 
 
 def test_verdict_kind_treats_names_as_terms():

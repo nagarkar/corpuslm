@@ -23,10 +23,10 @@ from review_kinds import (
 from corpuslm import db, review_page, review_server
 from corpuslm.store import Store
 
-JS = Path(__file__).parent / "js"
+JAVASCRIPT_DIRECTORY = Path(__file__).parent / "js"
 
 pytestmark = pytest.mark.skipif(
-    shutil.which("node") is None or not (JS / "node_modules").is_dir(),
+    shutil.which("node") is None or not (JAVASCRIPT_DIRECTORY / "node_modules").is_dir(),
     reason="needs Node and `npm ci --prefix tests/js`",
 )
 
@@ -52,23 +52,23 @@ def test_without_window_claude_the_page_saves_to_the_local_server_and_reads_it_b
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     try:
         base = f"http://127.0.0.1:{httpd.server_address[1]}"
-        proc = subprocess.run(
-            ["node", str(JS / "local_page.js"), base],
+        process = subprocess.run(
+            ["node", str(JAVASCRIPT_DIRECTORY / "local_page.js"), base],
             capture_output=True,
             text=True,
             timeout=60,
-            cwd=JS,
+            cwd=JAVASCRIPT_DIRECTORY,
         )
     finally:
         httpd.shutdown()
         httpd.server_close()
     database.close()
-    assert proc.returncode == 0, proc.stderr[-2000:]
-    report = json.loads(proc.stdout)
+    assert process.returncode == 0, process.stderr[-2000:]
+    report = json.loads(process.stdout)
     assert report["status"].startswith("Every tap is saved.")
     assert "run the apply verb" in report["status"]
     assert report["links"] == 0  # a Bee card has a time label and no link
-    assert any("0:05" in w for w in report["where"])
+    assert any("0:05" in place for place in report["where"])
     assert report["picker"][:2] == ["Ren", "Quill"]
     assert report["pressed"] == "true"
     assert report["reloaded_pressed"] == "true"

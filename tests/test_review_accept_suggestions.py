@@ -37,7 +37,7 @@ BEE_SOURCE = "bee:101"
 SECOND_BEE_SOURCE = "bee:102"
 THIRD_BEE_SOURCE = "bee:103"
 CUTOFF = date(2026, 7, 1)
-AT = "2026-10-09T10:00:00Z"
+ANSWERED_AT = "2026-10-09T10:00:00Z"
 
 
 def pick(key, index, span, candidate, others=("Other",), **more):
@@ -46,9 +46,9 @@ def pick(key, index, span, candidate, others=("Other",), **more):
 
 @pytest.fixture
 def database(tmp_path):
-    d = db.Database(tmp_path / "transcript.sqlite")
-    yield d
-    d.close()
+    database_handle = db.Database(tmp_path / "transcript.sqlite")
+    yield database_handle
+    database_handle.close()
 
 
 @pytest.fixture
@@ -92,12 +92,12 @@ def world(database, kinds):
         document = bee_transcript(ambiguities=items) | {
             "video_id": source_id,
             "segments": [
-                segment(i, i * 5.0, "wren kiln glaze ember slip clay here", speaker="Unknown")
-                for i in range(3)
+                segment(item, item * 5.0, "wren kiln glaze ember slip clay here", speaker="Unknown")
+                for item in range(3)
             ],
         }
         write_source(kinds["bee"].sources_directory, source_id, document, bee_speaker_map())
-        recorded = [i for i in items if i["span"] != "kiln"]
+        recorded = [item for item in items if item["span"] != "kiln"]
         store.replace_model_suggestions(
             source_id,
             model_suggestions.suggestions_of(recorded),
@@ -110,9 +110,9 @@ def world(database, kinds):
 
 def cards(database, kinds, name="Notes"):
     return {
-        c["span_norm"]: c
-        for c in review_page.page_data_by_kind(database, kinds, name)["cards"]
-        if c["kind"] == "ambiguity"
+        card["span_norm"]: card
+        for card in review_page.page_data_by_kind(database, kinds, name)["cards"]
+        if card["kind"] == "ambiguity"
     }
 
 
@@ -128,7 +128,7 @@ def test_the_answer_equals_the_suggestion_and_shows_on_the_page(database, kinds,
     assert report.cards_answered == report.cards_to_answer == 2  # wren and glaze
     # the page's server hands the answer back as it hands any tap
     served = review_server.Answers(tmp_path / "transcript.sqlite").list(f"reviews/{corpus}/items")
-    assert sorted(d["data"]["verdict"] for d in served) == ["Wren", "glaze"]
+    assert sorted(card["data"]["verdict"] for card in served) == ["Wren", "glaze"]
     # nothing is landed: the card is still open and no verdict row exists
     assert not cards(database, kinds)["wren"]["resolved"]
     assert store.current_review_verdicts(BEE_SOURCE) == {}
@@ -137,7 +137,7 @@ def test_the_answer_equals_the_suggestion_and_shows_on_the_page(database, kinds,
 def test_every_way_a_card_is_left_open_is_counted(database, kinds, world):
     store, corpus = world
     found = cards(database, kinds)
-    store.save_review_answer(corpus, found["glaze"]["id"], "glays", AT, created_by="owner")
+    store.save_review_answer(corpus, found["glaze"]["id"], "glays", ANSWERED_AT, created_by="owner")
     report = accept(database, kinds)
     assert report.cards_considered == 5  # wren, kiln, glaze, ember, slip (clay is resolved)
     assert report.cards_answered == 1
@@ -151,19 +151,23 @@ def test_every_way_a_card_is_left_open_is_counted(database, kinds, world):
 def test_an_existing_answer_is_never_overwritten(database, kinds, world):
     store, corpus = world
     found = cards(database, kinds)
-    store.save_review_answer(corpus, found["wren"]["id"], "Ren", AT, created_by="owner")
-    store.save_review_answer(corpus, found["glaze"]["id"], "", AT, created_by="owner")  # undone
+    store.save_review_answer(corpus, found["wren"]["id"], "Ren", ANSWERED_AT, created_by="owner")
+    store.save_review_answer(
+        corpus, found["glaze"]["id"], "", ANSWERED_AT, created_by="owner"
+    )  # undone
     accept(database, kinds)
     assert store.review_answer(corpus, found["wren"]["id"])["verdict"] == "Ren"
     assert store.review_answer(corpus, found["glaze"]["id"])["verdict"] == ""
-    assert store.review_answer(corpus, found["wren"]["id"])["answered_at"] == AT
+    assert store.review_answer(corpus, found["wren"]["id"])["answered_at"] == ANSWERED_AT
 
 
 def test_speaker_cards_and_resolved_cards_are_never_touched(database, kinds, world):
     store, corpus = world
     accept(database, kinds)
     data = review_page.page_data_by_kind(database, kinds, "Notes")
-    untouched = [c["id"] for c in data["cards"] if c["kind"] == "speaker" or c["resolved"]]
+    untouched = [
+        card["id"] for card in data["cards"] if card["kind"] == "speaker" or card["resolved"]
+    ]
     assert untouched
     assert all(store.review_answer(corpus, card_id) is None for card_id in untouched)
     assert len(store.review_answers(corpus)) == 2

@@ -14,9 +14,9 @@ from corpuslm.store import Store
 
 @pytest.fixture
 def database(tmp_path):
-    d = db.Database(tmp_path / "transcript.sqlite")
-    yield d
-    d.close()
+    database_handle = db.Database(tmp_path / "transcript.sqlite")
+    yield database_handle
+    database_handle.close()
 
 
 @pytest.fixture
@@ -30,7 +30,7 @@ def test_an_answer_is_one_row_per_card_and_answering_again_replaces_it(database,
     store.save_review_answer(corpus_id, "card-1", "Ren", "2026-10-09T10:05:00Z", created_by="page")
     store.save_review_answer(corpus_id, "card-2", "skip", "2026-10-09T10:06:00Z", created_by="page")
     rows = store.review_answers(corpus_id)
-    assert [(r["card_id"], r["verdict"], r["version"]) for r in rows] == [
+    assert [(row["card_id"], row["verdict"], row["version"]) for row in rows] == [
         ("card-1", "Ren", 2),
         ("card-2", "skip", 1),
     ]
@@ -44,8 +44,8 @@ def test_the_change_log_keeps_what_an_answer_was_before(database, corpus_id):
     row = store.review_answer(corpus_id, "card-1")
     assert row is not None
     changes = {
-        c["column_name"]: (c["old_value"], c["new_value"])
-        for c in store.changes_of("review_answers", row["id"])
+        change["column_name"]: (change["old_value"], change["new_value"])
+        for change in store.changes_of("review_answers", row["id"])
     }
     assert changes["verdict"] == ("Wren", "Ren")
 
@@ -86,26 +86,26 @@ def test_merging_a_corpus_carries_its_unlanded_answers_in_the_target_record(data
 def _v4_database(path):
     """A database as the version before this one left it: no review answers table."""
     db.Database(path).close()
-    conn = sqlite3.connect(path)
-    conn.execute("DROP TRIGGER review_answers_change_log")
-    conn.execute("DROP TABLE review_answers")
-    conn.execute("DROP TABLE model_suggestion_candidates")
-    conn.execute("DROP TABLE model_suggestions")
-    conn.execute("PRAGMA user_version = 4")
-    conn.commit()
-    conn.close()
+    connection = sqlite3.connect(path)
+    connection.execute("DROP TRIGGER review_answers_change_log")
+    connection.execute("DROP TABLE review_answers")
+    connection.execute("DROP TABLE model_suggestion_candidates")
+    connection.execute("DROP TABLE model_suggestions")
+    connection.execute("PRAGMA user_version = 4")
+    connection.commit()
+    connection.close()
 
 
 def test_a_version_4_database_gains_the_table_after_a_verified_backup(tmp_path):
     path = tmp_path / "transcript.sqlite"
     _v4_database(path)
-    conn = sqlite3.connect(path)
-    conn.execute(
+    connection = sqlite3.connect(path)
+    connection.execute(
         "INSERT INTO corpora (id, version, created_at, created_by, schema_version, name) "
         "VALUES ('cor-1', 1, 't', 'test', '4', 'Kept')"
     )
-    conn.commit()
-    conn.close()
+    connection.commit()
+    connection.close()
 
     opened = db.Database(path)
     try:

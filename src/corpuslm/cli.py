@@ -154,10 +154,10 @@ def _print(board: dict, as_json: bool) -> None:
     for key, value in board.items():
         if isinstance(value, dict):
             print(f"{key}:")
-            for k, v in value.items():
-                print(f"  {k}: {v}")
+            for entry_name, entry_value in value.items():
+                print(f"  {entry_name}: {entry_value}")
         elif isinstance(value, list):
-            print(f"{key}: {'; '.join(str(v) for v in value) if value else 'none'}")
+            print(f"{key}: {'; '.join(str(item) for item in value) if value else 'none'}")
         else:
             print(f"{key}: {value}")
 
@@ -298,7 +298,9 @@ def _open_existing(settings: ReviewSettings) -> db.Database:
 
 
 def _links_note(settings: ReviewSettings) -> str:
-    notes = [s.kind.links_note for s in kind_setups(settings).values() if s.kind.links_note]
+    notes = [
+        setup.kind.links_note for setup in kind_setups(settings).values() if setup.kind.links_note
+    ]
     return " ".join(dict.fromkeys(notes))
 
 
@@ -321,7 +323,7 @@ def review_page_board(settings: ReviewSettings, out: Path | None, dry_run: bool)
     if dry_run:
         return board | {"note": "dry run: nothing was written"}
     written = write_pages(data, target, links_note=_links_note(settings))
-    return board | {"files": [w["path"] for w in written]}
+    return board | {"files": [written_file["path"] for written_file in written]}
 
 
 def review_serve_board(settings: ReviewSettings, port: int | None, dry_run: bool):
@@ -543,7 +545,12 @@ def review_check_board(settings: ReviewSettings) -> dict:
 
 
 def _verb_board() -> dict:
-    return {"verbs": {n: f"{d} Example: {e}" for n, (d, e) in DESCRIPTIONS.items()}}
+    return {
+        "verbs": {
+            verb: f"{description} Example: {example}"
+            for verb, (description, example) in DESCRIPTIONS.items()
+        }
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -554,7 +561,13 @@ def main(argv: list[str] | None = None) -> int:
     if not rest or rest[0] in ("-h", "--help"):
         text, code = clikit.help_text(parser, PROG)
         _print(
-            {"verbs": {n: f"{d} Example: {e}" for n, (d, e) in DESCRIPTIONS.items()}}, True
+            {
+                "verbs": {
+                    verb: f"{description} Example: {example}"
+                    for verb, (description, example) in DESCRIPTIONS.items()
+                }
+            },
+            True,
         ) if as_json else print(text, end="")
         return code
     if rest[0] == "help":
