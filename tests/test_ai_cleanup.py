@@ -6,8 +6,7 @@ only, no model."""
 import pytest
 from schemes import LABELS, SCHEMES
 
-from corpuslm import ai_cleanup as mc
-from corpuslm import prompts, schemas
+from corpuslm import ai_cleanup, prompts, schemas
 from corpuslm.speaker_map import bee_scheme
 
 
@@ -21,22 +20,22 @@ def scheme(kind):
     return SCHEMES[kind]
 
 
-def _t(number, kind="youtube", words=8, labelled=None):
+def _segments_document(number, kind="youtube", words=8, labelled=None):
     """`n` segments. Fixed-label sources carry their labels from the start; the others get
     theirs from the model, so they start without."""
     labelled = SCHEMES[kind].fixed_labels if labelled is None else labelled
-    a, b = LABELS[kind]
+    first_label, second_label = LABELS[kind]
     segments = []
-    for i in range(number):
+    for segment_index in range(number):
         segment = {
-            "idx": i,
-            "t0": float(i),
-            "t1": float(i + 1),
+            "idx": segment_index,
+            "t0": float(segment_index),
+            "t1": float(segment_index + 1),
             "speaker": "",
-            "text": " ".join(f"w{i}x{k}" for k in range(words)),
+            "text": " ".join(f"w{segment_index}x{word_index}" for word_index in range(words)),
         }
         if labelled:
-            segment["role"] = a if i % 2 else b
+            segment["role"] = first_label if segment_index % 2 else second_label
         segments.append(segment)
     return {"video_id": "src-1", "segments": segments, "words": []}
 
@@ -46,38 +45,40 @@ def _reply(**parts):
 
 
 def _first(document, scheme):
-    return mc.batches(document, batch_tokens=10_000, overlap_segments=0)[0]
+    return ai_cleanup.batches(document, batch_tokens=10_000, overlap_segments=0)[0]
 
 
 def test_batches_cut_on_segment_boundaries_with_read_only_overlap(kind, scheme):
-    document = _t(100, kind)
-    batches = mc.batches(document, batch_tokens=100, overlap_segments=3)
+    document = _segments_document(100, kind)
+    batches = ai_cleanup.batches(document, batch_tokens=100, overlap_segments=3)
     assert len(batches) > 5
     assert batches[0].context == (0, 0) and batches[0].start == 0
-    for prev, cur in zip(batches, batches[1:], strict=False):
-        assert cur.start == prev.end  # no gaps, no double edits
-        assert cur.context == (max(0, prev.end - 3), prev.end)
+    for previous_batch, current_batch in zip(batches, batches[1:], strict=False):
+        assert current_batch.start == previous_batch.end  # no gaps, no double edits
+        assert current_batch.context == (max(0, previous_batch.end - 3), previous_batch.end)
     assert batches[-1].end == 100
-    rendered = mc.render(document, batches[1], scheme=scheme)
+    rendered = ai_cleanup.render(document, batches[1], scheme=scheme)
     assert "(context)" in rendered and f"[{batches[1].start}]" in rendered
 
 
 def test_render_shows_a_label_only_when_the_labels_are_fixed(kind, scheme):
-    document = _t(4, kind, labelled=True)
-    line = mc.render(document, _first(document, scheme), scheme=scheme).splitlines()[1]
+    document = _segments_document(4, kind, labelled=True)
+    line = ai_cleanup.render(document, _first(document, scheme), scheme=scheme).splitlines()[1]
     label = document["segments"][1]["role"]
     assert (f"[1] {label}: w1x0" in line) == scheme.fixed_labels
     assert line.startswith("[1] ")
 
 
 def test_apply_rejects_an_index_outside_the_batch_and_protects_spans(kind, scheme):
-    document = _t(10, kind)
+    document = _segments_document(10, kind)
     document["segments"][4]["protected"] = ["w4x0"]
     batch = _first(document, scheme)
-    _, stray = mc.apply(document, batch, _reply(edits={"42": "x"}), next_key=1, scheme=scheme)
+    _, stray = ai_cleanup.apply(
+        document, batch, _reply(edits={"42": "x"}), next_key=1, scheme=scheme
+    )
     assert stray["stray_edits"] == 1 and stray["edits"] == 0
-    with pytest.raises(mc.BatchError, match="42"):
-        mc.apply(
+    with pytest.raises(ai_cleanup.BatchError, match="42"):
+        ai_cleanup.apply(
             document, batch, _reply(roles={"42": [LABELS[kind][0], 0.9]}), next_key=1, scheme=scheme
         )
     other = LABELS[kind][1]
@@ -96,7 +97,7 @@ def test_apply_rejects_an_index_outside_the_batch_and_protects_spans(kind, schem
     )
     if not scheme.fixed_labels:
         reply["roles"] = {"5": [other, 0.7]}
-    document, stats = mc.apply(document, batch, reply, next_key=1, scheme=scheme)
+    document, stats = ai_cleanup.apply(document, batch, reply, next_key=1, scheme=scheme)
     assert document["segments"][4]["text"].startswith("w4x0")  # protected: edit declined
     assert stats["protected_violations"] == 1 and stats["edits"] == 1
     assert document["segments"][5]["text"] == "W5x0 w5x1, w5x2." and document["segments"][5]["raw"]
@@ -115,24 +116,26 @@ def test_apply_rejects_an_index_outside_the_batch_and_protects_spans(kind, schem
 
 
 def test_apply_never_changes_segment_boundaries_and_protects_spans(kind, scheme):
-    document = _t(10, kind)
-    before = [(s["idx"], s["t0"], s["t1"]) for s in document["segments"]]
+    document = _segments_document(10, kind)
+    before = [(segment["idx"], segment["t0"], segment["t1"]) for segment in document["segments"]]
     batch = _first(document, scheme)
-    document, _ = mc.apply(
+    document, _ = ai_cleanup.apply(
         document,
         batch,
-        _reply(edits={str(i): f"Edit {i}." for i in range(10)}),
+        _reply(edits={str(segment_index): f"Edit {segment_index}." for segment_index in range(10)}),
         next_key=1,
         scheme=scheme,
     )
-    assert [(s["idx"], s["t0"], s["t1"]) for s in document["segments"]] == before
+    assert [
+        (segment["idx"], segment["t0"], segment["t1"]) for segment in document["segments"]
+    ] == before
     assert len(document["segments"]) == 10
 
 
 def test_an_ambiguity_carries_a_probability_per_candidate_and_its_confidence_is_the_picks(
     kind, scheme
 ):
-    document = _t(10, kind)
+    document = _segments_document(10, kind)
     batch = _first(document, scheme)
     reply = _reply(
         ambiguities=[
@@ -145,15 +148,15 @@ def test_an_ambiguity_carries_a_probability_per_candidate_and_its_confidence_is_
             }
         ]
     )
-    mc.check_bounds(batch, reply, scheme=scheme, document=document)
-    document, _ = mc.apply(document, batch, reply, next_key=1, scheme=scheme)
-    a = document["ambiguities"][0]
-    assert a["probabilities"] == [0.204, 0.714, 0.082]  # rescaled to sum to 1
-    assert a["confidence"] == 0.714
+    ai_cleanup.check_bounds(batch, reply, scheme=scheme, document=document)
+    document, _ = ai_cleanup.apply(document, batch, reply, next_key=1, scheme=scheme)
+    ambiguity = document["ambiguities"][0]
+    assert ambiguity["probabilities"] == [0.204, 0.714, 0.082]  # rescaled to sum to 1
+    assert ambiguity["confidence"] == 0.714
 
 
 def test_a_probability_reply_that_does_not_line_up_with_its_candidates_is_bad(kind, scheme):
-    document = _t(10, kind)
+    document = _segments_document(10, kind)
     batch = _first(document, scheme)
     base = {"idx": 5, "span": "w5x1", "candidates": ["w5x1", "wsxl"], "pick": "wsxl"}
     for bad, why in (
@@ -162,35 +165,40 @@ def test_a_probability_reply_that_does_not_line_up_with_its_candidates_is_bad(ki
         ({"probabilities": [0.4, 0.6], "pick": "other"}, "pick"),
     ):
         with pytest.raises(ValueError, match=why):
-            mc.check_bounds(batch, _reply(ambiguities=[base | bad]), scheme=scheme)
+            ai_cleanup.check_bounds(batch, _reply(ambiguities=[base | bad]), scheme=scheme)
 
 
 def test_labels_and_edits_on_context_lines_are_ignored_and_counted(kind, scheme):
-    document = _t(20, kind)
-    batch = mc.batches(document, batch_tokens=100, overlap_segments=3)[1]
+    document = _segments_document(20, kind)
+    batch = ai_cleanup.batches(document, batch_tokens=100, overlap_segments=3)[1]
     ai_cleanup_setup = batch.context[0]
-    a, b = LABELS[kind]
+    first_label, second_label = LABELS[kind]
     # a fixed-label reply may only repeat the segment's own label
-    own = {i: document["segments"][i].get("role", a) for i in (ai_cleanup_setup, batch.start)}
+    own = {
+        segment_index: document["segments"][segment_index].get("role", first_label)
+        for segment_index in (ai_cleanup_setup, batch.start)
+    }
     roles = {
         str(ai_cleanup_setup): [own[ai_cleanup_setup], 0.9],
         str(batch.start): [own[batch.start], 0.9],
     }
-    mc.check_bounds(batch, _reply(roles=roles), scheme=scheme, document=document)
-    document, stats = mc.apply(document, batch, _reply(roles=roles), next_key=1, scheme=scheme)
+    ai_cleanup.check_bounds(batch, _reply(roles=roles), scheme=scheme, document=document)
+    document, stats = ai_cleanup.apply(
+        document, batch, _reply(roles=roles), next_key=1, scheme=scheme
+    )
     assert stats["context_roles_ignored"] == 1
     assert stats["roles"] == (0 if scheme.fixed_labels else 1)
     if not scheme.fixed_labels:
         assert "role" not in document["segments"][ai_cleanup_setup]
-    document, stats = mc.apply(
+    document, stats = ai_cleanup.apply(
         document, batch, _reply(edits={str(ai_cleanup_setup): "x"}), next_key=1, scheme=scheme
     )
     assert stats["stray_edits"] == 1 and document["segments"][ai_cleanup_setup]["text"] != "x"
 
 
 def test_a_binding_on_a_context_line_is_kept_and_one_beyond_what_the_model_saw_fails(kind, scheme):
-    document = _t(20, kind)
-    batch = mc.batches(document, batch_tokens=100, overlap_segments=3)[1]
+    document = _segments_document(20, kind)
+    batch = ai_cleanup.batches(document, batch_tokens=100, overlap_segments=3)[1]
     ai_cleanup_setup = batch.context[0]
     role = document["segments"][ai_cleanup_setup].get("role", LABELS[kind][1])
     binding = {
@@ -200,8 +208,8 @@ def test_a_binding_on_a_context_line_is_kept_and_one_beyond_what_the_model_saw_f
         "anchor": f"w{ai_cleanup_setup}x1",
     }
     reply = _reply(bindings=[binding])
-    mc.check_bounds(batch, reply, scheme=scheme)
-    document, stats = mc.apply(document, batch, reply, next_key=1, scheme=scheme)
+    ai_cleanup.check_bounds(batch, reply, scheme=scheme)
+    document, stats = ai_cleanup.apply(document, batch, reply, next_key=1, scheme=scheme)
     assert stats["bindings"] == [
         {
             "role": role,
@@ -213,7 +221,7 @@ def test_a_binding_on_a_context_line_is_kept_and_one_beyond_what_the_model_saw_f
     ]
     unseen = _reply(bindings=[binding | {"idx": ai_cleanup_setup - 1}])
     with pytest.raises(ValueError, match="bindings: index"):
-        mc.check_bounds(batch, unseen, scheme=scheme)
+        ai_cleanup.check_bounds(batch, unseen, scheme=scheme)
     ambiguity = {
         "idx": ai_cleanup_setup,
         "span": f"w{ai_cleanup_setup}x1",
@@ -221,25 +229,25 @@ def test_a_binding_on_a_context_line_is_kept_and_one_beyond_what_the_model_saw_f
         "pick": "a",
     }
     with pytest.raises(ValueError, match="ambiguities: index"):
-        mc.check_bounds(batch, _reply(ambiguities=[ambiguity]), scheme=scheme)
+        ai_cleanup.check_bounds(batch, _reply(ambiguities=[ambiguity]), scheme=scheme)
 
 
 def test_role_summary_carries_labels_forward(kind, scheme):
-    document = _t(6, kind, labelled=True)
-    a, b = LABELS[kind]
-    summary = mc.role_summary(
-        document, upto=6, bindings=[{"role": b, "name": "Ann"}], scheme=scheme
+    document = _segments_document(6, kind, labelled=True)
+    first_label, second_label = LABELS[kind]
+    summary = ai_cleanup.role_summary(
+        document, upto=6, bindings=[{"role": second_label, "name": "Ann"}], scheme=scheme
     )
-    assert a in summary and b in summary and "Ann" in summary
-    assert mc.role_summary(_t(6, kind, labelled=False), upto=6, bindings=[], scheme=scheme) == (
-        "(none yet)"
-    )
+    assert first_label in summary and second_label in summary and "Ann" in summary
+    assert ai_cleanup.role_summary(
+        _segments_document(6, kind, labelled=False), upto=6, bindings=[], scheme=scheme
+    ) == ("(none yet)")
 
 
 def test_role_summary_orders_labels_by_scheme_and_fixed_ones_by_first_seen(kind, scheme):
-    document = _t(4, kind, labelled=True)
+    document = _segments_document(4, kind, labelled=True)
     document["segments"][0]["role"] = "Speaker 9"  # outside the scheme's vocabulary
-    summary = mc.role_summary(document, upto=4, bindings=[], scheme=scheme)
+    summary = ai_cleanup.role_summary(document, upto=4, bindings=[], scheme=scheme)
     if scheme.fixed_labels:
         assert summary == (
             "Speaker 9: 1 segments so far; Quill: 2 segments so far; Speaker 2: 1 segments so far"
@@ -250,10 +258,10 @@ def test_role_summary_orders_labels_by_scheme_and_fixed_ones_by_first_seen(kind,
 
 def test_the_unresolved_label_is_listed_in_a_summary_where_the_scheme_orders_it():
     scheme = SCHEMES["youtube"]
-    document = _t(3, "youtube", labelled=False)
+    document = _segments_document(3, "youtube", labelled=False)
     for segment, role in zip(document["segments"], ["UNKNOWN", "GUEST_1", "HOST"], strict=True):
         segment["role"] = role
-    summary = mc.role_summary(document, upto=3, bindings=[], scheme=scheme)
+    summary = ai_cleanup.role_summary(document, upto=3, bindings=[], scheme=scheme)
     assert (
         summary == "HOST: 1 segments so far; GUEST_1: 1 segments so far; UNKNOWN: 1 segments so far"
     )
@@ -261,46 +269,50 @@ def test_the_unresolved_label_is_listed_in_a_summary_where_the_scheme_orders_it(
 
 def test_fixed_labels_reject_a_reply_that_relabels_a_speaker():
     scheme = SCHEMES["bee"]
-    document = _t(10, "bee")
+    document = _segments_document(10, "bee")
     batch = _first(document, scheme)
     own = document["segments"][3]["role"]
     relabel = _reply(roles={"3": ["Speaker 7", 0.9]})
     with pytest.raises(ValueError, match="relabel"):
-        mc.check_bounds(batch, relabel, scheme=scheme, document=document)  # before it is cached
-    with pytest.raises(mc.BatchError, match="relabel"):
-        mc.apply(document, batch, relabel, next_key=1, scheme=scheme)
+        ai_cleanup.check_bounds(
+            batch, relabel, scheme=scheme, document=document
+        )  # before it is cached
+    with pytest.raises(ai_cleanup.BatchError, match="relabel"):
+        ai_cleanup.apply(document, batch, relabel, next_key=1, scheme=scheme)
     assert document["segments"][3]["role"] == own  # untouched
     # repeating its own label changes nothing and is allowed
-    document, stats = mc.apply(
+    document, stats = ai_cleanup.apply(
         document, batch, _reply(roles={"3": [own, 0.9]}), next_key=1, scheme=scheme
     )
     assert document["segments"][3]["role"] == own and stats["roles"] == 0
     assert "role_confidence" not in document["segments"][3]
     # a segment that carries no label cannot be given one
     del document["segments"][3]["role"]
-    with pytest.raises(mc.BatchError, match="fixed"):
-        mc.apply(document, batch, _reply(roles={"3": [own, 0.9]}), next_key=1, scheme=scheme)
+    with pytest.raises(ai_cleanup.BatchError, match="fixed"):
+        ai_cleanup.apply(
+            document, batch, _reply(roles={"3": [own, 0.9]}), next_key=1, scheme=scheme
+        )
 
 
 def test_a_scheme_that_is_not_fixed_lets_the_reply_relabel_and_declines_unknown_labels():
     scheme = SCHEMES["youtube"]
-    document = _t(10, "youtube", labelled=False)
+    document = _segments_document(10, "youtube", labelled=False)
     batch = _first(document, scheme)
-    document, stats = mc.apply(
+    document, stats = ai_cleanup.apply(
         document, batch, _reply(roles={"3": ["GUEST_2", 0.9]}), next_key=1, scheme=scheme
     )
-    document, stats = mc.apply(
+    document, stats = ai_cleanup.apply(
         document, batch, _reply(roles={"3": ["HOST", 0.8]}), next_key=1, scheme=scheme
     )
     assert (
         document["segments"][3]["role"] == "HOST"
         and document["segments"][3]["speaker"] == "GUEST_2"
     )
-    with pytest.raises(mc.BatchError, match="not a role label"):
-        mc.apply(
+    with pytest.raises(ai_cleanup.BatchError, match="not a role label"):
+        ai_cleanup.apply(
             document, batch, _reply(roles={"3": ["Speaker 7", 0.9]}), next_key=1, scheme=scheme
         )
-    document, _ = mc.apply(
+    document, _ = ai_cleanup.apply(
         document, batch, _reply(roles={"4": ["UNKNOWN", 0.4]}), next_key=1, scheme=scheme
     )
     assert document["segments"][4]["speaker"] == ""
@@ -308,52 +320,65 @@ def test_a_scheme_that_is_not_fixed_lets_the_reply_relabel_and_declines_unknown_
 
 def test_a_fixed_label_binding_for_a_label_no_segment_carries_is_dropped():
     scheme = SCHEMES["bee"]
-    document = _t(10, "bee")
+    document = _segments_document(10, "bee")
     batch = _first(document, scheme)
     binding = {"role": "Speaker 42", "name": "Ann", "idx": 1, "anchor": "w1x1"}
-    _, stats = mc.apply(document, batch, _reply(bindings=[binding]), next_key=1, scheme=scheme)
+    _, stats = ai_cleanup.apply(
+        document, batch, _reply(bindings=[binding]), next_key=1, scheme=scheme
+    )
     assert stats["bindings"] == [] and stats["dropped_bindings"] == 1
 
 
 def test_a_binding_without_its_anchor_is_dropped_and_counted(kind, scheme):
-    document = _t(10, kind, labelled=True)
+    document = _segments_document(10, kind, labelled=True)
     batch = _first(document, scheme)
     role = document["segments"][1]["role"]
     binding = {"role": role, "name": "Ann", "idx": 1, "anchor": "nowhere"}
-    _, stats = mc.apply(document, batch, _reply(bindings=[binding]), next_key=1, scheme=scheme)
+    _, stats = ai_cleanup.apply(
+        document, batch, _reply(bindings=[binding]), next_key=1, scheme=scheme
+    )
     assert stats["dropped_bindings"] == 1
 
 
 def test_an_ambiguity_with_no_anchor_in_its_segment_is_dropped_and_counted(kind, scheme):
-    document = _t(10, kind)
+    document = _segments_document(10, kind)
     batch = _first(document, scheme)
-    amb = {"idx": 2, "span": "nowhere", "candidates": ["nowhere"], "pick": "nowhere"}
-    document, stats = mc.apply(
-        document, batch, _reply(ambiguities=[amb]), next_key=1, scheme=scheme
+    unanchored_ambiguity = {
+        "idx": 2,
+        "span": "nowhere",
+        "candidates": ["nowhere"],
+        "pick": "nowhere",
+    }
+    document, stats = ai_cleanup.apply(
+        document, batch, _reply(ambiguities=[unanchored_ambiguity]), next_key=1, scheme=scheme
     )
     assert stats["dropped_ambiguities"] == 1 and document["ambiguities"] == []
 
 
 def test_drop_unanchored_removes_items_whose_words_left_their_segment():
-    document = _t(3)
+    document = _segments_document(3)
     document["ambiguities"] = [
         {"idx": 0, "span": "w0x1", "pick": "w0x1", "candidates": ["w0x1"]},
         {"idx": 1, "span": "gone", "pick": "gone", "candidates": ["gone"]},
     ]
-    assert mc.drop_unanchored(document) == 1 and len(document["ambiguities"]) == 1
+    assert ai_cleanup.drop_unanchored(document) == 1 and len(document["ambiguities"]) == 1
 
 
 def test_cap_ambiguities_keeps_the_least_confident_pending():
     document = {
         "ambiguities": [
-            {"key": f"amb-000{i}", "status": "pending", "confidence": c}
-            for i, c in enumerate([0.9, 0.3, 0.7, 0.1, 0.5])
+            {"key": f"amb-000{position}", "status": "pending", "confidence": confidence}
+            for position, confidence in enumerate([0.9, 0.3, 0.7, 0.1, 0.5])
         ]
     }
-    assert mc.cap_ambiguities(document, max_new=2) == 3
-    kept = [a["confidence"] for a in document["ambiguities"] if a["status"] == "pending"]
+    assert ai_cleanup.cap_ambiguities(document, max_new=2) == 3
+    kept = [
+        ambiguity["confidence"]
+        for ambiguity in document["ambiguities"]
+        if ambiguity["status"] == "pending"
+    ]
     assert sorted(kept) == [0.1, 0.3]
-    assert mc.cap_ambiguities(document, max_new=0) == 0
+    assert ai_cleanup.cap_ambiguities(document, max_new=0) == 0
 
 
 def test_the_bee_prompt_is_shipped_and_takes_exactly_its_four_variables():
@@ -410,5 +435,5 @@ def test_fixed_labels_are_adopted_from_the_speakers():
             {"idx": 2, "speaker": "Speaker 2", "role": "Speaker 2", "text": "c"},
         ]
     }
-    mc.adopt_fixed_labels(document)
+    ai_cleanup.adopt_fixed_labels(document)
     assert [segment.get("role") for segment in document["segments"]] == ["Quill", None, "Speaker 2"]

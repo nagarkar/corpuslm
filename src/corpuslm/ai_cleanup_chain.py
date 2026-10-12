@@ -164,7 +164,7 @@ class DatabaseReview:
         return basic_cleanup.Vocabulary(
             terms=list(dict.fromkeys(terms.values())),
             substitutions=dict(terms),
-            sources={v: "correction memory" for v in terms.values()},
+            sources={corrected_term: "correction memory" for corrected_term in terms.values()},
         )
 
     def reconcile(
@@ -189,11 +189,11 @@ class SpendCapStop:
 
     cap: str | None = None
 
-    def stop(self, cap: str, report: Report) -> None:
+    def stop(self, cap_name: str, report: Report) -> None:
         """A spend cap was reached: no further billed call in this run, and the report names
         the cap."""
-        self.cap = cap
-        report.stopped_by = cap
+        self.cap = cap_name
+        report.stopped_by = cap_name
 
     def note(self) -> str:
         which = "per-day" if self.cap == llm.DAY_CAP else "per-run"
@@ -270,8 +270,12 @@ class AiCleanupSetup:
             "batch_tokens": settings["batch_tokens"],
             "overlap_segments": settings["overlap_segments"],
             shape.step_key: shape.ai_cleanup_step,
-            "verdicts": canonical_sha256({k: v["verdict"] for k, v in verdicts.items()}),
-            "memory": canonical_sha256({k: v["verdict"] for k, v in memory.items()}),
+            "verdicts": canonical_sha256(
+                {key: verdict_record["verdict"] for key, verdict_record in verdicts.items()}
+            ),
+            "memory": canonical_sha256(
+                {key: memory_record["verdict"] for key, memory_record in memory.items()}
+            ),
             **({"arbiter": canonical_sha256(arbiter.fingerprint())} if arbiter else {}),
         }
 
@@ -355,7 +359,11 @@ def build_ai_cleanup(
     old_provenance_record: dict = {}
     if row and path.exists() and row["state"] in ("built", "stale"):
         old_inputs = loads(row["inputs"], {})
-        changed = {k for k, v in inputs.items() if old_inputs.get(k) != v}
+        changed = {
+            input_name
+            for input_name, input_value in inputs.items()
+            if old_inputs.get(input_name) != input_value
+        }
         if (
             changed & CONFIG_INPUTS
             and not ai_cleanup_setup.rebuild_stale
@@ -369,9 +377,9 @@ def build_ai_cleanup(
                 old_provenance_record.get("stale_reason", "")
             ).startswith("config:"):
                 old_provenance_record = {
-                    k: v
-                    for k, v in old_provenance_record.items()
-                    if k not in ("stale_reason", "stale_at")
+                    field_name: field_value
+                    for field_name, field_value in old_provenance_record.items()
+                    if field_name not in ("stale_reason", "stale_at")
                 }
                 put(
                     path=path,
@@ -385,10 +393,10 @@ def build_ai_cleanup(
             # from the cache and patch again. The model is never asked with a prompt the owner
             # has not approved.
             replay = {
-                int(c["batch"]): str(c.get("payload_sha256", ""))
-                for c in old_provenance_record.get("calls", [])
+                int(call_record["batch"]): str(call_record.get("payload_sha256", ""))
+                for call_record in old_provenance_record.get("calls", [])
             }
-            held = {k: old_inputs.get(k) for k in CONFIG_INPUTS}
+            held = {input_name: old_inputs.get(input_name) for input_name in CONFIG_INPUTS}
             if not replay:
                 report.count(f"{node}_held")
                 report.errors[source_id] = f"{node}: held build has no recorded calls to replay"
@@ -452,8 +460,8 @@ def build_ai_cleanup(
         }
         tag = f"{source_id}-{batch.tag_suffix}"
 
-        def check(obj, batch=batch, current=document):
-            ai_cleanup.check_bounds(batch, obj, scheme=scheme, document=current)
+        def check(parsed_reply, batch=batch, current=document):
+            ai_cleanup.check_bounds(batch, parsed_reply, scheme=scheme, document=current)
 
         try:
             client = client or ai_cleanup_setup.client()
@@ -466,52 +474,62 @@ def build_ai_cleanup(
             document, stats = ai_cleanup.apply(
                 document, batch, reply.parsed, next_key=next_key, scheme=scheme
             )
-        except llm.CacheMiss as e:
+        except llm.CacheMiss as error:
             # the held build stays as it is; the verdict waits in the database
             report.count(f"{node}_held")
-            report.errors[source_id] = f"{node}: {e}"
+            report.errors[source_id] = f"{node}: {error}"
             return row["sha256"] if row else None
-        except llm.NotConfigured as e:
-            put(path=None, sha256="", inputs=inputs, state="skipped", provenance={"reason": str(e)})
+        except llm.NotConfigured as error:
+            put(
+                path=None,
+                sha256="",
+                inputs=inputs,
+                state="skipped",
+                provenance={"reason": str(error)},
+            )
             return None
-        except llm.SpendCapReached as e:
-            ai_cleanup_setup.spend_cap_stop.stop(e.cap, report)
+        except llm.SpendCapReached as error:
+            ai_cleanup_setup.spend_cap_stop.stop(error.cap, report)
             put(
                 path=None,
                 sha256="",
                 inputs=inputs,
                 state="failed",
                 provenance={
-                    "reason": f"budget: {e}",
+                    "reason": f"budget: {error}",
                     "transient": True,
                     "batches_done": batch.number,
                 },
             )
             report.count(f"{node}_spend_cap")
-            report.errors[source_id] = f"{node}: budget: {e}"
+            report.errors[source_id] = f"{node}: budget: {error}"
             return None
-        except llm.VendorError as e:
+        except llm.VendorError as error:
             # transient by definition: recorded, the run goes on
             put(
                 path=None,
                 sha256="",
                 inputs=inputs,
                 state="failed",
-                provenance={"reason": f"vendor: {e}", "transient": True, "batch": batch.number},
+                provenance={"reason": f"vendor: {error}", "transient": True, "batch": batch.number},
             )
             report.count(f"{node}_failed")
-            report.errors[source_id] = f"{node} batch {batch.number}: vendor: {e}"
+            report.errors[source_id] = f"{node} batch {batch.number}: vendor: {error}"
             return None
-        except (llm.BadReply, llm.TruncatedReply, ai_cleanup.BatchError) as e:
+        except (llm.BadReply, llm.TruncatedReply, ai_cleanup.BatchError) as error:
             put(
                 path=None,
                 sha256="",
                 inputs=inputs,
                 state="failed",
-                provenance={"reason": f"bad_reply: {e}", "transient": True, "batch": batch.number},
+                provenance={
+                    "reason": f"bad_reply: {error}",
+                    "transient": True,
+                    "batch": batch.number,
+                },
             )
             report.count(f"{node}_failed")
-            report.errors[source_id] = f"{node} batch {batch.number}: {e}"
+            report.errors[source_id] = f"{node} batch {batch.number}: {error}"
             return None
         next_key = stats["next_key"]
         bindings += stats["bindings"]
@@ -566,10 +584,17 @@ def build_ai_cleanup(
     if not scheme.fixed_labels:
         document["speaker_source"] = "inferred"
     prompt_keys = ("prompt_id", "prompt_version", "prompt_sha256", "model", "profile")
-    lineage = {k: v for k, v in first_provenance_record.items() if k in prompt_keys}
+    lineage = {
+        field_name: field_value
+        for field_name, field_value in first_provenance_record.items()
+        if field_name in prompt_keys
+    }
     if held:
         # the replies came from the held build: its prompt and model, not today's
-        lineage = {k: old_provenance_record.get(k, lineage.get(k)) for k in prompt_keys}
+        lineage = {
+            field_name: old_provenance_record.get(field_name, lineage.get(field_name))
+            for field_name in prompt_keys
+        }
     document.setdefault("passes", {})["pass3"] = {
         "status": "ran",
         "batches": len(batches_to_run),
@@ -665,8 +690,8 @@ def _walk_cache(ai_cleanup_setup: AiCleanupSetup, source_id: str, document: dict
             "batch": ai_cleanup.render(document, batch, scheme=scheme),
         }
 
-        def check(obj, batch=batch, current=document):
-            ai_cleanup.check_bounds(batch, obj, scheme=scheme, document=current)
+        def check(parsed_reply, batch=batch, current=document):
+            ai_cleanup.check_bounds(batch, parsed_reply, scheme=scheme, document=current)
 
         reply = client.lookup(ai_cleanup_setup.node, prompt, variables, check=check)
         if reply is None:

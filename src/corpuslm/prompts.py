@@ -62,13 +62,17 @@ class Prompt:
     sha256: str
 
     def placeholders(self) -> list[str]:
-        return [f for _, f, _, _ in string.Formatter().parse(self.body) if f]
+        return [
+            field_name for _, field_name, _, _ in string.Formatter().parse(self.body) if field_name
+        ]
 
     def render(self, variables: dict[str, str]) -> str:
-        missing = [p for p in self.placeholders() if p not in variables]
+        missing = [
+            placeholder for placeholder in self.placeholders() if placeholder not in variables
+        ]
         if missing:
             raise PromptError(f"prompt {self.id}: missing variables {missing}")
-        return self.body.format(**{k: str(v) for k, v in variables.items()})
+        return self.body.format(**{name: str(value) for name, value in variables.items()})
 
 
 def _parse(path: Path) -> Prompt:
@@ -77,7 +81,7 @@ def _parse(path: Path) -> Prompt:
         raise PromptError(f"{path}: no TOML front matter")
     _, front, body = raw.split("---\n", 2)
     metadata = tomllib.loads(front)
-    missing = [k for k in _REQUIRED if k not in metadata]
+    missing = [key for key in _REQUIRED if key not in metadata]
     if missing:
         raise PromptError(f"{path}: front matter missing {missing}")
     unknown = sorted(set(metadata) - set(_REQUIRED))
@@ -101,18 +105,22 @@ _FILENAME = re.compile(r"^(?P<id>.+)_v(?P<version>\d+)\.md$")
 def _checked(path: Path) -> Prompt:
     """Parse `path` and decline it unless its name is `<id>_v<version>.md`
     as its front matter says."""
-    m = _FILENAME.match(path.name)
-    p = _parse(path)
-    if m is None or m["id"] != p.id or int(m["version"]) != p.version:
+    match = _FILENAME.match(path.name)
+    prompt = _parse(path)
+    if match is None or match["id"] != prompt.id or int(match["version"]) != prompt.version:
         raise PromptError(
-            f"{path.name}: the file name must be {p.id}_v{p.version}.md (id and version "
+            f"{path.name}: the file name must be {prompt.id}_v{prompt.version}.md (id and version "
             "from its front matter); copy to a new version, never rename or edit one"
         )
-    return p
+    return prompt
 
 
 def _searched(directories: Iterable[Path] | None) -> list[Path]:
-    return search_directories() if directories is None else [Path(d) for d in directories]
+    return (
+        search_directories()
+        if directories is None
+        else [Path(directory) for directory in directories]
+    )
 
 
 def versions(prompt_id: str, directories: Iterable[Path] | None = None) -> dict[int, Path]:
@@ -120,10 +128,10 @@ def versions(prompt_id: str, directories: Iterable[Path] | None = None) -> dict[
     out: dict[int, Path] = {}
     for directory in _searched(directories):
         for path in directory.glob(f"{prompt_id}_v*.md"):
-            m = _FILENAME.match(path.name)
-            if not (m and m["id"] == prompt_id):
+            match = _FILENAME.match(path.name)
+            if not (match and match["id"] == prompt_id):
                 continue
-            number = int(m["version"])
+            number = int(match["version"])
             if number in out and out[number] != path:
                 raise PromptError(
                     f"prompt {prompt_id!r} version {number} is in two places: "
@@ -139,13 +147,14 @@ def load(
     """The newest version of `prompt_id`, or exactly `version`. A file stem
     (`cleanup_v2`) is accepted as the id with its version."""
     searched = _searched(directories)
-    m = _FILENAME.match(f"{prompt_id}.md")
-    if m and version is None and not versions(prompt_id, searched):
-        prompt_id, version = m["id"], int(m["version"])
+    match = _FILENAME.match(f"{prompt_id}.md")
+    if match and version is None and not versions(prompt_id, searched):
+        prompt_id, version = match["id"], int(match["version"])
     found = versions(prompt_id, searched)
     if not found:
         raise PromptError(
-            f"no prompt named {prompt_id!r} under {', '.join(str(d) for d in searched)}"
+            f"no prompt named {prompt_id!r} under "
+            f"{', '.join(str(directory) for directory in searched)}"
         )
     if version is None:
         version = max(found)
@@ -155,5 +164,5 @@ def load(
 
 
 def list_prompts(directories: Iterable[Path] | None = None) -> list[Prompt]:
-    paths = [p for d in _searched(directories) for p in d.glob("*.md")]
-    return [_checked(p) for p in sorted(paths, key=lambda p: (p.name, str(p)))]
+    paths = [path for directory in _searched(directories) for path in directory.glob("*.md")]
+    return [_checked(path) for path in sorted(paths, key=lambda path: (path.name, str(path)))]

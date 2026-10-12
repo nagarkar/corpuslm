@@ -27,14 +27,16 @@ def _ok():
 def _transport(failures, sleeps):
     calls = []
 
-    def completion(**kw):
-        calls.append(kw)
+    def completion(**keyword_arguments):
+        calls.append(keyword_arguments)
         if failures:
             raise failures.pop(0)
         return _ok()
 
-    t = llm.LiteLLMTransport(completion=completion, sleep=sleeps.append, cost=lambda r: 0.0)
-    return t, calls
+    transport = llm.LiteLLMTransport(
+        completion=completion, sleep=sleeps.append, cost=lambda reply: 0.0
+    )
+    return transport, calls
 
 
 @pytest.mark.parametrize(
@@ -46,11 +48,15 @@ def _transport(failures, sleeps):
 )
 def test_a_429_or_529_is_retried_and_says_so_on_stderr(failure, capsys):
     sleeps = []
-    t, calls = _transport([failure], sleeps)
-    raw = t.send("gemini/gemini-3.1-flash-lite", [], {}, tag="v-b0")
+    transport, calls = _transport([failure], sleeps)
+    raw = transport.send("gemini/gemini-3.1-flash-lite", [], {}, tag="v-b0")
     assert raw.text == "{}" and len(calls) == 2 and len(sleeps) == 1
-    err = capsys.readouterr().err
-    assert "retry" in err and "v-b0" in err and str(failure.status_code) in err
+    error_output = capsys.readouterr().err
+    assert (
+        "retry" in error_output
+        and "v-b0" in error_output
+        and str(failure.status_code) in error_output
+    )
 
 
 @pytest.mark.parametrize(
@@ -64,17 +70,17 @@ def test_a_429_or_529_is_retried_and_says_so_on_stderr(failure, capsys):
 )
 def test_any_other_failure_fails_the_step_without_a_retry(failure):
     sleeps = []
-    t, calls = _transport([failure], sleeps)
+    transport, calls = _transport([failure], sleeps)
     with pytest.raises(llm.VendorError):
-        t.send("gemini/gemini-3.1-flash-lite", [], {}, tag="v-b0")
+        transport.send("gemini/gemini-3.1-flash-lite", [], {}, tag="v-b0")
     assert len(calls) == 1 and sleeps == []
 
 
 def test_retries_are_bounded(capsys):
     sleeps = []
-    t, calls = _transport([VendorFailure("429", 429) for _ in range(9)], sleeps)
+    transport, calls = _transport([VendorFailure("429", 429) for _ in range(9)], sleeps)
     with pytest.raises(llm.VendorError, match="429"):
-        t.send("gemini/gemini-3.1-flash-lite", [], {}, tag="v-b0")
+        transport.send("gemini/gemini-3.1-flash-lite", [], {}, tag="v-b0")
     assert len(calls) == llm.MAX_ATTEMPTS and len(sleeps) == llm.MAX_ATTEMPTS - 1
     assert capsys.readouterr().err.count("retry") == llm.MAX_ATTEMPTS - 1
 
@@ -100,12 +106,12 @@ def test_a_rejected_parameter_fails_the_call_naming_the_profile_row(params, reje
     after the vendor answers. The call fails once, and the error names the
     exact MODEL_PROFILES row that would have shaped it right."""
     sleeps = []
-    t, calls = _transport([VendorFailure(rejected, 400)], sleeps)
-    with pytest.raises(llm.VendorError) as e:
-        t.send("gemini/gemini-9", [], params, tag="v-b0")
+    transport, calls = _transport([VendorFailure(rejected, 400)], sleeps)
+    with pytest.raises(llm.VendorError) as raised:
+        transport.send("gemini/gemini-9", [], params, tag="v-b0")
     assert len(calls) == 1 and sleeps == []
-    assert "MODEL_PROFILES" in str(e.value)
-    assert f'("gemini/gemini-9", {row})' in str(e.value)
+    assert "MODEL_PROFILES" in str(raised.value)
+    assert f'("gemini/gemini-9", {row})' in str(raised.value)
 
 
 def test_the_transport_never_resends_without_a_parameter():
@@ -135,7 +141,7 @@ def test_an_unknown_model_gets_the_plain_request(tmp_path):
         tmp_path,
         {"greeting": {"model": "vendor/unknown-model", "temperature": 0.7}, "logs": {}},
         transport=Recorder(),
-        validator=lambda schema, obj: None,
+        validator=lambda schema, value: None,
     )
     client.complete(
         "greet", prompts.load("greeting", directories=[directory]), {"word": "x"}, tag="t"
@@ -144,26 +150,28 @@ def test_an_unknown_model_gets_the_plain_request(tmp_path):
 
 
 def test_a_known_model_is_shaped_from_its_row_before_sending(tmp_path):
-    t, calls = _transport([], [])
-    t.send("gemini/gemini-2.5-flash", [], {"temperature": 0.2}, tag="t")
+    transport, calls = _transport([], [])
+    transport.send("gemini/gemini-2.5-flash", [], {"temperature": 0.2}, tag="t")
     assert calls[0]["temperature"] == 0.2 and calls[0]["timeout"] == llm.REQUEST_TIMEOUT_S
 
 
 def test_a_reply_cut_at_the_token_limit_is_a_failure():
-    def completion(**kw):
+    def completion(**keyword_arguments):
         reply = _ok()
         reply.choices[0].finish_reason = "length"
         return reply
 
-    t = llm.LiteLLMTransport(completion=completion, cost=lambda r: 0.0)
+    transport = llm.LiteLLMTransport(completion=completion, cost=lambda reply: 0.0)
     with pytest.raises(llm.TruncatedReply):
-        t.send("gemini/gemini-3.1-flash-lite", [], {}, tag="t")
+        transport.send("gemini/gemini-3.1-flash-lite", [], {}, tag="t")
 
 
 def test_an_unpriceable_reply_costs_null():
     def broken_price(response):
         raise KeyError("no price")
 
-    t = llm.LiteLLMTransport(completion=lambda **kw: _ok(), cost=broken_price)
-    raw = t.send("gemini/gemini-3.1-flash-lite", [], {}, tag="t")
+    transport = llm.LiteLLMTransport(
+        completion=lambda **keyword_arguments: _ok(), cost=broken_price
+    )
+    raw = transport.send("gemini/gemini-3.1-flash-lite", [], {}, tag="t")
     assert raw.cost_usd is None and raw.tokens_in == 3 and raw.tokens_out == 1

@@ -35,14 +35,14 @@ def prompt(tmp_path):
     return Prompt("arbiter", 1, "arbiter", "none", "arbiter", "Pick the reading.\n", path, "f" * 64)
 
 
-def reply(choice, p, other):
+def reply(choice, probability, other):
     return {
         "model": "jev-1",
         "answers": {
             "reading": {
                 "type": "choice",
                 "choice": choice,
-                "probabilities": {choice: p, other: round(1 - p, 6)},
+                "probabilities": {choice: probability, other: round(1 - probability, 6)},
             }
         },
         "usage": {"input_tokens": 400, "output_tokens": 20},
@@ -96,10 +96,10 @@ def test_the_arbiter_asks_through_the_transport_it_is_given(tmp_path):
 
 
 def test_an_older_item_with_one_confidence_spreads_the_rest_evenly():
-    a = {"span": "heard it", "candidates": ["A", "B"], "pick": "A", "confidence": 0.7}
-    offered_candidates = review.candidates_offered(a)
+    ambiguity = {"span": "heard it", "candidates": ["A", "B"], "pick": "A", "confidence": 0.7}
+    offered_candidates = review.candidates_offered(ambiguity)
     assert offered_candidates == ["A", "B", "heard it"]
-    assert arbiter.ai_cleanup_probabilities(a, offered_candidates) == pytest.approx(
+    assert arbiter.ai_cleanup_probabilities(ambiguity, offered_candidates) == pytest.approx(
         {"A": 0.7, "B": 0.15, "heard it": 0.15}
     )
 
@@ -110,9 +110,9 @@ def test_a_pick_that_clears_the_threshold_is_applied_with_an_arbiter_origin(tmp_
     stats = make(tmp_path, transport).run(
         transcript_document, source_id="s1", protected=[], memory={}
     )
-    a = transcript_document["ambiguities"][0]
-    assert a["status"] == "auto_resolved" and a["resolution"] == "the skys"
-    assert a["origin"].startswith("arbiter jev-1 ")
+    ambiguity = transcript_document["ambiguities"][0]
+    assert ambiguity["status"] == "auto_resolved" and ambiguity["resolution"] == "the skys"
+    assert ambiguity["origin"].startswith("arbiter jev-1 ")
     assert transcript_document["segments"][0]["text"] == "he said the skys"
     assert stats["applied"] == 1 and stats["overrode"] == 1
 
@@ -146,7 +146,10 @@ def test_a_bad_reply_is_never_cached_and_skips_only_its_item(tmp_path):
     )
     assert stats["bad"] == 2 and stats["asked"] == 0
     assert not list((Path(tmp_path) / llm.CACHE_DIR).glob("*.json"))
-    assert [a["status"] for a in transcript_document["ambiguities"]] == ["pending", "pending"]
+    assert [ambiguity["status"] for ambiguity in transcript_document["ambiguities"]] == [
+        "pending",
+        "pending",
+    ]
 
 
 def test_a_reply_outside_the_cards_candidates_is_a_bad_reply(tmp_path):
@@ -161,18 +164,21 @@ def test_the_spend_cap_stops_the_arbiter_and_leaves_the_rest_pending(tmp_path):
         dict(transcript_document["ambiguities"][0], key="amb-0002")
     )
     transport = RecordingTransport(reply("the skys", 0.97, "these guys"))
-    arb = make(tmp_path, transport, config={"llm": {"max_usd_per_run": 0.0001}, "logs": {}})
-    arb.client.spent_usd = 1.0
-    stats = arb.run(transcript_document, source_id="s1", protected=[], memory={})
+    arbiter_run = make(tmp_path, transport, config={"llm": {"max_usd_per_run": 0.0001}, "logs": {}})
+    arbiter_run.client.spent_usd = 1.0
+    stats = arbiter_run.run(transcript_document, source_id="s1", protected=[], memory={})
     assert stats["spend_cap_reached"] and stats["cap"] == llm.RUN_CAP
     assert transport.bodies == []
-    assert [a["status"] for a in transcript_document["ambiguities"]] == ["pending", "pending"]
+    assert [ambiguity["status"] for ambiguity in transcript_document["ambiguities"]] == [
+        "pending",
+        "pending",
+    ]
 
 
 def test_off_reasons_name_what_to_fix():
     transport = RecordingTransport()
     transport.name = "typesafe"
-    on = arbiter.Settings(True, JUDGE_MODEL, 0.8)
+    enabled_settings = arbiter.Settings(True, JUDGE_MODEL, 0.8)
     assert arbiter.off_reason(None, transport, key_env="KEY").startswith("[arbiter] is absent")
     assert "enabled is false" in arbiter.off_reason(
         arbiter.Settings(False, JUDGE_MODEL, 0.8), transport, key_env="KEY"
@@ -183,10 +189,10 @@ def test_off_reasons_name_what_to_fix():
     assert "no price row" in arbiter.off_reason(
         arbiter.Settings(True, "nobody-9", 0.8), transport, key_env="KEY"
     )
-    assert arbiter.off_reason(on, transport, key_env="KEY_NOT_SET_ANYWHERE") == (
+    assert arbiter.off_reason(enabled_settings, transport, key_env="KEY_NOT_SET_ANYWHERE") == (
         "KEY_NOT_SET_ANYWHERE is not set in .env"
     )
-    assert arbiter.off_reason(on, RecordingTransport(), key_env="KEY") is None
+    assert arbiter.off_reason(enabled_settings, RecordingTransport(), key_env="KEY") is None
 
 
 def test_the_scripted_transport_reads_one_file_per_tag(tmp_path):

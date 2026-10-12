@@ -412,7 +412,7 @@ def build_speaker_map(
         sha256=sha256,
         inputs=inputs,
         provenance={
-            "roles": {r: e["status"] for r, e in built["roles"].items()},
+            "roles": {role: entry["status"] for role, entry in built["roles"].items()},
             "needs_author": speaker_map_module.review_items(built),
         },
         created_by=chain.created_by,

@@ -103,9 +103,9 @@ class SpendCapReached(RuntimeError):
     """A spend cap was reached; no further calls. `cap` names which one
     (RUN_CAP or DAY_CAP), so the board can say."""
 
-    def __init__(self, message: str, cap: str = RUN_CAP):
+    def __init__(self, message: str, cap_name: str = RUN_CAP):
         super().__init__(message)
-        self.cap = cap
+        self.cap = cap_name
 
 
 class CacheMiss(RuntimeError):
@@ -195,7 +195,11 @@ def check_temperatures(config: dict, sections: Iterable[str]) -> None:
 def rejected_params(error: BaseException, params: dict) -> list[str]:
     """The shaped parameters a vendor error names (temperature, JSON mode)."""
     text = str(error).lower()
-    return [k for k in ("temperature", "response_format") if k in params and k in text]
+    return [
+        parameter_name
+        for parameter_name in ("temperature", "response_format")
+        if parameter_name in params and parameter_name in text
+    ]
 
 
 def profile_row(model: str, params: dict, rejected: list[str]) -> str:
@@ -269,7 +273,9 @@ class LiteLLMTransport:
 
             litellm.suppress_debug_info = True
             completion = completion or litellm.completion
-            cost_of = cost_of or (lambda r: litellm.completion_cost(completion_response=r))
+            cost_of = cost_of or (
+                lambda response: litellm.completion_cost(completion_response=response)
+            )
         params = {"timeout": REQUEST_TIMEOUT_S, **params}
         response: Any = None
         attempt = 1
@@ -277,24 +283,24 @@ class LiteLLMTransport:
             try:
                 response = completion(model=model, messages=messages, **params)
                 break
-            except Exception as e:  # noqa: BLE001 - vendor errors are many; classify by status
-                text = str(e).splitlines()[0][:200] if str(e) else type(e).__name__
-                status = retry_status(e)
+            except Exception as error:  # noqa: BLE001 - vendor errors are many; classify by status
+                text = str(error).splitlines()[0][:200] if str(error) else type(error).__name__
+                status = retry_status(error)
                 if status is not None and attempt < MAX_ATTEMPTS:
                     wait = RETRY_SLEEP_S * attempt
                     say_retry(model, status, tag, attempt, wait)
                     self._sleep(wait)
                     attempt += 1
                     continue
-                rejected = rejected_params(e, params)
+                rejected = rejected_params(error, params)
                 if rejected:
                     # The request is never re-shaped after the vendor answers; the row is wrong.
                     raise VendorError(
                         f"{model} rejected {', '.join(rejected)} ({text}); the request "
                         f"was shaped from a wrong MODEL_PROFILES row. Add or correct the "
                         f"row in src/corpuslm/llm.py: {profile_row(model, params, rejected)}"
-                    ) from e
-                raise VendorError(f"{model}: {text}") from e
+                    ) from error
+                raise VendorError(f"{model}: {text}") from error
         if response is None:
             raise VendorError(f"{model}: no reply after {MAX_ATTEMPTS} attempts")
         usage = getattr(response, "usage", None)
@@ -378,8 +384,10 @@ _PRICES_PER_M = {
 def price_usd(model: str, tokens_in: int, tokens_out: int) -> float | None:
     if model not in _PRICES_PER_M:
         return None
-    pi, po = _PRICES_PER_M[model]
-    return round(tokens_in / 1e6 * pi + tokens_out / 1e6 * po, 6)
+    input_price_per_million, output_price_per_million = _PRICES_PER_M[model]
+    return round(
+        tokens_in / 1e6 * input_price_per_million + tokens_out / 1e6 * output_price_per_million, 6
+    )
 
 
 # ---- the client ------------------------------------------------------------
@@ -430,15 +438,15 @@ def payload_sha256(model: str, temperature: float | None, messages: list[dict]) 
 
 def parse_json_object(text: str) -> Any:
     """Strict: the reply is one JSON object, optionally fenced."""
-    s = text.strip()
-    if s.startswith("```"):
-        s = s.split("\n", 1)[1] if "\n" in s else ""
-        if s.rstrip().endswith("```"):
-            s = s.rstrip()[:-3]
-    obj = json.loads(s)
-    if not isinstance(obj, dict):
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        stripped = stripped.split("\n", 1)[1] if "\n" in stripped else ""
+        if stripped.rstrip().endswith("```"):
+            stripped = stripped.rstrip()[:-3]
+    parsed = json.loads(stripped)
+    if not isinstance(parsed, dict):
         raise ValueError("reply is not a JSON object")
-    return obj
+    return parsed
 
 
 class Client:
@@ -479,14 +487,16 @@ class Client:
             today = clock_mod.iso(self.clock())[:10]
             path = self.root / LOGS_DIR / "usage.jsonl"
             total = 0.0
-            for p in [path.with_name(f"{path.name}.{n}") for n in (2, 1)] + [path]:
-                for e in ledger_read(p):
+            for log_path in [
+                path.with_name(f"{path.name}.{generation}") for generation in (2, 1)
+            ] + [path]:
+                for entry in ledger_read(log_path):
                     if (
-                        str(e.get("at", "")).startswith(today)
-                        and e.get("kind") == "api"
-                        and not e.get("cached")
+                        str(entry.get("at", "")).startswith(today)
+                        and entry.get("kind") == "api"
+                        and not entry.get("cached")
                     ):
-                        total += float(e.get("cost_usd") or 0.0)
+                        total += float(entry.get("cost_usd") or 0.0)
             self._spent_before_today = total
         return self._spent_before_today + self.spent_usd
 
@@ -646,9 +656,9 @@ class Client:
                 model,
                 messages,
                 {
-                    k: v
-                    for k, v in params.items()
-                    if k != "_stage" or self.transport.name == "scripted"
+                    parameter_name: parameter_value
+                    for parameter_name, parameter_value in params.items()
+                    if parameter_name != "_stage" or self.transport.name == "scripted"
                 },
                 tag=tag,
             )
@@ -660,24 +670,26 @@ class Client:
                 # A run must not be able to outspend its cap and a cost is never estimated, so
                 # an unpriced model under a cap stops here.
                 self._ledger_raw(stage, prompt, model, raw, tag, "bad_reply")
-                cap = RUN_CAP if self.max_usd is not None else DAY_CAP
+                cap_name = RUN_CAP if self.max_usd is not None else DAY_CAP
                 raise SpendCapReached(
                     f"{model} has no price in the table, so the spend caps cannot "
-                    f"be enforced; add a row to _PRICES_PER_M or remove {cap}",
-                    cap,
+                    f"be enforced; add a row to _PRICES_PER_M or remove {cap_name}",
+                    cap_name,
                 )
             try:
                 parsed = self._parse(
                     prompt, raw.text, stage, payload_hash, attempts=attempts, check=check
                 )
                 break
-            except BadReply as e:
-                last_error = str(e)
+            except BadReply as error:
+                last_error = str(error)
                 parsed = None
                 # every attempt reaches the ledger , the failed ones as bad_reply
                 self._ledger_raw(stage, prompt, model, raw, tag, "bad_reply")
                 if attempts >= 2:
-                    raise BadReply(f"{stage} for {tag}: {last_error}", attempts, raw.text) from e
+                    raise BadReply(
+                        f"{stage} for {tag}: {last_error}", attempts, raw.text
+                    ) from error
         assert raw is not None
         write_atomic(
             cache_path,
@@ -748,22 +760,22 @@ class Client:
         self, prompt: Prompt, text: str, stage: str, payload_hash: str, *, attempts: int, check=None
     ):
         try:
-            obj = parse_json_object(text)
-        except ValueError as e:
-            raise BadReply(f"reply is not a JSON object ({e})", attempts, text) from e
+            parsed = parse_json_object(text)
+        except ValueError as error:
+            raise BadReply(f"reply is not a JSON object ({error})", attempts, text) from error
         if self.validator is not None:
             try:
-                self.validator(prompt.output_schema, obj)
-            except ValueError as e:
+                self.validator(prompt.output_schema, parsed)
+            except ValueError as error:
                 raise BadReply(
-                    f"reply does not match {prompt.output_schema}: {e}", attempts, text
-                ) from e
+                    f"reply does not match {prompt.output_schema}: {error}", attempts, text
+                ) from error
         if check is not None:
             try:
-                check(obj)
-            except ValueError as e:
-                raise BadReply(str(e), attempts, text) from e
-        return obj
+                check(parsed)
+            except ValueError as error:
+                raise BadReply(str(error), attempts, text) from error
+        return parsed
 
     def _ledger_raw(
         self, stage: str, prompt: Prompt, model: str, raw: RawReply, tag: str, outcome: str
@@ -803,8 +815,8 @@ class Client:
         """One payload and reply, tagged with its stage, into the invocation's
         log (there are no per-stage logs)."""
         path = self.log_path or self._own_log()
-        with path.open("a", encoding="utf-8") as f:
-            f.write(
+        with path.open("a", encoding="utf-8") as file:
+            file.write(
                 f"\n===== [{stage}] {clock_mod.iso(self.clock())} {header}\n"
                 f"----- [{stage}] payload\n{payload.rstrip(chr(10))}\n"
                 f"----- [{stage}] reply\n{reply.rstrip(chr(10))}\n"
@@ -843,7 +855,7 @@ class Client:
             stage,
             f"{tag} attempt={attempt} payload={payload_hash[:12]} {elapsed:.1f}s "
             f"in={raw.tokens_in} out={raw.tokens_out} cost={raw.cost_usd}",
-            "\n".join(m["content"] for m in messages),
+            "\n".join(message["content"] for message in messages),
             raw.text,
         )
 
