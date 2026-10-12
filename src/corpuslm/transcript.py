@@ -25,8 +25,6 @@ Decisions:
   tests/test_transcript.py::test_every_srt_entry_is_numbered_and_timed_from_its_segment.
 
 Terms:
-- **segment**: one timed unit of transcript text (`idx`, `t0`, `t1`). Never re-cut;
-  edits stay inside it.
 - **SRT**: the subtitle file derived deterministically from segments.
 - **transcript document**: the dict of one source's transcript: segments with speaker
   fields, state `RAW`, `DETERMINISTIC-ONLY` or `LLM-CLEANED`.
