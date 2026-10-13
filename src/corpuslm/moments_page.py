@@ -31,6 +31,8 @@ padding:11px 10px;border-radius:9px;border:1.5px solid var(--line);background:tr
 .buttons button[aria-pressed="true"]{background:var(--good);border-color:var(--good);color:#fff}
 .buttons button.decline[aria-pressed="true"]{background:var(--muted);border-color:var(--muted)}
 .card.done{opacity:.55}
+.all{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:0 0 8px}.all button{font:inherit;font-weight:600;font-size:14px;
+padding:9px 10px;border-radius:9px;border:1.5px solid var(--line);background:transparent;color:var(--ink);min-height:44px}
 """
 )
 
@@ -40,17 +42,25 @@ _SCRIPT = """
   function flash(text,warn){saved.textContent=text;saved.classList.add('on');saved.classList.toggle('warn',!!warn);
     setTimeout(function(){saved.classList.remove('on')},1400)}
   function count(){status.textContent=document.querySelectorAll('.card:not(.done)').length+' to rule'}
+  function post(params){return fetch('/api/review',{method:'POST',headers:{'Content-Type':'application/json','X-Review':'1'},
+      body:JSON.stringify(params)}).then(function(r){return r.json().then(function(j){return {ok:r.ok,body:j}})})}
+  function mark(card,verdict){card.querySelectorAll('.buttons button').forEach(function(b){b.setAttribute('aria-pressed',String(b.getAttribute('data-v')===verdict))});card.classList.add('done')}
   function rule(card,verdict){
-    fetch('/api/review',{method:'POST',headers:{'Content-Type':'application/json','X-Review':'1'},
-      body:JSON.stringify({method:'moment_verdict',params:{id:card.getAttribute('data-id'),verdict:verdict}})})
-    .then(function(r){return r.json().then(function(j){return {ok:r.ok,body:j}})})
-    .then(function(out){
-      if(!out.ok){flash('Not saved: '+(out.body.error||'error'),true);return}
-      card.querySelectorAll('button').forEach(function(b){b.setAttribute('aria-pressed',String(b.getAttribute('data-v')===verdict))});
-      card.classList.add('done');count();flash('Saved: '+verdict)})
+    post({method:'moment_verdict',params:{id:card.getAttribute('data-id'),verdict:verdict}})
+    .then(function(out){if(!out.ok){flash('Not saved: '+(out.body.error||'error'),true);return}
+      mark(card,verdict);count();flash('Saved: '+verdict)})
     .catch(function(){flash('Not saved: no server',true)})}
-  document.querySelectorAll('.card button').forEach(function(b){
+  function ruleAll(section,verdict){
+    var cards=Array.prototype.slice.call(section.querySelectorAll('.card:not(.done)'));
+    if(!cards.length){flash('Nothing left to rule here');return}
+    post({method:'moment_verdicts',params:{ids:cards.map(function(c){return c.getAttribute('data-id')}),verdict:verdict}})
+    .then(function(out){if(!out.ok){flash('Not saved: '+(out.body.error||'error'),true);return}
+      cards.forEach(function(c){mark(c,verdict)});count();flash('Saved: '+cards.length+' '+verdict)})
+    .catch(function(){flash('Not saved: no server',true)})}
+  document.querySelectorAll('.card .buttons button').forEach(function(b){
     b.addEventListener('click',function(){rule(b.closest('.card'),b.getAttribute('data-v'))})});
+  document.querySelectorAll('.all button').forEach(function(b){
+    b.addEventListener('click',function(){ruleAll(b.closest('section'),b.getAttribute('data-v'))})});
   count();
 })();
 """
@@ -94,6 +104,8 @@ def render(summary: dict, moments: list[dict]) -> str:
         date = html.escape(rows[0].get("date") or "")
         sections.append(
             f"<section><h2>{head}{(' · ' + date) if date else ''}</h2>"
+            '<div class="all"><button data-v="approved">Approve all</button>'
+            '<button data-v="declined">Decline all</button></div>'
             + "".join(_card(moment) for moment in rows)
             + "</section>"
         )
