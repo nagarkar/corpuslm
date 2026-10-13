@@ -188,6 +188,30 @@ class Answers:
             finally:
                 db.close()
 
+    def moment_verdicts(self, moment_ids: object, verdict: object) -> dict:
+        """Append one ruling on several moments at once (a source's Approve all or Decline
+        all), in one transaction: all land or none."""
+        from . import moments
+
+        if not isinstance(moment_ids, list) or not moment_ids or len(moment_ids) > 500:
+            raise ValueError("ids is a list of moment ids, at most 500")
+        if not all(isinstance(moment_id, str) and moment_id for moment_id in moment_ids):
+            raise ValueError("ids is a list of moment ids")
+        if verdict not in ("approved", "declined"):
+            raise ValueError("verdict is approved or declined")
+        with self._lock:
+            db, store = self._store()
+            try:
+                with store.transaction():
+                    for moment_id in moment_ids:
+                        moments.verdict(
+                            store, moment_id, verdict, answered_through="phone page",
+                            created_by=CREATED_BY,
+                        )  # fmt: skip
+                return {"ruled": len(moment_ids), "verdict": verdict}
+            finally:
+                db.close()
+
     # -- the monologue pages' calls (corpuslm.monologue_page) --
 
     def _monologue_name(self, params: dict) -> str:
@@ -313,6 +337,8 @@ class Answers:
             return self.concept_verdict(params.get("key"), params.get("verdict"))
         if method == "moment_verdict":
             return self.moment_verdict(params.get("id"), params.get("verdict"))
+        if method == "moment_verdicts":
+            return self.moment_verdicts(params.get("ids"), params.get("verdict"))
         if method == "monologue_new":
             return self.monologue_new(params)
         if method == "monologue_brief":
@@ -339,7 +365,7 @@ class Answers:
             return self.list(params.get("collection"))
         raise ValueError(
             "method must be one of: health, get, set, delete, list, concept_verdict, "
-            "moment_verdict, monologue_new, monologue_brief, monologue_attach, "
+            "moment_verdict, moment_verdicts, monologue_new, monologue_brief, monologue_attach, "
             "monologue_detach, monologue_estimate, monologue_run"
         )
 

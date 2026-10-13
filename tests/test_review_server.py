@@ -337,3 +337,42 @@ def test_a_moment_verdict_lands_through_the_api(corpora, documents):
         assert list(Store(database).current_moment_verdicts(BEE_SOURCE).values()) == ["approved"]
     finally:
         database.close()
+
+
+def test_several_moments_are_ruled_at_once_or_not_at_all(corpora, documents):
+    path = corpora[0]
+    database = db.Database(path)
+    store = Store(database)
+    store.add_source(BEE_SOURCE, "l", created_by="test", kind="bee")
+    first = store.add_moment(BEE_SOURCE, 0, 1, "x", origin="model", created_by="t")
+    second = store.add_moment(BEE_SOURCE, 2, 3, "y", origin="model", created_by="t")
+    database.close()
+    httpd = review_server.make_server(
+        "127.0.0.1", 0, page=lambda: "<title>page</title>", answers=documents
+    )
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    headers = {"Content-Type": "application/json", "X-Review": "1"}
+
+    def post(params):
+        return request(
+            httpd, "POST", "/api/review",
+            json.dumps({"method": "moment_verdicts", "params": params}), headers,
+        )  # fmt: skip
+
+    try:
+        status, body = post({"ids": [first, second], "verdict": "declined"})
+        assert status == 200 and json.loads(body)["result"] == {"ruled": 2, "verdict": "declined"}
+        status, _ = post({"ids": [first, "mom-nope"], "verdict": "approved"})
+        assert status == 404  # one unknown id: nothing of the batch lands
+        status, _ = post({"ids": [], "verdict": "approved"})
+        assert status == 400
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+    database = db.Database(path)
+    try:
+        verdicts = Store(database).current_moment_verdicts(BEE_SOURCE)
+        assert sorted(verdicts.values()) == ["declined", "declined"]
+    finally:
+        database.close()
