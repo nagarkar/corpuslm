@@ -67,7 +67,7 @@ _SCRIPT = """
     .catch(function(){flash('Not saved: no server',true)})}
   document.querySelectorAll('article[data-key] button').forEach(function(b){
     b.addEventListener('click',function(){rule(b.closest('article'),b.getAttribute('data-v'))})});
-  status.textContent=document.querySelectorAll('article[data-key]').length+' to rule';
+  status.textContent=document.querySelectorAll('section:first-of-type article[data-key]').length+' to rule';
 })();
 """
 
