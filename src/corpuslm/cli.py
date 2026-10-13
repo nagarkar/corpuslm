@@ -1,7 +1,7 @@
 """The corpuslm command line (docs/design/surfaces.md): `help`, `doctor`, `completion`, the
 review verbs `review page`, `review serve`, `review apply`, `review check` and
-`review accept-suggestions`, `suggestions record`, and the usage verbs `usage show` and
-`usage serve`.
+`review accept-suggestions`, `suggestions record`, the usage verbs `usage show` and
+`usage serve`, and the claim verbs `claims build`, `claims status` and `claims import-digests`.
 
 Verbs print a short board (counts, paths, next step), never content;
 `--json` anywhere on the line prints the board as JSON. The review verbs read one settings file
@@ -24,7 +24,7 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-from . import clikit, db, review_rebuilders, usage, usage_page, usage_server
+from . import claims, clikit, db, llm, review_rebuilders, usage, usage_page, usage_server
 from .model_suggestions import backfill
 from .review_accept_suggestions import accept, parse_cutoff
 from .review_apply import apply as apply_answers
@@ -108,6 +108,26 @@ DESCRIPTIONS = {
         "Check the running review server: it answers, and it is not older than the newest "
         f"commit of corpuslm's code (else: {KICKSTART}).",
         "corpuslm review check --config /path/to/review.toml",
+    ),
+}
+DESCRIPTIONS |= {
+    "claims build": (
+        "List what the chosen sources claim, one short sentence per claim tied to its segments, "
+        "by a cheap model call per section (billed; `[claims]` and `[llm]` in the settings "
+        "file). A source whose claims are current or imported is left alone. `--dry-run` "
+        "counts the calls and estimates the cost; nothing is sent.",
+        "corpuslm claims build --config /path/to/review.toml --kind bee --dry-run",
+    ),
+    "claims status": (
+        "What stands for each source: claims counted, and whether they are current, stale "
+        "(the reason names what changed), imported from a ytlm digest, or absent. Read-only.",
+        "corpuslm claims status --config /path/to/review.toml",
+    ),
+    "claims import-digests": (
+        "Turn ytlm's existing digests (`videos/<id>/digest.json` under the YouTube folder of the "
+        "settings file) into claims with no model call. A source that already has claims is "
+        "left alone. `--dry-run` counts and writes nothing.",
+        "corpuslm claims import-digests --config /path/to/review.toml --dry-run",
     ),
 }
 VERBS = DESCRIPTIONS  # the verbs and their descriptions, for the repo skill's parity test
@@ -240,6 +260,33 @@ def build_parser() -> argparse.ArgumentParser:
     record_parser.add_argument(
         "--dry-run", action="store_true", help="count and print; write nothing"
     )
+    claims_group = verbs.add_parser(
+        "claims", help="what the sources claim: build, status, import-digests"
+    )
+    claims_verbs = claims_group.add_subparsers(dest="claims_verb", metavar="<subverb>")
+    for name, help_text in (
+        ("build", "list the sources' claims by a model call per section (billed)"),
+        ("status", "what stands for each source's claims; read-only"),
+        ("import-digests", "turn ytlm's digests into claims; no model"),
+    ):
+        sub = leaf(claims_verbs, name, help_text, f"claims {name}")
+        sub.add_argument("--config", required=True, metavar="FILE", help="the review settings file")
+        if name in ("build", "status"):
+            sub.add_argument(
+                "--kind", default=None, metavar="SOURCE_KIND", help="only sources of this kind"
+            )
+        if name == "build":
+            sub.add_argument(
+                "--source",
+                action="append",
+                default=None,
+                metavar="SOURCE_ID",
+                help="one source (repeatable); without it, every source of --kind or all",
+            )
+        if name in ("build", "import-digests"):
+            sub.add_argument(
+                "--dry-run", action="store_true", help="count and estimate; send and write nothing"
+            )
     usage_group = verbs.add_parser("usage", help="what the system spends: show, serve")
     usage_verbs = usage_group.add_subparsers(dest="usage_verb", metavar="<subverb>")
     for name, help_text in (
@@ -544,6 +591,130 @@ def review_check_board(settings: ReviewSettings) -> dict:
     }
 
 
+def _claims_sources(store: Store, kind: str | None, chosen: list[str] | None) -> list[str]:
+    if chosen:
+        unknown = [source_id for source_id in chosen if not store.has_source(source_id)]
+        if unknown:
+            raise ValueError(f"unknown source: {', '.join(unknown)}")
+        return list(dict.fromkeys(chosen))
+    return store.source_ids(kind, include_ignored=False)
+
+
+def _claims_client(settings: ReviewSettings, verb: str) -> llm.Client:
+    if settings.claims is None:
+        raise SettingsError(
+            f"{settings.path}: [claims] is missing; add model and workspace (see "
+            "scripts/review.example.toml)"
+        )
+    return llm.Client(settings.claims.workspace, settings.client_config(), verb=verb)
+
+
+def claims_build_board(
+    settings: ReviewSettings, kind: str | None, chosen: list[str] | None, dry_run: bool
+) -> dict:
+    database = _open_existing(settings)
+    try:
+        store = Store(database)
+        client = _claims_client(settings, "claims build")
+        source_ids = _claims_sources(store, kind, chosen)
+        estimate = claims.estimate(store, client, source_ids)
+        board = {
+            "verb": "claims build",
+            "ok": True,
+            "sources_chosen": len(source_ids),
+            "sources_to_build": estimate.sources,
+            "from_cache": estimate.from_cache,
+            "calls_billed": estimate.calls,
+            "tokens_in": estimate.tokens_in,
+            "tokens_out_assumed": estimate.tokens_out,
+            "estimated_usd": estimate.usd,
+            "model": estimate.model,
+            "caps": settings.llm,
+        }
+        if dry_run:
+            return board | {"status": "dry-run", "note": "dry run: nothing was sent or written"}
+        standing = {
+            entry.source_id: entry.state
+            for entry in claims.status(store, client.config, source_ids)
+        }
+        built, claims_written, dropped, cost = 0, 0, 0, 0.0
+        stopped = ""
+        for source_id in source_ids:
+            if standing[source_id] in ("current", "imported"):
+                continue
+            try:
+                out = claims.build(store, client, source_id, created_by="corpuslm")
+            except llm.SpendCapReached as error:
+                stopped = str(error)
+                break
+            built += 1
+            claims_written += out["claims"]
+            dropped += out["dropped"]
+            cost += out["cost_usd"]
+        return board | {
+            "built": built,
+            "claims": claims_written,
+            "dropped": dropped,
+            "cost_usd": round(cost, 6),
+            "stopped_by": stopped,
+            "ok": not stopped,
+            "next": "corpuslm claims status --config " + str(settings.path),
+        }
+    finally:
+        database.close()
+
+
+def claims_status_board(settings: ReviewSettings, kind: str | None) -> dict:
+    database = _open_existing(settings)
+    try:
+        store = Store(database)
+        source_ids = store.source_ids(kind, include_ignored=False)
+        config = settings.client_config() if settings.claims is not None else None
+        entries = claims.status(store, config, source_ids)
+        states = {state: 0 for state in ("current", "stale", "imported", "none")}
+        reasons: dict[str, int] = {}
+        for entry in entries:
+            states[entry.state] += 1
+            if entry.state == "stale":
+                reasons[entry.reason] = reasons.get(entry.reason, 0) + 1
+        return {
+            "verb": "claims status",
+            "ok": True,
+            "sources": len(entries),
+            "claims": store.claim_count(),
+            "by_kind": store.claim_kind_counts(),
+            "states": states,
+            "stale_reasons": reasons,
+            "next": "corpuslm claims build --config " + str(settings.path) + " --dry-run"
+            if states["stale"] or states["none"]
+            else "nothing to build",
+        }
+    finally:
+        database.close()
+
+
+def claims_import_board(settings: ReviewSettings, dry_run: bool) -> dict:
+    if "youtube" not in settings.kinds:
+        raise SettingsError(f"{settings.path}: [kinds.youtube] is missing; digests live there")
+    database = _open_existing(settings)
+    try:
+        store = Store(database)
+        out = claims.import_digests(
+            store,
+            settings.kinds["youtube"].directory,
+            store.source_ids("youtube", include_ignored=False),
+            created_by="corpuslm",
+            dry_run=dry_run,
+        )
+        return (
+            {"verb": "claims import-digests", "ok": True}
+            | out
+            | ({"status": "dry-run", "note": "dry run: nothing was written"} if dry_run else {})
+        )
+    finally:
+        database.close()
+
+
 def _verb_board() -> dict:
     return {
         "verbs": {
@@ -599,7 +770,23 @@ def main(argv: list[str] | None = None) -> int:
             text, code = clikit.help_text(parser, PROG, ["usage"])
             print(text, end="")
             return code
+        if namespace.verb == "claims" and namespace.claims_verb is None:
+            text, code = clikit.help_text(parser, PROG, ["claims"])
+            print(text, end="")
+            return code
         settings = load(Path(namespace.config))
+        if namespace.verb == "claims":
+            match namespace.claims_verb:
+                case "build":
+                    board = claims_build_board(
+                        settings, namespace.kind, namespace.source, namespace.dry_run
+                    )
+                case "status":
+                    board = claims_status_board(settings, namespace.kind)
+                case _:
+                    board = claims_import_board(settings, namespace.dry_run)
+            _print(board, as_json)
+            return 0 if board["ok"] else 1
         if namespace.verb == "usage":
             if namespace.usage_verb == "show":
                 shown = _usage_board(settings, namespace.month)
@@ -638,7 +825,16 @@ def main(argv: list[str] | None = None) -> int:
                 if server is not None:
                     serve_until_stopped(server)
                 return 0
-    except (DoctorError, SettingsError, sqlite3.Error, OSError, ValueError) as error:
+    except (
+        DoctorError,
+        SettingsError,
+        llm.NotConfigured,
+        llm.BadReply,
+        llm.VendorError,
+        sqlite3.Error,
+        OSError,
+        ValueError,
+    ) as error:
         _print({"verb": args[0], "ok": False, "error": str(error)}, as_json)
         return 1
     _print(board, as_json)
