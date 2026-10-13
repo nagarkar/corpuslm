@@ -753,8 +753,8 @@ def review_serve_board(settings: ReviewSettings, port: int | None, dry_run: bool
             fresh = db.Database(settings.database)
             try:
                 store = Store(fresh)
-                ruled = [row for row in concepts.listing(store, config) if row.get("verdict")]
-                return concepts_page.render(concepts.summary(store, config), ruled)
+                rows = concepts.listing(store, config)
+                return concepts_page.render(concepts.summary(store, config), rows)
             finally:
                 fresh.close()
 

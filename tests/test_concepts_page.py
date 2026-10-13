@@ -30,29 +30,11 @@ def test_the_page_shows_labels_and_counts_and_escapes_them():
     )
     assert "3 sections · 6 claims · 2 sources" in html
     assert html.count('data-v="in"') == 1 and html.count('data-v="out"') == 1
-    assert "Ruled" not in html
+    assert "None yet." in html
     assert (
         '<div class="bar gate"><span>3</span>' in html and '<div class="bar"><span>1</span>' in html
     )
     assert "Time is the counting" not in html  # the page never carries a claim's text
-
-
-def test_ruled_concepts_are_offered_again_with_their_ruling_pressed():
-    ruled = [
-        {
-            "key": "choice",
-            "label": "choice",
-            "sections": 4,
-            "claims": 9,
-            "sources": 3,
-            "verdict": "out",
-        }
-    ]
-    html = concepts_page.render(SUMMARY | {"boundary": []}, ruled)
-    assert "Nothing on the boundary." in html and "<h2>Ruled</h2>" in html
-    assert 'data-key="choice"' in html
-    assert 'class="out" data-v="out" aria-pressed="true"' in html
-    assert 'data-v="in" aria-pressed="false"' in html
 
 
 def test_an_empty_lexicon_renders_without_bars():
