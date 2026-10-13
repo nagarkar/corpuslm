@@ -192,3 +192,11 @@ def test_the_sheet_table_is_read(tmp_path):
     assert settings.sheet.model == "m" and settings.client_config()["sheet"] == {"model": "m"}
     with pytest.raises(SettingsError, match="model is missing"):
         review_settings.load(write(tmp_path, GOOD + "[sheet]\n"))
+
+
+def test_the_monologue_table_is_read_with_its_default(tmp_path):
+    settings = review_settings.load(write(tmp_path, GOOD + CLAIMS + "[monologue]\nmodel = 'm'\n"))
+    assert (settings.monologue.model, settings.monologue.minutes) == ("m", 4)
+    assert settings.client_config()["monologue"] == {"model": "m", "minutes": 4}
+    with pytest.raises(SettingsError, match="minutes must be"):
+        review_settings.load(write(tmp_path, GOOD + "[monologue]\nmodel = 'm'\nminutes = 0\n"))

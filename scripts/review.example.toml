@@ -67,3 +67,9 @@ max_moments = 8
 # Optional: the perspective sheet draft (`corpuslm sheet draft BODY`). Shares the [claims] workspace.
 [sheet]
 model = "gemini/gemini-2.5-flash-lite"
+
+# Optional: the monologue recipe (`corpuslm monologue run NAME`). Shares the [claims] workspace; the
+# monologue's Doc is kept under <workspace>/monologues/<name>. `minutes` is the target length of speech.
+[monologue]
+model = "gemini/gemini-2.5-flash-lite"
+minutes = 4

@@ -330,9 +330,12 @@ def store(
         raise DocumentUnavailable("the document store needs the consumer's workspace directory")
     try:
         from .document_authorlm import AuthorlmStore
+
+        return AuthorlmStore(config or {}, workspace, origin=origin)
     except ImportError as error:
+        # the authorlm import happens inside the store, so both the module and its
+        # construction are covered
         raise DocumentUnavailable(
             "documents need authorlm installed from its checkout: "
             f"pip install -e ../authorllm/authorlm ({error})"
         ) from error
-    return AuthorlmStore(config or {}, workspace, origin=origin)

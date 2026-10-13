@@ -167,7 +167,7 @@ keep lineage.
 
 ## Migrations: user_version, a verified backup, one transaction (2026-10-03)
 
-The schema version is `PRAGMA user_version` (`db.USER_VERSION`, now 14; a
+The schema version is `PRAGMA user_version` (`db.USER_VERSION`, now 15; a
 database made before it was tracked reads 0 and has the v1 schema, frozen
 in `tests/fixtures/schema_v1.sql`). On open, `db.migrate`:
 
@@ -249,6 +249,19 @@ propose` fill `moments`; the owner's taps fill the verdicts.
 The v13 → v14 step is additive: after the verified backup it creates `bodies_of_work` (empty)
 with its change-log trigger, in one transaction, and sets `user_version` 14 inside it. `corpuslm
 body add` fills it.
+
+The v14 → v15 step is additive: after the verified backup it creates `monologues` (with its
+change-log trigger), `monologue_moments`, `monologue_bodies` and `monologue_runs` (all empty) in
+one transaction and sets `user_version` 15 inside it. `corpuslm monologue new` fills them.
+
+Proof of the v14 → v15 step on a copy of the real database (2026-10-13, taken at version 10 at
+the end of the YouTube claim pass, so the copy took the v11 to v15 steps in one transaction; 300
+sources, 30,462 claims): the backup was written first and verified, every one of the 843,517 rows
+in every table kept its table's count, the four new tables appeared empty, `foreign_key_check` was
+empty, `integrity_check` read `ok`, and the triggers and views went from 39 to 47. On the same
+copy, after `moments import`, `monologue new first-walk` with two imported moments attached read
+`none` in `status`, and `monologue run --dry-run` priced the first run at a fraction of a cent on
+the cheap tier.
 
 Proof of the v13 → v14 step on a copy of the real database (2026-10-13, taken at version 10 while
 the YouTube claim pass was running, so the copy took the v11 to v14 steps in one transaction; 300
@@ -518,6 +531,76 @@ setting `metadata.merged_from` to the folded corpus's id, so the change log reco
 move. The folded corpus's row, lists and members, whole, are appended to the target
 corpus's `metadata.merged_from` before the folded rows are deleted: nothing a corpus
 held is lost with its row.
+
+### `monologues`
+
+History: master.
+
+A monologue (corpuslm.monologues): the first artifact, made from a set of moments and the bodies
+of work it draws on by a recipe. Its moments and bodies are the two tables below; its Doc is the
+manuscript named here, one script tab per run.
+
+| column | type | null | meaning |
+|---|---|---|---|
+| (base) | | | |
+| name | TEXT | no | the owner's short name; unique |
+| title | TEXT | no | the working title, `''` until one is given or proposed |
+| brief | TEXT | no | what it is about, in the owner's words; may be empty |
+| manuscript | TEXT | no | the authorlm manuscript holding its script tab; `''` until the first run |
+| directory | TEXT | no | that manuscript's folder; `''` until the first run |
+| state | TEXT | no | one of `open`, `recorded`, `archived` |
+
+### `monologue_moments`
+
+History: derived.
+
+The moments a monologue draws on, by the moment's subject (source and span), so a rebuild of
+the proposals never loses one. What a run used is also kept in the run's ingredients.
+
+| column | type | null | meaning |
+|---|---|---|---|
+| monologue_id | TEXT | no | the monologue |
+| source_id | TEXT | no | the moment's source |
+| subject_sha256 | TEXT | no | the moment's subject hash |
+
+### `monologue_bodies`
+
+History: derived.
+
+The bodies of work a monologue draws on; the history `body list` reads.
+
+| column | type | null | meaning |
+|---|---|---|---|
+| monologue_id | TEXT | no | the monologue |
+| body_id | TEXT | no | the body of work |
+
+### `monologue_runs`
+
+History: derived.
+
+One row per recipe run, keyed by the ingredients hash: the same ingredients never run twice. Kept,
+never rewritten by code: the runs table is the history; the Doc's one script tab shows the latest
+run and is rewritten whole by the next.
+
+| column | type | null | meaning |
+|---|---|---|---|
+| (base) | | | |
+| monologue_id | TEXT | no | the monologue |
+| number | INTEGER | no | the run's number within the monologue, from 1 |
+| ingredients_sha256 | TEXT | no | the hash of the ingredients |
+| ingredients | TEXT | no | JSON object: the ingredients as hashed (recipe, model, moments, bodies) |
+| recipe | TEXT | no | the recipe prompt's id |
+| recipe_sha256 | TEXT | no | the recipe prompt's hash |
+| model | TEXT | no | the model |
+| prior_run_id | TEXT | no | the run whose settled text was the style guide, `''` for a fresh one |
+| fresh | INTEGER | no | 0 or 1: 1 when `--fresh` dropped the prior |
+| title | TEXT | no | the title the run proposed |
+| prior | TEXT | no | the settled script, with the owner's edits, the run was given as its style guide; `''` for a fresh or first run |
+| output | TEXT | no | the script as the model returned it, paragraphs separated by blank lines |
+| tab | TEXT | no | the script tab's file in the Doc (`script.md`), `''` when not written |
+| tokens_in | INTEGER | no | |
+| tokens_out | INTEGER | no | |
+| cost_usd | REAL | no | |
 
 ### `bodies_of_work`
 
@@ -938,6 +1021,8 @@ segment changed, so it carries the previous hash):
 | `run-0a1b2c3d4e5f` | `cli` | `sources:1` | `running` | `2026-10-02T09:12:40Z` | NULL | 1 | NULL | `` |
 
 ## Changes
+
+- 2026-10-13: Version 15 (nagarkar/corpuslm#50): `monologues` (master) with `monologue_moments`, `monologue_bodies` and `monologue_runs` (derived): the first artifact, its attached moments and bodies, and every recipe run keyed by its ingredients hash
 
 - 2026-10-13: Version 14 (nagarkar/corpuslm#49): `bodies_of_work` (master): the references a monologue draws on, standing ones with a perspective sheet in their manuscript's tab, occasional ones without; the history of use
 
