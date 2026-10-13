@@ -40,7 +40,7 @@ from .identity import canonical_sha256  # noqa: F401  (re-exported: db.canonical
 
 # PRAGMA user_version of the schema below. 0 is a database made before the
 # version was tracked (the v1 schema, frozen in tests/fixtures/schema_v1.sql).
-USER_VERSION = 14
+USER_VERSION = 15
 
 BACKUPS_DIRNAME = "backups"
 # How many verified backups `<workspace>/backups/` keeps (owner ruling
@@ -277,6 +277,54 @@ BODIES_TABLE = f"""CREATE TABLE IF NOT EXISTS bodies_of_work (
 ) STRICT;
 """
 
+# Monologues (corpuslm.monologues): the first artifact. `monologues` is master data (the owner
+# names one and writes its brief); its moments and bodies are lists; `monologue_runs` is the
+# record of every recipe run, keyed by the ingredients hash so the same inputs never run twice.
+MONOLOGUES_TABLES = f"""CREATE TABLE IF NOT EXISTS monologues (
+    {KNOWLEDGE_OBJECT_COLUMNS},
+    name TEXT NOT NULL UNIQUE,
+    title TEXT NOT NULL DEFAULT '',
+    brief TEXT NOT NULL DEFAULT '',
+    manuscript TEXT NOT NULL DEFAULT '',
+    directory TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open', 'recorded', 'archived'))
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS monologue_moments (
+    monologue_id TEXT NOT NULL REFERENCES monologues(id),
+    source_id TEXT NOT NULL REFERENCES sources(id),
+    subject_sha256 TEXT NOT NULL CHECK (length(subject_sha256) = 64),
+    UNIQUE (monologue_id, source_id, subject_sha256)
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS monologue_bodies (
+    monologue_id TEXT NOT NULL REFERENCES monologues(id),
+    body_id TEXT NOT NULL REFERENCES bodies_of_work(id),
+    UNIQUE (monologue_id, body_id)
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS monologue_runs (
+    {KNOWLEDGE_OBJECT_COLUMNS},
+    monologue_id TEXT NOT NULL REFERENCES monologues(id),
+    number INTEGER NOT NULL CHECK (number >= 1),
+    ingredients_sha256 TEXT NOT NULL CHECK (length(ingredients_sha256) = 64),
+    ingredients TEXT NOT NULL CHECK (json_valid(ingredients)),
+    recipe TEXT NOT NULL,
+    recipe_sha256 TEXT NOT NULL,
+    model TEXT NOT NULL,
+    prior_run_id TEXT NOT NULL DEFAULT '',
+    fresh INTEGER NOT NULL DEFAULT 0 CHECK (fresh IN (0, 1)),
+    title TEXT NOT NULL DEFAULT '',
+    output TEXT NOT NULL,
+    tab TEXT NOT NULL DEFAULT '',
+    tokens_in INTEGER NOT NULL DEFAULT 0,
+    tokens_out INTEGER NOT NULL DEFAULT 0,
+    cost_usd REAL NOT NULL DEFAULT 0,
+    UNIQUE (monologue_id, ingredients_sha256),
+    UNIQUE (monologue_id, number)
+) STRICT;
+"""
+
 SOURCES_TABLE = f"""CREATE TABLE IF NOT EXISTS sources (
     {KNOWLEDGE_OBJECT_COLUMNS},
     kind TEXT NOT NULL DEFAULT 'youtube' CHECK (kind IN ('youtube', 'bee', 'text')),
@@ -493,6 +541,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS segments_fts USING fts5(
 {MOMENTS_TABLES}
 
 {BODIES_TABLE}
+
+{MONOLOGUES_TABLES}
 """
 
 # Master data: every column whose change is written to change_log by trigger.
@@ -509,6 +559,7 @@ MASTER_COLUMNS: dict[str, tuple[str, ...]] = {
     "review_answers": ("verdict", "answered_at", "metadata"),
     "feeds": ("kind", "title", "last_scanned_at", "metadata"),
     "source_skips": ("feed_id", "title", "reason", "skipped_at", "lifted_at", "metadata"),
+    "monologues": ("name", "title", "brief", "manuscript", "directory", "state", "metadata"),
     "bodies_of_work": (
         "name", "kind", "text_source_id", "corpus_id", "source_id", "note", "manuscript",
         "directory", "sheet_sha256", "last_used_at", "metadata",
@@ -908,6 +959,14 @@ def _v8_to_v9_script(connection: sqlite3.Connection) -> list[str]:
     return _rebuild_sources_script(connection, "sources_v9")
 
 
+def _v14_to_v15_script() -> list[str]:
+    """Additive: the monologue tables (empty) and the change-log trigger of `monologues`."""
+    return [
+        *_statements(MONOLOGUES_TABLES),
+        _master_trigger("monologues", MASTER_COLUMNS["monologues"]),
+    ]
+
+
 def _v13_to_v14_script() -> list[str]:
     """Additive: the bodies-of-work table (empty) and its change-log trigger."""
     return [
@@ -1174,7 +1233,7 @@ def migrate(connection: sqlite3.Connection, db_path: Path) -> dict:
         return {"from": version, "to": USER_VERSION, "backup": None, "created": True}
     saved = backup(connection, db_path, label=f"before-v{USER_VERSION}")
     deleted = prune_backups(db_path)  # only after the new one verified
-    if version in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13):
+    if version in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14):
         # From v8 on, every step checks every table's row count (the v8 -> v9 and v10 -> v11
         # steps rebuild `sources`; the v9 -> v10 step is additive and nothing else may change).
         watched = (
@@ -1195,7 +1254,8 @@ def migrate(connection: sqlite3.Connection, db_path: Path) -> dict:
                 *(_v10_to_v11_script(column) if version <= 10 else []),
                 *(_v11_to_v12_script() if version <= 11 else []),
                 *(_v12_to_v13_script() if version <= 12 else []),
-                *_v13_to_v14_script(),
+                *(_v13_to_v14_script() if version <= 13 else []),
+                *_v14_to_v15_script(),
             ]
 
         if not _run_in_transaction(

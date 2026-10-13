@@ -137,6 +137,7 @@ def _claims_world(tmp_path, *, claims_table: bool = True) -> str:
             '[concepts]\nmodel = "gemini/gemini-2.5-flash-lite"\nmin_sections = 1\nmin_claims = 1\n'
             '[moments]\nmodel = "gemini/gemini-2.5-flash-lite"\n'
             '[sheet]\nmodel = "gemini/gemini-2.5-flash-lite"\n'
+            '[monologue]\nmodel = "gemini/gemini-2.5-flash-lite"\nminutes = 2\n'
             if claims_table
             else ""
         )
@@ -371,3 +372,64 @@ def test_body_and_sheet_verbs_against_the_fake_document_store(tmp_path, capsys, 
     assert board["sheet"] == "empty" and len(board["version"]) == 64
     assert cli.main(["--json", "sheet", "status", "Talk", "--config", config]) == 0
     assert _board(capsys)["sheet"] == "none"
+
+
+def test_monologue_verbs_against_the_fake_document_store(tmp_path, capsys, monkeypatch):
+    from corpuslm.store import Store
+
+    monkeypatch.setattr("corpuslm.document.FAKE_DIR", tmp_path / "docs")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    config = _claims_world(tmp_path)
+    database = db.Database(tmp_path / "transcript.sqlite")
+    store = Store(database)
+    moment = store.add_moment("bee:1", 0, 1, "a choice", origin="import", created_by="t")
+    store.append_moment_verdict(
+        "bee:1", store.moment_subject("bee:1", 0, 1), "approved",
+        answered_through="review file", created_by="t",
+    )  # fmt: skip
+    database.close()
+    assert (
+        cli.main(
+            ["--json", "monologue", "new", "Karma Walk", "--brief", "karma", "--config", config]
+        )
+        == 0
+    )
+    board = _board(capsys)
+    assert board["name"] == "karma-walk" and board["next"].startswith(
+        "corpuslm monologue attach karma-walk"
+    )
+    assert (
+        cli.main(
+            ["--json", "monologue", "attach", "karma-walk", "--moment", moment, "--config", config]
+        )
+        == 0
+    )
+    assert _board(capsys)["attached"] is True
+    assert (
+        cli.main(
+            ["--json", "monologue", "attach", "karma-walk", "--body", "nope", "--config", config]
+        )
+        == 1
+    )
+    assert "no body of work" in _board(capsys)["error"]
+    assert cli.main(["--json", "monologue", "status", "karma-walk", "--config", config]) == 0
+    assert _board(capsys)["ingredients"] == "none"
+    assert (
+        cli.main(["--json", "monologue", "run", "karma-walk", "--config", config, "--dry-run"]) == 0
+    )
+    board = _board(capsys)
+    assert board["status"] == "dry-run" and board["moments"] == 1 and board["estimated_usd"] > 0
+    assert cli.main(["--json", "monologue", "run", "karma-walk", "--config", config]) == 1
+    assert "GEMINI_API_KEY is not set" in _board(capsys)["error"]
+    assert (
+        cli.main(
+            ["--json", "monologue", "detach", "karma-walk", "--moment", moment, "--config", config]
+        )
+        == 0
+    )
+    assert _board(capsys)["detached"] is True
+    assert cli.main(["--json", "monologue", "list", "--config", config]) == 0
+    board = _board(capsys)
+    assert [(m["name"], m["moments"], m["runs"]) for m in board["monologues"]] == [
+        ("karma-walk", 0, 0)
+    ]

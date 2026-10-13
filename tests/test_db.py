@@ -109,8 +109,8 @@ def _verdict(
 
 
 def test_fresh_file_gets_user_version(database, dbpath):
-    # storage-schema.md: "The schema version is PRAGMA user_version (db.USER_VERSION, now 14)"
-    assert db.USER_VERSION == 14
+    # storage-schema.md: "The schema version is PRAGMA user_version (db.USER_VERSION, now 15)"
+    assert db.USER_VERSION == 15
     assert database.one("PRAGMA user_version")[0] == db.USER_VERSION
     raw = sqlite3.connect(dbpath)
     try:
@@ -960,7 +960,7 @@ def test_v1_backup_is_verified_and_complete(migrated, dbpath):
     assert len(files) == 1
     backup_path = files[0]
     assert backup_path.name.startswith("transcript-") and backup_path.name.endswith(
-        "-before-v14.sqlite"
+        "-before-v15.sqlite"
     )
     assert _rows(backup_path, "PRAGMA integrity_check")[0][0] == "ok"
     assert _rows(backup_path, RV_SQL_V1) == original_rv
@@ -1242,6 +1242,9 @@ def test_the_schema_document_mirrors_the_code():
         "concepts": "derived",
         "claim_concepts": "derived",
         "moments": "derived",
+        "monologue_runs": "derived",
+        "monologue_moments": "derived",
+        "monologue_bodies": "derived",
         "locks": "coordination",
     }
     for name, kind in objects.items():
@@ -1300,7 +1303,7 @@ def test_master_data_logs_every_column_but_the_identity_ones():
             expected = [column for column in expected if column != "feed_id"]
         if table == "source_skips":
             expected = [column for column in expected if column != "source_id"]
-        if table == "bodies_of_work":
+        if table in ("bodies_of_work", "monologues"):
             expected = [column for column in expected if column != "id"]
         assert sorted(logged) == sorted(expected), table
 

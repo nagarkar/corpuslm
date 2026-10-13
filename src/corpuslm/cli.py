@@ -5,8 +5,9 @@ review verbs `review page`, `review serve`, `review apply`, `review check` and
 `text import` (a manuscript export as a text source), the concept verbs `concepts build`,
 `concepts status`, `concepts list`, `concepts edges` and `concepts verdict`, and the moment verbs
 `moments import`, `moments propose`, `moments status`, `moments list` and `moments verdict`, the
-body-of-work verbs `body add` and `body list`, and the sheet verbs `sheet draft`, `sheet refresh`
-and `sheet status`.
+body-of-work verbs `body add` and `body list`, the sheet verbs `sheet draft`, `sheet refresh`
+and `sheet status`, and the monologue verbs `monologue new`, `monologue attach`, `monologue
+detach`, `monologue status`, `monologue run` and `monologue list`.
 
 Verbs print a short board (counts, paths, next step), never content;
 `--json` anywhere on the line prints the board as JSON. The review verbs read one settings file
@@ -40,6 +41,7 @@ from . import (
     llm,
     moments,
     moments_page,
+    monologues,
     review_rebuilders,
     text_source,
     usage,
@@ -237,6 +239,40 @@ DESCRIPTIONS |= {
         "The sheet as it stands: its version hash (recorded on the body when the resolved text "
         "changed), its open revisions, and whether it has prose yet. Reads the Doc.",
         "corpuslm sheet status SMSTTD --config /path/to/review.toml",
+    ),
+    "monologue new": (
+        "Name a monologue, with an optional working title and brief (what it is about, in the "
+        "owner's words). Attach moments and bodies of work next.",
+        'corpuslm monologue new karma --brief "karmic theory, from the walk with my son" '
+        "--config /path/to/review.toml",
+    ),
+    "monologue attach": (
+        "Attach one approved moment (`--moment ID`) or one body of work (`--body NAME`) to a "
+        "monologue; `monologue detach` takes it off again.",
+        "corpuslm monologue attach karma --body SMSTTD --config /path/to/review.toml",
+    ),
+    "monologue detach": (
+        "Take one moment (`--moment ID`) or one body of work (`--body NAME`) off a monologue.",
+        "corpuslm monologue detach karma --moment mom-abc123 --config /path/to/review.toml",
+    ),
+    "monologue status": (
+        "What stands: the runs so far, and whether the latest run's ingredients are current or "
+        "what changed since (recipe, model, moments, a body's sheet). Reads the Doc for the "
+        "sheets' versions; writes nothing but a body's recorded sheet version.",
+        "corpuslm monologue status karma --config /path/to/review.toml",
+    ),
+    "monologue run": (
+        "Run the recipe (billed; `[monologue]` plus the `[claims]` workspace and `[llm]` caps) "
+        "unless a run for the same ingredients exists, in which case nothing is sent. The "
+        "latest script tab's settled text, with the owner's edits, is the style guide; "
+        "`--fresh` drops it for this run. The script becomes a new `Script v<n>` tab of the "
+        "monologue's Doc. `--dry-run` estimates and sends nothing.",
+        "corpuslm monologue run karma --config /path/to/review.toml --dry-run",
+    ),
+    "monologue list": (
+        "Every monologue with its title, state, moments, bodies, runs and whether its "
+        "ingredients are current. Read-only but for recorded sheet versions.",
+        "corpuslm monologue list --config /path/to/review.toml",
     ),
     "text import": (
         "Make or refresh a text source (a manuscript, paper or book) from a markdown export the "
@@ -520,6 +556,36 @@ def build_parser() -> argparse.ArgumentParser:
         sub.add_argument("body", metavar="BODY", help="the body of work's name")
         sub.add_argument("--config", required=True, metavar="FILE", help="the review settings file")
         if name == "draft":
+            sub.add_argument(
+                "--dry-run", action="store_true", help="estimate; send and write nothing"
+            )
+    monologue_group = verbs.add_parser(
+        "monologue", help="the first artifact: new, attach, detach, status, run, list"
+    )
+    monologue_verbs = monologue_group.add_subparsers(dest="monologue_verb", metavar="<subverb>")
+    for name, help_text in (
+        ("new", "name a monologue"),
+        ("attach", "attach a moment or a body of work"),
+        ("detach", "take a moment or a body of work off"),
+        ("status", "the runs, and what changed since the latest"),
+        ("run", "run the recipe unless the ingredients ran already (billed)"),
+        ("list", "every monologue; read-only"),
+    ):
+        sub = leaf(monologue_verbs, name, help_text, f"monologue {name}")
+        if name != "list":
+            sub.add_argument("name", metavar="NAME", help="the monologue's name")
+        sub.add_argument("--config", required=True, metavar="FILE", help="the review settings file")
+        if name == "new":
+            sub.add_argument("--title", default="", metavar="TITLE", help="a working title")
+            sub.add_argument("--brief", default="", metavar="TEXT", help="what it is about")
+        if name in ("attach", "detach"):
+            which = sub.add_mutually_exclusive_group(required=True)
+            which.add_argument("--moment", metavar="MOMENT_ID", help="an approved moment's id")
+            which.add_argument("--body", metavar="BODY", help="a body of work's name")
+        if name == "run":
+            sub.add_argument(
+                "--fresh", action="store_true", help="drop the prior script for this run"
+            )
             sub.add_argument(
                 "--dry-run", action="store_true", help="estimate; send and write nothing"
             )
@@ -1245,6 +1311,103 @@ def sheet_status_board(settings: ReviewSettings, name: str) -> dict:
         database.close()
 
 
+def _monologue_config(settings: ReviewSettings) -> dict:
+    if settings.monologue is None:
+        raise SettingsError(f"{settings.path}: [monologue] is missing; add model")
+    return settings.client_config()
+
+
+def monologue_new_board(settings: ReviewSettings, name: str, title: str, brief: str) -> dict:
+    database = _open_existing(settings)
+    try:
+        out = monologues.create(
+            Store(database), name, title=title, brief=brief, created_by="corpuslm"
+        )
+        return (
+            {"verb": "monologue new", "ok": True}
+            | out
+            | {
+                "next": f"corpuslm monologue attach {out['name']} --moment ID | --body NAME "
+                f"--config {settings.path}"
+            }
+        )
+    finally:
+        database.close()
+
+
+def monologue_attach_board(settings: ReviewSettings, namespace, *, detach: bool) -> dict:
+    database = _open_existing(settings)
+    try:
+        action = monologues.detach if detach else monologues.attach
+        out = action(
+            Store(database), namespace.name, moment_id=namespace.moment, body=namespace.body
+        )
+        return {"verb": "monologue detach" if detach else "monologue attach", "ok": True} | out
+    finally:
+        database.close()
+
+
+def monologue_status_board(settings: ReviewSettings, name: str) -> dict:
+    database = _open_existing(settings)
+    try:
+        standing = monologues.status(
+            Store(database), _document_store(settings), name, _monologue_config(settings)
+        )
+        return {
+            "verb": "monologue status",
+            "ok": True,
+            "monologue": standing.name,
+            "runs": standing.runs,
+            "ingredients": standing.state,
+            "changes": standing.changes,
+        }
+    finally:
+        database.close()
+
+
+def monologue_run_board(settings: ReviewSettings, name: str, fresh: bool, dry_run: bool) -> dict:
+    _monologue_config(settings)
+    database = _open_existing(settings)
+    try:
+        store = Store(database)
+        client = _claims_client(settings, "monologue run")
+        doc = _document_store(settings)
+        estimate = monologues.estimate(store, client, doc, name, fresh=fresh)
+        board = {
+            "verb": "monologue run",
+            "ok": True,
+            "monologue": monologues.slug(name),
+            "moments": estimate.moments,
+            "bodies": estimate.bodies,
+            "stored_run": estimate.stored,
+            "tokens_in": estimate.tokens_in,
+            "tokens_out_assumed": estimate.tokens_out,
+            "estimated_usd": estimate.usd,
+            "model": estimate.model,
+            "caps": settings.llm,
+        }
+        if dry_run:
+            return board | {"status": "dry-run", "note": "dry run: nothing was sent or written"}
+        assert settings.claims is not None
+        directory = settings.claims.workspace / "monologues" / monologues.slug(name)
+        out = monologues.run(
+            store, client, doc, name, directory=directory, fresh=fresh, created_by="corpuslm"
+        )
+        return board | out
+    finally:
+        database.close()
+
+
+def monologue_list_board(settings: ReviewSettings) -> dict:
+    database = _open_existing(settings)
+    try:
+        config = settings.client_config() if settings.monologue is not None else None
+        rows = monologues.listing(Store(database), _document_store(settings), config)
+        return {"verb": "monologue list", "ok": True, "count": len(rows), "monologues": rows}
+    finally:
+        database.close()
+
+
 def _moments_client(settings: ReviewSettings, verb: str) -> llm.Client:
     if settings.moments is None:
         raise SettingsError(
@@ -1449,6 +1612,10 @@ def main(argv: list[str] | None = None) -> int:
             text, code = clikit.help_text(parser, PROG, ["usage"])
             print(text, end="")
             return code
+        if namespace.verb == "monologue" and namespace.monologue_verb is None:
+            text, code = clikit.help_text(parser, PROG, ["monologue"])
+            print(text, end="")
+            return code
         if namespace.verb == "body" and namespace.body_verb is None:
             text, code = clikit.help_text(parser, PROG, ["body"])
             print(text, end="")
@@ -1474,6 +1641,26 @@ def main(argv: list[str] | None = None) -> int:
             print(text, end="")
             return code
         settings = load(Path(namespace.config))
+        if namespace.verb == "monologue":
+            match namespace.monologue_verb:
+                case "new":
+                    board = monologue_new_board(
+                        settings, namespace.name, namespace.title, namespace.brief
+                    )
+                case "attach":
+                    board = monologue_attach_board(settings, namespace, detach=False)
+                case "detach":
+                    board = monologue_attach_board(settings, namespace, detach=True)
+                case "status":
+                    board = monologue_status_board(settings, namespace.name)
+                case "run":
+                    board = monologue_run_board(
+                        settings, namespace.name, namespace.fresh, namespace.dry_run
+                    )
+                case _:
+                    board = monologue_list_board(settings)
+            _print(board, as_json)
+            return 0 if board["ok"] else 1
         if namespace.verb == "body":
             board = (
                 body_add_board(settings, namespace)
@@ -1601,13 +1788,17 @@ def main(argv: list[str] | None = None) -> int:
         _print({"verb": args[0], "ok": False, "error": str(error)}, as_json)
         return 1
     except ModuleNotFoundError as error:
-        # the model transport is an extra (corpuslm.llm): say what to install, no traceback
+        # an optional package is missing: say what to install, no traceback
+        fix = (
+            "pip install -e ../authorllm/authorlm"
+            if error.name == "authorlm"
+            else "pip install -e '.[llm]'"
+        )
         _print(
             {
                 "verb": args[0],
                 "ok": False,
-                "error": f"{error.name} is not installed; run: pip install -e '.[llm]' in the "
-                "corpuslm checkout",
+                "error": f"{error.name} is not installed; run: {fix} in the corpuslm checkout",
             },
             as_json,
         )

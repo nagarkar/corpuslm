@@ -1167,6 +1167,154 @@ class Store:
             raise KeyError(f"no body of work named {name!r}")
         self.db.update("bodies_of_work", row["id"], changes)
 
+    # ---- monologues (corpuslm.monologues) ------------------------------------------------
+
+    def monologue(self, name: str) -> dict | None:
+        row = self.db.one("SELECT * FROM monologues WHERE name = ?", (name,))
+        return None if row is None else dict(row)
+
+    def monologues(self) -> list[dict]:
+        return [
+            dict(row)
+            for row in self.db.all("SELECT * FROM monologues ORDER BY created_at DESC, name")
+        ]
+
+    def add_monologue(
+        self,
+        name: str,
+        *,
+        title: str = "",
+        brief: str = "",
+        manuscript: str = "",
+        directory: str = "",
+        created_by: str,
+    ) -> str:
+        return self.db.insert(
+            "monologues",
+            standard_fields("mon", created_by=created_by)
+            | {
+                "name": name,
+                "title": title,
+                "brief": brief,
+                "manuscript": manuscript,
+                "directory": directory,
+            },
+        )
+
+    def update_monologue(self, name: str, changes: dict[str, Any]) -> None:
+        row = self.monologue(name)
+        if row is None:
+            raise KeyError(f"no monologue named {name!r}")
+        self.db.update("monologues", row["id"], changes)
+
+    def attach_moment(self, monologue_id: str, source_id: str, subject_sha256: str) -> bool:
+        """False when the moment is attached already."""
+        if self.db.one(
+            "SELECT 1 FROM monologue_moments WHERE monologue_id = ? AND source_id = ? "
+            "AND subject_sha256 = ?",
+            (monologue_id, source_id, subject_sha256),
+        ):
+            return False
+        self.db.execute(
+            "INSERT INTO monologue_moments (monologue_id, source_id, subject_sha256) "
+            "VALUES (?, ?, ?)",
+            (monologue_id, source_id, subject_sha256),
+        )
+        return True
+
+    def detach_moment(self, monologue_id: str, source_id: str, subject_sha256: str) -> bool:
+        return (
+            self.db.execute(
+                "DELETE FROM monologue_moments WHERE monologue_id = ? AND source_id = ? "
+                "AND subject_sha256 = ?",
+                (monologue_id, source_id, subject_sha256),
+            ).rowcount
+            > 0
+        )
+
+    def monologue_moments(self, monologue_id: str) -> list[dict]:
+        """The attached moments' rows (by their subject), in source and span order; an attached
+        subject with no moment row any more is left out."""
+        rows = self.db.all(
+            "SELECT m.* FROM monologue_moments a JOIN moments m ON m.source_id = a.source_id "
+            "AND m.subject_sha256 = a.subject_sha256 WHERE a.monologue_id = ? "
+            "ORDER BY m.source_id, m.first_position, m.last_position",
+            (monologue_id,),
+        )
+        return [dict(row) for row in rows]
+
+    def attach_body(self, monologue_id: str, body_id: str) -> bool:
+        if self.db.one(
+            "SELECT 1 FROM monologue_bodies WHERE monologue_id = ? AND body_id = ?",
+            (monologue_id, body_id),
+        ):
+            return False
+        self.db.execute(
+            "INSERT INTO monologue_bodies (monologue_id, body_id) VALUES (?, ?)",
+            (monologue_id, body_id),
+        )
+        return True
+
+    def detach_body(self, monologue_id: str, body_id: str) -> bool:
+        return (
+            self.db.execute(
+                "DELETE FROM monologue_bodies WHERE monologue_id = ? AND body_id = ?",
+                (monologue_id, body_id),
+            ).rowcount
+            > 0
+        )
+
+    def monologue_bodies(self, monologue_id: str) -> list[dict]:
+        rows = self.db.all(
+            "SELECT b.* FROM monologue_bodies a JOIN bodies_of_work b ON b.id = a.body_id "
+            "WHERE a.monologue_id = ? "
+            "ORDER BY CASE b.kind WHEN 'standing' THEN 0 ELSE 1 END, b.name",
+            (monologue_id,),
+        )
+        return [dict(row) for row in rows]
+
+    def body_use_counts(self) -> dict[str, int]:
+        """Body id -> how many monologues drew on it."""
+        return {
+            row["body_id"]: row["n"]
+            for row in self.db.all(
+                "SELECT body_id, COUNT(*) AS n FROM monologue_bodies GROUP BY body_id"
+            )
+        }
+
+    def add_monologue_run(
+        self, monologue_id: str, fields: dict[str, Any], *, created_by: str
+    ) -> str:
+        number = self._row(
+            "SELECT COALESCE(MAX(number), 0) + 1 AS n FROM monologue_runs WHERE monologue_id = ?",
+            (monologue_id,),
+        )["n"]
+        return self.db.insert(
+            "monologue_runs",
+            standard_fields("run", created_by=created_by)
+            | {"monologue_id": monologue_id, "number": number}
+            | fields,
+        )
+
+    def monologue_runs(self, monologue_id: str) -> list[dict]:
+        """Every run, oldest first."""
+        return [
+            dict(row)
+            for row in self.db.all(
+                "SELECT * FROM monologue_runs WHERE monologue_id = ? ORDER BY number",
+                (monologue_id,),
+            )
+        ]
+
+    def monologue_run_by_ingredients(
+        self, monologue_id: str, ingredients_sha256: str
+    ) -> dict | None:
+        row = self.db.one(
+            "SELECT * FROM monologue_runs WHERE monologue_id = ? AND ingredients_sha256 = ?",
+            (monologue_id, ingredients_sha256),
+        )
+        return None if row is None else dict(row)
+
     # ---- segments and search (derived index) ---------------------------------------
 
     def replace_segments(self, source_id: str, segments: Iterable[dict]) -> None:

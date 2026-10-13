@@ -1,0 +1,18 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "corpuslm.monologue_reply/1",
+ "title": "monologue reply",
+ "description": "What the monologue recipe returns (corpuslm.monologues): a working title and the script as paragraphs.",
+ "type": "object",
+ "additionalProperties": false,
+ "required": ["title", "paragraphs"],
+ "properties": {
+  "title": {"type": "string", "description": "A short working title.", "minLength": 1},
+  "paragraphs": {
+   "type": "array",
+   "description": "The script, one paragraph per entry, in order.",
+   "items": {"type": "string", "description": "One spoken paragraph.", "minLength": 1},
+   "minItems": 1
+  }
+ }
+}

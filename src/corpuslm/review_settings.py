@@ -51,6 +51,13 @@ the `[claims]` workspace: the model.
     [sheet]
     model = "gemini/gemini-2.5-flash-lite"
 
+An optional `[monologue]` table turns on the monologue recipe (`corpuslm monologue run`), sharing
+the `[claims]` workspace: the model and the target length in minutes of speech.
+
+    [monologue]
+    model = "gemini/gemini-2.5-flash-lite"
+    minutes = 4
+
 An optional `[usage]` table tells the usage dashboard (`corpuslm.usage`) where each
 tool keeps its ledger folder, and where its own settings file holds the spend caps:
 
@@ -150,6 +157,14 @@ class SheetSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class MonologueSettings:
+    """`[monologue]`: the recipe's model and the target length in minutes."""
+
+    model: str
+    minutes: int
+
+
+@dataclass(frozen=True, slots=True)
 class ReviewSettings:
     database: Path
     port: int
@@ -161,6 +176,7 @@ class ReviewSettings:
     concepts: ConceptsSettings | None = None
     moments: MomentsSettings | None = None
     sheet: SheetSettings | None = None
+    monologue: MonologueSettings | None = None
 
     def client_config(self) -> dict:
         """What `corpuslm.llm.Client` reads: the `[claims]` stage section and the `[llm]` caps."""
@@ -169,6 +185,11 @@ class ReviewSettings:
             config["claims"] = {
                 "model": self.claims.model,
                 "section_chars": self.claims.section_chars,
+            }
+        if self.monologue is not None:
+            config["monologue"] = {
+                "model": self.monologue.model,
+                "minutes": self.monologue.minutes,
             }
         if self.sheet is not None:
             config["sheet"] = {"model": self.sheet.model}
@@ -272,6 +293,16 @@ def _moments(raw: object, where: str) -> MomentsSettings:
     return MomentsSettings(_text(raw, "model", where), most)
 
 
+def _monologue(raw: object, where: str) -> MonologueSettings:
+    if not isinstance(raw, dict):
+        raise SettingsError(f"{where}: must be a table")
+    _strict(raw, ("model", "minutes"), where)
+    minutes = raw.get("minutes", 4)
+    if isinstance(minutes, bool) or not isinstance(minutes, int) or not 1 <= minutes <= 60:
+        raise SettingsError(f"{where}: minutes must be a whole number from 1 to 60")
+    return MonologueSettings(_text(raw, "model", where), minutes)
+
+
 def _sheet(raw: object, where: str) -> SheetSettings:
     if not isinstance(raw, dict):
         raise SettingsError(f"{where}: must be a table")
@@ -304,7 +335,18 @@ def load(path: Path) -> ReviewSettings:
         raise SettingsError(f"{path}: not valid TOML ({error})") from error
     _strict(
         raw,
-        ("database", "port", "kinds", "usage", "claims", "llm", "concepts", "moments", "sheet"),
+        (
+            "database",
+            "port",
+            "kinds",
+            "usage",
+            "claims",
+            "llm",
+            "concepts",
+            "moments",
+            "sheet",
+            "monologue",
+        ),
         str(path),
     )
     port = _port(raw, str(path), DEFAULT_PORT)
@@ -331,6 +373,7 @@ def load(path: Path) -> ReviewSettings:
     concepts = _concepts(raw["concepts"], f"{path} [concepts]") if "concepts" in raw else None
     moments = _moments(raw["moments"], f"{path} [moments]") if "moments" in raw else None
     sheet = _sheet(raw["sheet"], f"{path} [sheet]") if "sheet" in raw else None
+    monologue = _monologue(raw["monologue"], f"{path} [monologue]") if "monologue" in raw else None
     return ReviewSettings(
         Path(_text(raw, "database", str(path))).expanduser(),
         port,
@@ -342,6 +385,7 @@ def load(path: Path) -> ReviewSettings:
         concepts,
         moments,
         sheet,
+        monologue,
     )
 
 
@@ -358,6 +402,7 @@ __all__ = [
     "ConceptsSettings",
     "DEFAULT_PORT",
     "MomentsSettings",
+    "MonologueSettings",
     "SheetSettings",
     "DEFAULT_SECTION_CHARS",
     "DEFAULT_USAGE_PORT",

@@ -83,3 +83,21 @@ def test_an_exported_switch_reaches_nothing(tmp_path, monkeypatch):
         monkeypatch.setenv(name, str(tmp_path / name))
     with pytest.raises(authorlm.DocumentUnavailable, match="workspace"):
         authorlm.store(workspace=None)
+
+
+def test_a_missing_authorlm_is_named_with_its_install_command(tmp_path, monkeypatch):
+    """Seen 2026-10-13: the authorlm import happens inside the real store's constructor, so a
+    missing authorlm fell through as a bare ModuleNotFoundError."""
+    import builtins
+
+    monkeypatch.setattr("corpuslm.document.FAKE_DIR", None)
+    real_import = builtins.__import__
+
+    def no_authorlm(name, *args, **kwargs):
+        if name == "authorlm":
+            raise ModuleNotFoundError("No module named 'authorlm'", name="authorlm")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_authorlm)
+    with pytest.raises(authorlm.DocumentUnavailable, match="pip install -e ../authorllm/authorlm"):
+        authorlm.store({}, tmp_path, origin="test")
