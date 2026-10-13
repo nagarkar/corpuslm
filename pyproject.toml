@@ -54,6 +54,7 @@ select = ["E", "F", "I", "B", "UP"]
 "src/corpuslm/review_page.py" = ["E501"]
 "src/corpuslm/concepts_page.py" = ["E501"]
 "src/corpuslm/moments_page.py" = ["E501"]
+"src/corpuslm/teleprompter_page.py" = ["E501"]
 
 [tool.pyright]
 include = ["src"]

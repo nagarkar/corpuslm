@@ -7,7 +7,7 @@ review verbs `review page`, `review serve`, `review apply`, `review check` and
 `moments import`, `moments propose`, `moments status`, `moments list` and `moments verdict`, the
 body-of-work verbs `body add` and `body list`, the sheet verbs `sheet draft`, `sheet refresh`
 and `sheet status`, and the monologue verbs `monologue new`, `monologue attach`, `monologue
-detach`, `monologue status`, `monologue run` and `monologue list`.
+detach`, `monologue status`, `monologue run`, `monologue list` and `monologue export`.
 
 Verbs print a short board (counts, paths, next step), never content;
 `--json` anywhere on the line prints the board as JSON. The review verbs read one settings file
@@ -43,6 +43,7 @@ from . import (
     moments_page,
     monologues,
     review_rebuilders,
+    teleprompter_page,
     text_source,
     usage,
     usage_page,
@@ -273,6 +274,13 @@ DESCRIPTIONS |= {
         "Every monologue with its title, state, moments, bodies, runs and whether its "
         "ingredients are current. Read-only but for recorded sheet versions.",
         "corpuslm monologue list --config /path/to/review.toml",
+    ),
+    "monologue export": (
+        "Write the latest script tab's settled text (with the owner's edits) as plain text, "
+        "headed by the monologue's id and title, for the teleprompter and for podlm to record "
+        "which monologue an episode came from. Open revisions are reported; the settled text is "
+        "what is exported. The same text is served at /teleprompter/<name> on the review server.",
+        'corpuslm monologue export karma --to "/path/to/karma.txt" --config /path/to/review.toml',
     ),
     "text import": (
         "Make or refresh a text source (a manuscript, paper or book) from a markdown export the "
@@ -570,6 +578,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("status", "the runs, and what changed since the latest"),
         ("run", "run the recipe unless the ingredients ran already (billed)"),
         ("list", "every monologue; read-only"),
+        ("export", "the settled script as plain text for the teleprompter"),
     ):
         sub = leaf(monologue_verbs, name, help_text, f"monologue {name}")
         if name != "list":
@@ -582,6 +591,8 @@ def build_parser() -> argparse.ArgumentParser:
             which = sub.add_mutually_exclusive_group(required=True)
             which.add_argument("--moment", metavar="MOMENT_ID", help="an approved moment's id")
             which.add_argument("--body", metavar="BODY", help="a body of work's name")
+        if name == "export":
+            sub.add_argument("--to", default=None, metavar="FILE", help="the text file to write")
         if name == "run":
             sub.add_argument(
                 "--fresh", action="store_true", help="drop the prior script for this run"
@@ -720,6 +731,7 @@ def review_serve_board(settings: ReviewSettings, port: int | None, dry_run: bool
     if settings.concepts is not None:
         board["concepts_url"] = f"http://127.0.0.1:{chosen}/concepts"
     board["moments_url"] = f"http://127.0.0.1:{chosen}/moments"
+    board["teleprompter_url"] = f"http://127.0.0.1:{chosen}/teleprompter/<monologue>"
     if dry_run:
         return None, board | {"note": "dry run: nothing was started"}
     note = _links_note(settings)
@@ -756,8 +768,27 @@ def review_serve_board(settings: ReviewSettings, port: int | None, dry_run: bool
             fresh.close()
 
     pages["/moments"] = build_moments_page
+
+    def build_teleprompter(name: str) -> str:
+        fresh = db.Database(settings.database)
+        try:
+            store = Store(fresh)
+            row = store.monologue(name)
+            if row is None:
+                raise KeyError(name)
+            _, text, _ = monologues.script_text(_document_store(settings), row)
+            return teleprompter_page.render(row["name"], row["title"], text)
+        finally:
+            fresh.close()
+
+    prefixes = {"/teleprompter/": build_teleprompter}
     server = make_server(
-        "127.0.0.1", chosen, page=build_page, answers=Answers(settings.database), pages=pages
+        "127.0.0.1",
+        chosen,
+        page=build_page,
+        answers=Answers(settings.database),
+        pages=pages,
+        page_prefixes=prefixes,
     )
     return server, board
 
@@ -1398,6 +1429,17 @@ def monologue_run_board(settings: ReviewSettings, name: str, fresh: bool, dry_ru
         database.close()
 
 
+def monologue_export_board(settings: ReviewSettings, name: str, to: str | None) -> dict:
+    database = _open_existing(settings)
+    try:
+        out = monologues.export(
+            Store(database), _document_store(settings), name, Path(to) if to else None
+        )
+        return {"verb": "monologue export", "ok": True} | out
+    finally:
+        database.close()
+
+
 def monologue_list_board(settings: ReviewSettings) -> dict:
     database = _open_existing(settings)
     try:
@@ -1657,6 +1699,8 @@ def main(argv: list[str] | None = None) -> int:
                     board = monologue_run_board(
                         settings, namespace.name, namespace.fresh, namespace.dry_run
                     )
+                case "export":
+                    board = monologue_export_board(settings, namespace.name, namespace.to)
                 case _:
                     board = monologue_list_board(settings)
             _print(board, as_json)

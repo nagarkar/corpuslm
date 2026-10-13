@@ -10,9 +10,10 @@ is absent and a server answers; `corpuslm.review_apply` lands the saved answers 
 Routes: `GET /` the page (built per request by the function the caller passes in), `GET /health`
 (with the time this server started, for `review check`), any other page the caller passes in
 `pages` (`/concepts`, corpuslm.concepts_page; `/moments`, corpuslm.moments_page; built per
-request too), and one `POST /api/review` with `{"method": ..., "params": {...}}` dispatched to
-`Answers`, whose `concept_verdict` and `moment_verdict` methods append a ruling. The pages'
-scripts (never a second copy of a page) are the only clients.
+request too), any page under a prefix in `page_prefixes` (`/teleprompter/<monologue>`,
+corpuslm.teleprompter_page), and one `POST /api/review` with `{"method": ..., "params": {...}}`
+dispatched to `Answers`, whose `concept_verdict` and `moment_verdict` methods append a ruling.
+The pages' scripts (never a second copy of a page) are the only clients.
 
 Never imports: cli, clikit, any model transport.
 
@@ -233,10 +234,12 @@ def make_server(
     page: Callable[[], str],
     answers: Answers,
     pages: Mapping[str, Callable[[], str]] | None = None,
+    page_prefixes: Mapping[str, Callable[[str], str]] | None = None,
 ) -> ThreadingHTTPServer:
     """A server for `page` (called for every `GET /`) and each of `pages` (path -> builder, called
     for every GET of that path) over `answers`. Loopback addresses only."""
     extra = dict(pages or {})
+    prefixes = dict(page_prefixes or {})  # "/teleprompter/" -> builder(rest of the path)
     started_at = clock.iso(clock.utc_now())
     if host not in {"127.0.0.1", "::1", "localhost"}:
         raise ValueError(f"the review server binds the loopback address only, not {host!r}")
@@ -274,6 +277,18 @@ def make_server(
                 self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
             elif self.path in extra:
                 self._send(200, extra[self.path]().encode("utf-8"), "text/html; charset=utf-8")
+            elif any(self.path.startswith(prefix) for prefix in prefixes):
+                prefix = next(p for p in prefixes if self.path.startswith(p))
+                rest = self.path[len(prefix) :]
+                if not re.fullmatch(_WORD, rest):
+                    self._json(404, {"error": "not found"})
+                    return
+                try:
+                    html = prefixes[prefix](rest)
+                except KeyError:
+                    self._json(404, {"error": "not found"})
+                    return
+                self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
             else:
                 self._json(404, {"error": "not found"})
 
