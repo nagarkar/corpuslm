@@ -546,7 +546,7 @@ manuscript named here, one script tab per run.
 | name | TEXT | no | the owner's short name; unique |
 | title | TEXT | no | the working title, `''` until one is given or proposed |
 | brief | TEXT | no | what it is about, in the owner's words; may be empty |
-| manuscript | TEXT | no | the authorlm manuscript holding its script tabs; `''` until the first run |
+| manuscript | TEXT | no | the authorlm manuscript holding its script tab; `''` until the first run |
 | directory | TEXT | no | that manuscript's folder; `''` until the first run |
 | state | TEXT | no | one of `open`, `recorded`, `archived` |
 
@@ -579,7 +579,8 @@ The bodies of work a monologue draws on; the history `body list` reads.
 History: derived.
 
 One row per recipe run, keyed by the ingredients hash: the same ingredients never run twice. Kept,
-never rewritten by code; each run's output is also a script tab in the monologue's Doc.
+never rewritten by code: the runs table is the history; the Doc's one script tab shows the latest
+run and is rewritten whole by the next.
 
 | column | type | null | meaning |
 |---|---|---|---|
@@ -594,8 +595,9 @@ never rewritten by code; each run's output is also a script tab in the monologue
 | prior_run_id | TEXT | no | the run whose settled text was the style guide, `''` for a fresh one |
 | fresh | INTEGER | no | 0 or 1: 1 when `--fresh` dropped the prior |
 | title | TEXT | no | the title the run proposed |
+| prior | TEXT | no | the settled script, with the owner's edits, the run was given as its style guide; `''` for a fresh or first run |
 | output | TEXT | no | the script as the model returned it, paragraphs separated by blank lines |
-| tab | TEXT | no | the script tab's file in the Doc, `''` when not staged |
+| tab | TEXT | no | the script tab's file in the Doc (`script.md`), `''` when not written |
 | tokens_in | INTEGER | no | |
 | tokens_out | INTEGER | no | |
 | cost_usd | REAL | no | |
