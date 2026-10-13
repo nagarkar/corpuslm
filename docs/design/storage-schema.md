@@ -128,7 +128,7 @@ places. The stored copy could disagree (a metadata failure left members
 | Kind | Tables | Rule |
 |---|---|---|
 | master data | `sources`, `corpora`, `corpus_members`, `review_answers`, `feeds`, `source_skips` and the list tables | mutable; `version` bumps on every update; a trigger writes every changed column to `change_log` (old value, new value, row version); list tables are written position by position and log each element added or removed (an element that moves counts as removed and added) |
-| decisions | `review_verdicts`, `speaker_verdicts`, `corrections` | append-only (a trigger aborts UPDATE and DELETE); an answer given again or changed is a new row; the newest row per slot is in force (`vw_current_*`) |
+| decisions | `review_verdicts`, `speaker_verdicts`, `corrections`, `concept_verdicts` | append-only (a trigger aborts UPDATE and DELETE); an answer given again or changed is a new row; the newest row per slot is in force (`vw_current_*`) |
 | evidence | `fetch_attempts`, `change_log` | append-only |
 | runs | `runs` | one row per pipeline run (`ytlm run`), opened `running` and closed once as `ok` or `error` |
 | derived state | `artifacts`, `segments`, `segments_fts`, `cleaned_segments`, `cleaned_segments_fts`, `model_suggestions`, `model_suggestion_candidates` | rebuilt from files; no history |
@@ -167,7 +167,7 @@ keep lineage.
 
 ## Migrations: user_version, a verified backup, one transaction (2026-10-03)
 
-The schema version is `PRAGMA user_version` (`db.USER_VERSION`, now 11; a
+The schema version is `PRAGMA user_version` (`db.USER_VERSION`, now 12; a
 database made before it was tracked reads 0 and has the v1 schema, frozen
 in `tests/fixtures/schema_v1.sql`). On open, `db.migrate`:
 
@@ -233,6 +233,21 @@ with the counts taken before, as the v8 → v9 step does: nothing but the new ta
 The v10 → v11 step rebuilds `sources` again, exactly as the v8 → v9 step does
 (`db._rebuild_sources_script`), because the `kind` check now allows `text`. Every table's row
 count is compared before and after; no row changes its kind.
+
+The v11 → v12 step is additive: after the verified backup it creates `concepts`, `claim_concepts`
+and `concept_verdicts` (all empty) with the view `vw_current_concept_verdicts` and the append-only
+trigger of `concept_verdicts`, in one transaction, and sets `user_version` 12 inside it.
+`concept_verdicts` is an owner table from then on. `corpuslm concepts build` fills the derived
+tables; the owner's taps fill the verdicts.
+
+Proof of the v11 → v12 step on a copy of the real database (2026-10-13, taken at version 10 while
+the first claim pass was running, so the copy took the v10 → v11 and v11 → v12 steps in one
+transaction; 300 sources, 18,223 claims): the backup was written first and verified, every one of
+the 831,181 rows in every table kept its table's count, the three new tables appeared empty,
+`foreign_key_check` was empty, `integrity_check` read `ok`, and the triggers and views went from
+39 to 42 (the new view and the two append-only triggers). On the same copy, `concepts build
+--dry-run` estimated the first concept pass over the 200 sources with claims at 278 calls, about
+$0.38, on the cheap tier.
 
 Proof of the v10 → v11 step on a copy of the real database (2026-10-13, 300 sources: 198 YouTube,
 102 Bee, 14,156 claims at the time of the copy): the backup was written first and verified
@@ -664,6 +679,52 @@ the inputs the list was built from. No row ever links one claim to another.
 | build_key | TEXT | no | the hash of the pass's inputs (text, prompt, model, section size) |
 | run_id | TEXT | no | the run that built it, `''` when none |
 
+### `concepts`
+
+History: derived.
+
+The lexicon derived from claims (corpuslm.concepts): one row per recurring phrase or idea the
+concept pass named across claims. In, out or boundary is derived at read time from the counts,
+the gate in the settings file and the owner's current verdict; it is never stored.
+
+| column | type | null | meaning |
+|---|---|---|---|
+| (base) | | | |
+| key | TEXT | no | the label normalized (lowercase, single spaces); unique |
+| label | TEXT | no | the label as first proposed |
+| alternates | TEXT | no | JSON list of other surface forms the pass used for the same key |
+| definition | TEXT | no | one line, `''` until a pass writes one |
+| section_count | INTEGER | no | distinct (source, section) pairs whose claims carry it |
+| claim_count | INTEGER | no | claims that carry it |
+| source_count | INTEGER | no | distinct sources whose claims carry it |
+
+### `claim_concepts`
+
+History: derived.
+
+Which concepts a claim uses, written by the concept pass; deleted with the claim.
+
+| column | type | null | meaning |
+|---|---|---|---|
+| claim_id | TEXT | no | the claim; cascades on delete |
+| concept_id | TEXT | no | the concept |
+| build_key | TEXT | no | the hash of the pass's inputs that wrote the tag |
+
+### `concept_verdicts`
+
+History: append-only.
+
+The owner's ruling on a boundary concept: in or out. The newest row per concept is in force
+(`vw_current_concept_verdicts`) and wins over the gate.
+
+| column | type | null | meaning |
+|---|---|---|---|
+| (base) | | | |
+| concept_id | TEXT | no | the concept |
+| verdict | TEXT | no | one of `in`, `out` |
+| source | TEXT | no | one of `review file`, `phone page` (where it was answered) |
+| applied_at | TEXT | no | when |
+
 ### `segments`
 
 History: derived.
@@ -745,6 +806,10 @@ Every column of `review_verdicts`; the newest row per (source_id, key).
 
 Every column of `speaker_verdicts`; the newest row per (source_id, role).
 
+### `vw_current_concept_verdicts` (view)
+
+Every column of `concept_verdicts`; the newest row per concept.
+
 ### `vw_current_corrections` (view)
 
 Every column of `corrections`; the newest row per span_norm.
@@ -781,6 +846,8 @@ segment changed, so it carries the previous hash):
 | `run-0a1b2c3d4e5f` | `cli` | `sources:1` | `running` | `2026-10-02T09:12:40Z` | NULL | 1 | NULL | `` |
 
 ## Changes
+
+- 2026-10-13: Version 12 (nagarkar/corpuslm#47): `concepts` and `claim_concepts` (derived) and `concept_verdicts` (append-only, an owner table): the lexicon derived from claims by recurrence, the tags, and the owner's rulings on boundary cases
 
 - 2026-10-13: Version 11 (nagarkar/corpuslm#46): `sources.kind` allows `text`: a manuscript, paper or book imported from a markdown export by `corpuslm text import`, one segment per paragraph, sections by heading kept in the source's metadata for the claim pass
 

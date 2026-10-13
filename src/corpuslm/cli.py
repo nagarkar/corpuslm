@@ -2,7 +2,8 @@
 review verbs `review page`, `review serve`, `review apply`, `review check` and
 `review accept-suggestions`, `suggestions record`, the usage verbs `usage show` and
 `usage serve`, the claim verbs `claims build`, `claims status` and `claims import-digests`, and
-`text import` (a manuscript export as a text source).
+`text import` (a manuscript export as a text source), and the concept verbs `concepts build`,
+`concepts status`, `concepts list`, `concepts edges` and `concepts verdict`.
 
 Verbs print a short board (counts, paths, next step), never content;
 `--json` anywhere on the line prints the board as JSON. The review verbs read one settings file
@@ -28,6 +29,8 @@ from pathlib import Path
 from . import (
     claims,
     clikit,
+    concepts,
+    concepts_page,
     db,
     llm,
     review_rebuilders,
@@ -139,6 +142,34 @@ DESCRIPTIONS |= {
         "settings file) into claims with no model call. A source that already has claims is "
         "left alone. `--dry-run` counts and writes nothing.",
         "corpuslm claims import-digests --config /path/to/review.toml --dry-run",
+    ),
+    "concepts build": (
+        "Name the concepts each claim of the chosen sources uses, batch by batch (billed; "
+        "`[concepts]` plus the `[claims]` workspace and `[llm]` caps in the settings file). "
+        "Labels already in use are reused, so the lexicon converges. A source whose tags are "
+        "current is left alone. `--dry-run` counts the calls and estimates the cost.",
+        "corpuslm concepts build --config /path/to/review.toml --kind bee --dry-run",
+    ),
+    "concepts status": (
+        "How many concepts are in, out or on the boundary under the gate, the boundary list "
+        "with its counts, the section-count distribution, and which sources' tags are current, "
+        "stale or missing. Read-only.",
+        "corpuslm concepts status --config /path/to/review.toml",
+    ),
+    "concepts list": (
+        "The lexicon: every concept with its state and counts, most used first; `--state` "
+        "narrows it. Read-only.",
+        "corpuslm concepts list --config /path/to/review.toml --state in",
+    ),
+    "concepts edges": (
+        "The concepts that share claims with one concept, most shared first, with the shared "
+        "claim ids as evidence. Nothing is inferred. Read-only.",
+        'corpuslm concepts edges "beat" --config /path/to/review.toml',
+    ),
+    "concepts verdict": (
+        "Rule a boundary concept in or out; the newest ruling wins over the gate. Appends a row; "
+        "nothing is ever overwritten.",
+        'corpuslm concepts verdict "beat" --config /path/to/review.toml --in',
     ),
     "text import": (
         "Make or refresh a text source (a manuscript, paper or book) from a markdown export the "
@@ -306,6 +337,44 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument(
                 "--dry-run", action="store_true", help="count and estimate; send and write nothing"
             )
+    concepts_group = verbs.add_parser(
+        "concepts", help="the lexicon derived from claims: build, status, list, edges, verdict"
+    )
+    concepts_verbs = concepts_group.add_subparsers(dest="concepts_verb", metavar="<subverb>")
+    for name, help_text in (
+        ("build", "name the concepts each claim uses (billed)"),
+        ("status", "the lexicon's counts and the boundary list; read-only"),
+        ("list", "every concept with its state and counts; read-only"),
+        ("edges", "the concepts one concept shares claims with; read-only"),
+        ("verdict", "rule a boundary concept in or out"),
+    ):
+        sub = leaf(concepts_verbs, name, help_text, f"concepts {name}")
+        if name in ("edges", "verdict"):
+            sub.add_argument("concept", metavar="LABEL", help="the concept's label or key")
+        sub.add_argument("--config", required=True, metavar="FILE", help="the review settings file")
+        if name in ("build", "status"):
+            sub.add_argument(
+                "--kind", default=None, metavar="SOURCE_KIND", help="only sources of this kind"
+            )
+        if name == "build":
+            sub.add_argument(
+                "--source",
+                action="append",
+                default=None,
+                metavar="SOURCE_ID",
+                help="one source (repeatable); without it, every source of --kind or all",
+            )
+            sub.add_argument(
+                "--dry-run", action="store_true", help="count and estimate; send and write nothing"
+            )
+        if name == "list":
+            sub.add_argument(
+                "--state", default=None, choices=("in", "out", "boundary"), help="only this state"
+            )
+        if name == "verdict":
+            ruling = sub.add_mutually_exclusive_group(required=True)
+            ruling.add_argument("--in", dest="ruling", action="store_const", const="in")
+            ruling.add_argument("--out", dest="ruling", action="store_const", const="out")
     text_group = verbs.add_parser("text", help="text sources (manuscripts, papers, books): import")
     text_verbs = text_group.add_subparsers(dest="text_verb", metavar="<subverb>")
     text_import = leaf(text_verbs, "import", "a markdown export as a text source", "text import")
@@ -434,6 +503,8 @@ def review_serve_board(settings: ReviewSettings, port: int | None, dry_run: bool
         "answers_waiting": waiting,
         "next": "corpuslm review apply --config " + str(settings.path),
     }
+    if settings.concepts is not None:
+        board["concepts_url"] = f"http://127.0.0.1:{chosen}/concepts"
     if dry_run:
         return None, board | {"note": "dry run: nothing was started"}
     note = _links_note(settings)
@@ -445,7 +516,23 @@ def review_serve_board(settings: ReviewSettings, port: int | None, dry_run: bool
         finally:
             fresh.close()
 
-    server = make_server("127.0.0.1", chosen, page=build_page, answers=Answers(settings.database))
+    pages = {}
+    if settings.concepts is not None:
+        config = settings.client_config()
+
+        def build_concepts_page() -> str:
+            fresh = db.Database(settings.database)
+            try:
+                store = Store(fresh)
+                ruled = [row for row in concepts.listing(store, config) if row.get("verdict")]
+                return concepts_page.render(concepts.summary(store, config), ruled)
+            finally:
+                fresh.close()
+
+        pages["/concepts"] = build_concepts_page
+    server = make_server(
+        "127.0.0.1", chosen, page=build_page, answers=Answers(settings.database), pages=pages
+    )
     return server, board
 
 
@@ -764,6 +851,138 @@ def claims_import_board(settings: ReviewSettings, dry_run: bool) -> dict:
         database.close()
 
 
+def _concepts_client(settings: ReviewSettings, verb: str) -> llm.Client:
+    if settings.concepts is None:
+        raise SettingsError(
+            f"{settings.path}: [concepts] is missing; add model (see scripts/review.example.toml)"
+        )
+    return _claims_client(settings, verb)
+
+
+def _concepts_config(settings: ReviewSettings) -> dict:
+    if settings.concepts is None:
+        raise SettingsError(
+            f"{settings.path}: [concepts] is missing; add model (see scripts/review.example.toml)"
+        )
+    return settings.client_config()
+
+
+def concepts_build_board(
+    settings: ReviewSettings, kind: str | None, chosen: list[str] | None, dry_run: bool
+) -> dict:
+    database = _open_existing(settings)
+    try:
+        store = Store(database)
+        client = _concepts_client(settings, "concepts build")
+        source_ids = _claims_sources(store, kind, chosen)
+        estimate = concepts.estimate(store, client, source_ids)
+        board = {
+            "verb": "concepts build",
+            "ok": True,
+            "sources_chosen": len(source_ids),
+            "sources_to_build": estimate.sources,
+            "from_cache": estimate.from_cache,
+            "calls_billed": estimate.calls,
+            "tokens_in": estimate.tokens_in,
+            "tokens_out_assumed": estimate.tokens_out,
+            "estimated_usd": estimate.usd,
+            "model": estimate.model,
+            "caps": settings.llm,
+        }
+        if dry_run:
+            return board | {"status": "dry-run", "note": "dry run: nothing was sent or written"}
+        standing = {
+            entry.source_id: entry.state
+            for entry in concepts.status(store, client.config, source_ids)
+        }
+        built = tags = new_labels = 0
+        cost = 0.0
+        stopped = ""
+        for source_id in source_ids:
+            if standing[source_id] in ("current", "no_claims"):
+                continue
+            try:
+                out = concepts.build(store, client, source_id, created_by="corpuslm")
+            except llm.SpendCapReached as error:
+                stopped = str(error)
+                break
+            built += 1
+            tags += out["tags"]
+            new_labels += out["new_labels"]
+            cost += out["cost_usd"]
+        return board | {
+            "built": built,
+            "tags": tags,
+            "new_labels": new_labels,
+            "cost_usd": round(cost, 6),
+            "stopped_by": stopped,
+            "ok": not stopped,
+            "next": "corpuslm concepts status --config " + str(settings.path),
+        }
+    finally:
+        database.close()
+
+
+def concepts_status_board(settings: ReviewSettings, kind: str | None) -> dict:
+    database = _open_existing(settings)
+    try:
+        store = Store(database)
+        config = _concepts_config(settings)
+        source_ids = store.source_ids(kind, include_ignored=False)
+        states = {state: 0 for state in ("current", "stale", "none", "no_claims")}
+        for entry in concepts.status(store, config, source_ids):
+            states[entry.state] += 1
+        return (
+            {"verb": "concepts status", "ok": True}
+            | concepts.summary(store, config)
+            | {"sources": states}
+        )
+    finally:
+        database.close()
+
+
+def concepts_list_board(settings: ReviewSettings, state: str | None) -> dict:
+    database = _open_existing(settings)
+    try:
+        rows = concepts.listing(Store(database), _concepts_config(settings), state)
+        return {"verb": "concepts list", "ok": True, "count": len(rows), "concepts": rows}
+    finally:
+        database.close()
+
+
+def concepts_edges_board(settings: ReviewSettings, label: str) -> dict:
+    database = _open_existing(settings)
+    try:
+        found = concepts.edges(Store(database), label)
+        return {
+            "verb": "concepts edges",
+            "ok": True,
+            "concept": concepts.normalize(label),
+            "edges": [
+                {
+                    "key": edge["key"],
+                    "label": edge["label"],
+                    "shared_claims": edge["shared"],
+                    "claim_ids": edge["claim_ids"],
+                }
+                for edge in found
+            ],  # fmt: skip
+        }
+    finally:
+        database.close()
+
+
+def concepts_verdict_board(settings: ReviewSettings, label: str, ruling: str) -> dict:
+    database = _open_existing(settings)
+    try:
+        out = concepts.verdict(
+            Store(database), label, ruling, answered_through="review file", created_by="corpuslm"
+        )
+        return {"verb": "concepts verdict", "ok": True} | out
+    finally:
+        database.close()
+
+
 def text_import_board(
     settings: ReviewSettings, file: Path, name: str, title: str, dry_run: bool
 ) -> dict:
@@ -848,6 +1067,10 @@ def main(argv: list[str] | None = None) -> int:
             text, code = clikit.help_text(parser, PROG, ["text"])
             print(text, end="")
             return code
+        if namespace.verb == "concepts" and namespace.concepts_verb is None:
+            text, code = clikit.help_text(parser, PROG, ["concepts"])
+            print(text, end="")
+            return code
         if namespace.verb == "claims" and namespace.claims_verb is None:
             text, code = clikit.help_text(parser, PROG, ["claims"])
             print(text, end="")
@@ -863,6 +1086,22 @@ def main(argv: list[str] | None = None) -> int:
             )
             _print(board, as_json)
             return 0
+        if namespace.verb == "concepts":
+            match namespace.concepts_verb:
+                case "build":
+                    board = concepts_build_board(
+                        settings, namespace.kind, namespace.source, namespace.dry_run
+                    )
+                case "status":
+                    board = concepts_status_board(settings, namespace.kind)
+                case "list":
+                    board = concepts_list_board(settings, namespace.state)
+                case "edges":
+                    board = concepts_edges_board(settings, namespace.concept)
+                case _:
+                    board = concepts_verdict_board(settings, namespace.concept, namespace.ruling)
+            _print(board, as_json)
+            return 0 if board["ok"] else 1
         if namespace.verb == "claims":
             match namespace.claims_verb:
                 case "build":

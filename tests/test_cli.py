@@ -134,6 +134,7 @@ def _claims_world(tmp_path, *, claims_table: bool = True) -> str:
         + (
             f'[claims]\nmodel = "gemini/gemini-2.5-flash-lite"\nworkspace = "{tmp_path / "ws"}"\n'
             "[llm]\nmax_usd_per_run = 1.0\n"
+            '[concepts]\nmodel = "gemini/gemini-2.5-flash-lite"\nmin_sections = 1\nmin_claims = 1\n'
             if claims_table
             else ""
         )
@@ -238,3 +239,51 @@ def test_a_missing_model_transport_is_named_without_a_traceback(tmp_path, capsys
     monkeypatch.setattr(builtins, "__import__", no_litellm)
     assert cli.main(["--json", "claims", "build", "--config", config, "--source", "bee:1"]) == 1
     assert "litellm is not installed; run: pip install -e '.[llm]'" in _board(capsys)["error"]
+
+
+def test_concepts_verbs_count_rule_and_show_edges(tmp_path, capsys, monkeypatch):
+    from corpuslm.store import Store
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    config = _claims_world(tmp_path)
+    assert cli.main(["--json", "claims", "import-digests", "--config", config]) == 0
+    _board(capsys)
+    assert cli.main(["--json", "concepts", "build", "--config", config, "--dry-run"]) == 0
+    board = _board(capsys)
+    assert (board["status"], board["sources_to_build"], board["calls_billed"]) == ("dry-run", 1, 1)
+    assert cli.main(["--json", "concepts", "build", "--config", config]) == 1
+    assert "GEMINI_API_KEY is not set" in _board(capsys)["error"]
+    database = db.Database(tmp_path / "transcript.sqlite")
+    store = Store(database)
+    claim = store.claims("Xq3vT9bLk2A")[0]["id"]
+    store.tag_claims(
+        {claim: [("choice", "Choice"), ("beat", "beat")]}, build_key="k", created_by="t"
+    )
+    store.refresh_concept_counts()
+    database.close()
+    assert cli.main(["--json", "concepts", "status", "--config", config]) == 0
+    board = _board(capsys)
+    assert board["states"] == {"in": 0, "out": 0, "boundary": 2} and board["concepts"] == 2
+    assert board["sources"]["none"] == 1 and board["sources"]["no_claims"] == 1
+    assert cli.main(["--json", "concepts", "verdict", "Choice", "--config", config, "--in"]) == 0
+    assert _board(capsys)["verdict"] == "in"
+    assert cli.main(["--json", "concepts", "list", "--config", config, "--state", "in"]) == 0
+    board = _board(capsys)
+    assert [(row["key"], row["verdict"]) for row in board["concepts"]] == [("choice", "in")]
+    assert cli.main(["--json", "concepts", "edges", "beat", "--config", config]) == 0
+    board = _board(capsys)
+    assert [(edge["key"], edge["shared_claims"]) for edge in board["edges"]] == [("choice", 1)]
+    assert cli.main(["--json", "concepts", "edges", "nope", "--config", config]) == 1
+    assert cli.main(["concepts", "status", "--config", config]) == 0
+    assert "choice" not in capsys.readouterr().out.replace("Choice", "")  # a status shows counts
+
+
+def test_review_serve_dry_run_names_the_concepts_page_when_the_table_is_set(tmp_path, capsys):
+    config = _claims_world(tmp_path)
+    assert cli.main(["--json", "review", "serve", "--config", config, "--dry-run"]) == 0
+    board = _board(capsys)
+    assert board["concepts_url"].endswith("/concepts")
+    (tmp_path / "bare").mkdir()
+    bare = _claims_world(tmp_path / "bare", claims_table=False)
+    assert cli.main(["--json", "review", "serve", "--config", bare, "--dry-run"]) == 0
+    assert "concepts_url" not in _board(capsys)

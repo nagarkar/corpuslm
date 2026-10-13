@@ -40,7 +40,7 @@ from .identity import canonical_sha256  # noqa: F401  (re-exported: db.canonical
 
 # PRAGMA user_version of the schema below. 0 is a database made before the
 # version was tracked (the v1 schema, frozen in tests/fixtures/schema_v1.sql).
-USER_VERSION = 11
+USER_VERSION = 12
 
 BACKUPS_DIRNAME = "backups"
 # How many verified backups `<workspace>/backups/` keeps (owner ruling
@@ -181,6 +181,46 @@ CLAIMS_TABLE = f"""CREATE TABLE IF NOT EXISTS claims (
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS claims_source ON claims (source_id);
+"""
+
+# Concepts (corpuslm.concepts): the lexicon derived from claims. `concepts` and `claim_concepts`
+# are derived state, rebuilt by the concept pass; `concept_verdicts` are the owner's rulings on
+# boundary cases, append-only.
+CONCEPTS_TABLES = f"""CREATE TABLE IF NOT EXISTS concepts (
+    {KNOWLEDGE_OBJECT_COLUMNS},
+    key TEXT NOT NULL UNIQUE,
+    label TEXT NOT NULL,
+    alternates TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(alternates)),
+    definition TEXT NOT NULL DEFAULT '',
+    section_count INTEGER NOT NULL DEFAULT 0 CHECK (section_count >= 0),
+    claim_count INTEGER NOT NULL DEFAULT 0 CHECK (claim_count >= 0),
+    source_count INTEGER NOT NULL DEFAULT 0 CHECK (source_count >= 0)
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS claim_concepts (
+    claim_id TEXT NOT NULL REFERENCES claims(id) ON DELETE CASCADE,
+    concept_id TEXT NOT NULL REFERENCES concepts(id),
+    build_key TEXT NOT NULL,
+    UNIQUE (claim_id, concept_id)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS claim_concepts_concept ON claim_concepts (concept_id);
+
+CREATE TABLE IF NOT EXISTS concept_verdicts (
+    {KNOWLEDGE_OBJECT_COLUMNS},
+    concept_id TEXT NOT NULL REFERENCES concepts(id),
+    verdict TEXT NOT NULL CHECK (verdict IN ('in', 'out')),
+    source TEXT NOT NULL DEFAULT 'phone page' CHECK (source IN ('review file', 'phone page')),
+    applied_at TEXT NOT NULL
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS concept_verdicts_slot ON concept_verdicts (concept_id);
+"""
+
+CONCEPTS_VIEW = """
+CREATE VIEW IF NOT EXISTS vw_current_concept_verdicts AS
+SELECT * FROM concept_verdicts
+WHERE rowid IN (SELECT max(rowid) FROM concept_verdicts GROUP BY concept_id);
 """
 
 SOURCES_TABLE = f"""CREATE TABLE IF NOT EXISTS sources (
@@ -393,6 +433,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS segments_fts USING fts5(
 );
 
 {CLAIMS_TABLE}
+
+{CONCEPTS_TABLES}
 """
 
 # Master data: every column whose change is written to change_log by trigger.
@@ -422,7 +464,14 @@ LIST_TABLES: tuple[tuple[str, str, str, str], ...] = (
     ("corpus_perspectives", "corpus_id", "perspective", "{r}.perspective"),
 )
 
-APPEND_ONLY = ("review_verdicts", "speaker_verdicts", "corrections", "fetch_attempts", "change_log")
+APPEND_ONLY = (
+    "review_verdicts",
+    "speaker_verdicts",
+    "corrections",
+    "fetch_attempts",
+    "change_log",
+    "concept_verdicts",
+)
 
 
 _LOG_COLUMNS = (
@@ -453,6 +502,16 @@ def _master_trigger(table: str, columns: tuple[str, ...]) -> str:
     )
 
 
+def _append_only_trigger(table: str) -> str:
+    """The two triggers that abort any UPDATE or DELETE on an append-only table."""
+    return "\n".join(
+        f"CREATE TRIGGER IF NOT EXISTS {table}_no_{event.lower()} BEFORE {event} "
+        f"ON {table} BEGIN\n    SELECT RAISE(ABORT, '{table} is append-only: "
+        f"write a new row instead of {event}');\nEND;"
+        for event in ("UPDATE", "DELETE")
+    )
+
+
 def _triggers() -> str:
     out = [_master_trigger(table, columns) for table, columns in MASTER_COLUMNS.items()]
     for table, parent, name, element in LIST_TABLES:
@@ -469,12 +528,7 @@ def _triggers() -> str:
             f"({_log_values(table, f'old.{parent}', name, old_el, 'NULL', 'NULL')});\nEND;"
         )
     for table in APPEND_ONLY:
-        for event in ("UPDATE", "DELETE"):
-            out.append(
-                f"CREATE TRIGGER IF NOT EXISTS {table}_no_{event.lower()} BEFORE {event} "
-                f"ON {table} BEGIN\n    SELECT RAISE(ABORT, '{table} is append-only: "
-                f"write a new row instead of {event}');\nEND;"
-            )
+        out.append(_append_only_trigger(table))
     out.append(
         """CREATE TRIGGER IF NOT EXISTS segments_ai AFTER INSERT ON segments BEGIN
     INSERT INTO segments_fts(rowid, text, source_id) VALUES (new.rowid, new.text, new.source_id);
@@ -493,7 +547,8 @@ END;"""
     return "\n".join(out)
 
 
-VIEWS = """
+VIEWS = (
+    """
 CREATE VIEW IF NOT EXISTS vw_corpus_members AS
 SELECT m.id, m.corpus_id, m.source_id, m.reason, m.created_at,
        CASE v.status WHEN 'added' THEN 'queued' WHEN 'ingested' THEN 'ingested'
@@ -518,6 +573,8 @@ CREATE VIEW IF NOT EXISTS vw_current_corrections AS
 SELECT * FROM corrections
 WHERE rowid IN (SELECT max(rowid) FROM corrections GROUP BY span_norm);
 """
+    + CONCEPTS_VIEW
+)
 
 TRIGGERS = _triggers()
 SCHEMA = TABLES + "\n" + TRIGGERS + "\n" + VIEWS
@@ -594,7 +651,13 @@ V1_TABLES = (
 
 # The tables whose rows are irreplaceable owner work; a backup must carry
 # every one of their rows before a migration may start.
-OWNER_TABLES = ("review_verdicts", "speaker_verdicts", "corrections", "review_answers")
+OWNER_TABLES = (
+    "review_verdicts",
+    "speaker_verdicts",
+    "corrections",
+    "review_answers",
+    "concept_verdicts",
+)
 
 
 def _ko_copy(prefix: str, created_at: str = "p.created_at") -> str:
@@ -778,6 +841,16 @@ def _v9_to_v10_script() -> list[str]:
 def _v8_to_v9_script(connection: sqlite3.Connection) -> list[str]:
     """Rebuild `sources` so its `status` CHECK allows `ignored`."""
     return _rebuild_sources_script(connection, "sources_v9")
+
+
+def _v11_to_v12_script() -> list[str]:
+    """Additive: the concept tables, their view and the append-only trigger of
+    `concept_verdicts` (all empty; `corpuslm concepts build` fills them)."""
+    return [
+        *_statements(CONCEPTS_TABLES),
+        *_statements(CONCEPTS_VIEW),
+        *_statements(_append_only_trigger("concept_verdicts")),
+    ]
 
 
 def _v10_to_v11_script(connection: sqlite3.Connection) -> list[str]:
@@ -1018,7 +1091,7 @@ def migrate(connection: sqlite3.Connection, db_path: Path) -> dict:
         return {"from": version, "to": USER_VERSION, "backup": None, "created": True}
     saved = backup(connection, db_path, label=f"before-v{USER_VERSION}")
     deleted = prune_backups(db_path)  # only after the new one verified
-    if version in (4, 5, 6, 7, 8, 9, 10):
+    if version in (4, 5, 6, 7, 8, 9, 10, 11):
         # From v8 on, every step checks every table's row count (the v8 -> v9 and v10 -> v11
         # steps rebuild `sources`; the v9 -> v10 step is additive and nothing else may change).
         watched = (
@@ -1036,7 +1109,8 @@ def migrate(connection: sqlite3.Connection, db_path: Path) -> dict:
                 *(_v7_to_v8_script() if version <= 7 else []),
                 *(_v8_to_v9_script(column) if version <= 8 else []),
                 *(_v9_to_v10_script() if version <= 9 else []),
-                *_v10_to_v11_script(column),
+                *(_v10_to_v11_script(column) if version <= 10 else []),
+                *_v11_to_v12_script(),
             ]
 
         if not _run_in_transaction(

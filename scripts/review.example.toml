@@ -47,3 +47,13 @@ workspace = "/path/to/corpuslm"
 [llm]
 max_usd_per_run = 1.0
 max_usd_per_day = 5.0
+
+# Optional: the concept pass (`corpuslm concepts build|status|list|edges|verdict --config FILE`). Shares
+# the [claims] workspace. `min_sections` and `min_claims` are the gate: a concept is in when it recurs in
+# at least that many sections and claims; the boundary band (min_sections to min_sections + 1) is put
+# to the owner. `batch_claims` is how many claims one model call reads.
+[concepts]
+model = "gemini/gemini-2.5-flash-lite"
+min_sections = 3
+min_claims = 5
+batch_claims = 120

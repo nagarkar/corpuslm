@@ -232,3 +232,64 @@ def test_saved_answers_become_a_decisions_file_that_lands_as_verdicts(tmp_path):
         assert len(Store(database).current_review_verdicts(BEE_SOURCE)) == 1
     finally:
         database.close()
+
+
+# ---- the concepts page and its one write (corpuslm.concepts_page) -------------------------
+
+
+def test_an_extra_page_is_served_and_a_concept_verdict_lands(corpora, documents):
+    path = corpora[0]
+    database = db.Database(path)
+    store = Store(database)
+    store.add_source(BEE_SOURCE, "l", created_by="test", kind="bee")
+    store.replace_segments(BEE_SOURCE, [{"idx": 0, "t0": 0.0, "t1": 1.0, "text": "a line"}])
+    store.replace_claims(
+        BEE_SOURCE, [{"section": 0, "segments": [0], "text": "One.", "kind": "assertion"}],
+        build_key="k", created_by="t",
+    )  # fmt: skip
+    store.tag_claims(
+        {store.claims(BEE_SOURCE)[0]["id"]: [("beat", "Beat")]}, build_key="k", created_by="t"
+    )
+    store.refresh_concept_counts()
+    database.close()
+    httpd = review_server.make_server(
+        "127.0.0.1", 0, page=lambda: "<title>page</title>", answers=documents,
+        pages={"/concepts": lambda: "<title>Concepts</title>"},
+    )  # fmt: skip
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, body = request(httpd, "GET", "/concepts")
+        assert status == 200 and b"<title>Concepts</title>" in body
+        status, _ = request(httpd, "GET", "/nothing")
+        assert status == 404
+        headers = {"Content-Type": "application/json", "X-Review": "1"}
+        status, body = request(
+            httpd, "POST", "/api/review",
+            json.dumps({"method": "concept_verdict", "params": {"key": "Beat", "verdict": "in"}}),
+            headers,
+        )  # fmt: skip
+        assert status == 200 and json.loads(body)["result"] == {"key": "beat", "verdict": "in"}
+        status, body = request(
+            httpd, "POST", "/api/review",
+            json.dumps(
+                {"method": "concept_verdict", "params": {"key": "beat", "verdict": "maybe"}}
+            ),
+            headers,
+        )  # fmt: skip
+        assert status == 400 and "in or out" in json.loads(body)["error"]
+        status, _ = request(
+            httpd, "POST", "/api/review",
+            json.dumps({"method": "concept_verdict", "params": {"key": "nope", "verdict": "in"}}),
+            headers,
+        )  # fmt: skip
+        assert status == 404
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+    database = db.Database(path)
+    try:
+        verdicts = Store(database).current_concept_verdicts()
+        assert list(verdicts.values()) == ["in"]
+    finally:
+        database.close()

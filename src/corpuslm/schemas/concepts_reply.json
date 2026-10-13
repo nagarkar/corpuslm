@@ -1,0 +1,38 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "corpuslm.concepts_reply/1",
+ "title": "concepts reply",
+ "description": "What the concept model returns for one batch of claims (corpuslm.concepts): the concept labels each claim uses, by the claim's index in the batch.",
+ "type": "object",
+ "additionalProperties": false,
+ "required": ["claims"],
+ "properties": {
+  "claims": {
+   "type": "array",
+   "description": "One entry per claim of the batch.",
+   "items": {
+    "type": "object",
+    "description": "The concepts one claim uses.",
+    "additionalProperties": false,
+    "required": ["index", "concepts"],
+    "properties": {
+     "index": {
+      "type": "integer",
+      "description": "The claim's index in the batch, as given.",
+      "minimum": 0
+     },
+     "concepts": {
+      "type": "array",
+      "description": "Labels of the concepts the claim uses; may be empty.",
+      "items": {
+       "type": "string",
+       "description": "A short lowercase noun phrase naming one concept.",
+       "minLength": 1
+      },
+      "maxItems": 6
+     }
+    }
+   }
+  }
+ }
+}
