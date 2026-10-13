@@ -1,7 +1,8 @@
 """The corpuslm command line (docs/design/surfaces.md): `help`, `doctor`, `completion`, the
 review verbs `review page`, `review serve`, `review apply`, `review check` and
 `review accept-suggestions`, `suggestions record`, the usage verbs `usage show` and
-`usage serve`, and the claim verbs `claims build`, `claims status` and `claims import-digests`.
+`usage serve`, the claim verbs `claims build`, `claims status` and `claims import-digests`, and
+`text import` (a manuscript export as a text source).
 
 Verbs print a short board (counts, paths, next step), never content;
 `--json` anywhere on the line prints the board as JSON. The review verbs read one settings file
@@ -24,7 +25,17 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-from . import claims, clikit, db, llm, review_rebuilders, usage, usage_page, usage_server
+from . import (
+    claims,
+    clikit,
+    db,
+    llm,
+    review_rebuilders,
+    text_source,
+    usage,
+    usage_page,
+    usage_server,
+)
 from .model_suggestions import backfill
 from .review_accept_suggestions import accept, parse_cutoff
 from .review_apply import apply as apply_answers
@@ -128,6 +139,14 @@ DESCRIPTIONS |= {
         "settings file) into claims with no model call. A source that already has claims is "
         "left alone. `--dry-run` counts and writes nothing.",
         "corpuslm claims import-digests --config /path/to/review.toml --dry-run",
+    ),
+    "text import": (
+        "Make or refresh a text source (a manuscript, paper or book) from a markdown export the "
+        "owner made: one segment per paragraph, sections by heading, the `Perspective sheet` "
+        "section left out. Never reads a live manuscript. A re-import replaces the segments and "
+        "leaves the source's claims stale. `--dry-run` counts and writes nothing.",
+        'corpuslm text import "/path/to/_exports/Book.md" --config /path/to/review.toml '
+        "--name smsttd --dry-run",
     ),
 }
 VERBS = DESCRIPTIONS  # the verbs and their descriptions, for the repo skill's parity test
@@ -287,6 +306,28 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument(
                 "--dry-run", action="store_true", help="count and estimate; send and write nothing"
             )
+    text_group = verbs.add_parser("text", help="text sources (manuscripts, papers, books): import")
+    text_verbs = text_group.add_subparsers(dest="text_verb", metavar="<subverb>")
+    text_import = leaf(text_verbs, "import", "a markdown export as a text source", "text import")
+    text_import.add_argument("file", metavar="FILE", help="the markdown export the owner made")
+    text_import.add_argument(
+        "--config", required=True, metavar="FILE", help="the review settings file"
+    )
+    text_import.add_argument(
+        "--name",
+        required=True,
+        metavar="NAME",
+        help="the body of work's name; the id is text:<name>",
+    )
+    text_import.add_argument(
+        "--title",
+        default="",
+        metavar="TITLE",
+        help="the title to show (default: the first heading)",
+    )
+    text_import.add_argument(
+        "--dry-run", action="store_true", help="count and print; write nothing"
+    )
     usage_group = verbs.add_parser("usage", help="what the system spends: show, serve")
     usage_verbs = usage_group.add_subparsers(dest="usage_verb", metavar="<subverb>")
     for name, help_text in (
@@ -723,6 +764,31 @@ def claims_import_board(settings: ReviewSettings, dry_run: bool) -> dict:
         database.close()
 
 
+def text_import_board(
+    settings: ReviewSettings, file: Path, name: str, title: str, dry_run: bool
+) -> dict:
+    database = _open_existing(settings)
+    try:
+        out = text_source.import_text(
+            Store(database), file, name=name, title=title, created_by="corpuslm", dry_run=dry_run
+        )
+        return (
+            {"verb": "text import", "ok": True}
+            | out
+            | (
+                {"status": "dry-run", "note": "dry run: nothing was written"}
+                if dry_run
+                else {
+                    "next": "corpuslm claims build --config "
+                    + str(settings.path)
+                    + f" --source {out['source']} --dry-run"
+                }
+            )
+        )
+    finally:
+        database.close()
+
+
 def _verb_board() -> dict:
     return {
         "verbs": {
@@ -778,11 +844,25 @@ def main(argv: list[str] | None = None) -> int:
             text, code = clikit.help_text(parser, PROG, ["usage"])
             print(text, end="")
             return code
+        if namespace.verb == "text" and namespace.text_verb is None:
+            text, code = clikit.help_text(parser, PROG, ["text"])
+            print(text, end="")
+            return code
         if namespace.verb == "claims" and namespace.claims_verb is None:
             text, code = clikit.help_text(parser, PROG, ["claims"])
             print(text, end="")
             return code
         settings = load(Path(namespace.config))
+        if namespace.verb == "text":
+            board = text_import_board(
+                settings,
+                Path(namespace.file),
+                namespace.name,
+                namespace.title,
+                namespace.dry_run,
+            )
+            _print(board, as_json)
+            return 0
         if namespace.verb == "claims":
             match namespace.claims_verb:
                 case "build":
@@ -842,8 +922,21 @@ def main(argv: list[str] | None = None) -> int:
         sqlite3.Error,
         OSError,
         ValueError,
+        KeyError,
     ) as error:
         _print({"verb": args[0], "ok": False, "error": str(error)}, as_json)
+        return 1
+    except ModuleNotFoundError as error:
+        # the model transport is an extra (corpuslm.llm): say what to install, no traceback
+        _print(
+            {
+                "verb": args[0],
+                "ok": False,
+                "error": f"{error.name} is not installed; run: pip install -e '.[llm]' in the "
+                "corpuslm checkout",
+            },
+            as_json,
+        )
         return 1
     _print(board, as_json)
     return 0 if board["ok"] else 1

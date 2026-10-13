@@ -167,7 +167,7 @@ keep lineage.
 
 ## Migrations: user_version, a verified backup, one transaction (2026-10-03)
 
-The schema version is `PRAGMA user_version` (`db.USER_VERSION`, now 10; a
+The schema version is `PRAGMA user_version` (`db.USER_VERSION`, now 11; a
 database made before it was tracked reads 0 and has the v1 schema, frozen
 in `tests/fixtures/schema_v1.sql`). On open, `db.migrate`:
 
@@ -229,6 +229,18 @@ The v9 → v10 step is additive: after the verified backup it creates `claims` a
 database takes the earlier steps in the same transaction. The row count of every table is compared
 with the counts taken before, as the v8 → v9 step does: nothing but the new table may change.
 `corpuslm claims build` (billed) and `corpuslm claims import-digests` (no model) fill it.
+
+The v10 → v11 step rebuilds `sources` again, exactly as the v8 → v9 step does
+(`db._rebuild_sources_script`), because the `kind` check now allows `text`. Every table's row
+count is compared before and after; no row changes its kind.
+
+Proof of the v10 → v11 step on a copy of the real database (2026-10-13, 300 sources: 198 YouTube,
+102 Bee, 14,156 claims at the time of the copy): the backup was written first and verified
+(`user_version` 10, `integrity_check` ok), every one of the 827,066 rows in every table kept its
+table's count, no source changed its kind, `foreign_key_check` was empty, `integrity_check` read
+`ok`, and the 39 triggers and views were unchanged. On the same copy, `text import` of the SMSTTD
+export made the source `text:smsttd` with 185 sections and 1,476 paragraphs (78,311 words), and
+`claims build --dry-run` estimated its claim pass at 185 calls, about $0.17, on the cheap tier.
 
 Proof of the v9 → v10 step on a copy of the real database (2026-10-13, 299 sources: 197 YouTube,
 102 Bee): the backup was written first and verified (`user_version` 9, `integrity_check` ok), the
@@ -297,8 +309,8 @@ History: master.
 | column | type | null | meaning |
 |---|---|---|---|
 | (base) | | | |
-| kind | TEXT | no | `youtube` or `bee` |
-| locator | TEXT | no | where the source lives: the watch URL (youtube) or a workspace-relative file path (bee) |
+| kind | TEXT | no | one of `youtube`, `bee`, `text` (a manuscript, paper or book imported from a markdown export, corpuslm.text_source) |
+| locator | TEXT | no | where the source lives: the watch URL (youtube), a workspace-relative file path (bee), or the export file's path (text) |
 | title | TEXT | no | from the metadata provider |
 | channel_id | TEXT | no | |
 | channel_title | TEXT | no | |
@@ -769,6 +781,8 @@ segment changed, so it carries the previous hash):
 | `run-0a1b2c3d4e5f` | `cli` | `sources:1` | `running` | `2026-10-02T09:12:40Z` | NULL | 1 | NULL | `` |
 
 ## Changes
+
+- 2026-10-13: Version 11 (nagarkar/corpuslm#46): `sources.kind` allows `text`: a manuscript, paper or book imported from a markdown export by `corpuslm text import`, one segment per paragraph, sections by heading kept in the source's metadata for the claim pass
 
 - 2026-10-13: Version 10 (nagarkar/corpuslm#45): `claims` (derived): what each source claims, one short sentence per claim tied to its segments, built by `corpuslm claims build` or imported from ytlm's digests by `corpuslm claims import-digests`; freshness through the source's `artifacts` row for node `claims`
 

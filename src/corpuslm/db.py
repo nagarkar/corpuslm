@@ -40,7 +40,7 @@ from .identity import canonical_sha256  # noqa: F401  (re-exported: db.canonical
 
 # PRAGMA user_version of the schema below. 0 is a database made before the
 # version was tracked (the v1 schema, frozen in tests/fixtures/schema_v1.sql).
-USER_VERSION = 10
+USER_VERSION = 11
 
 BACKUPS_DIRNAME = "backups"
 # How many verified backups `<workspace>/backups/` keeps (owner ruling
@@ -185,7 +185,7 @@ CREATE INDEX IF NOT EXISTS claims_source ON claims (source_id);
 
 SOURCES_TABLE = f"""CREATE TABLE IF NOT EXISTS sources (
     {KNOWLEDGE_OBJECT_COLUMNS},
-    kind TEXT NOT NULL DEFAULT 'youtube' CHECK (kind IN ('youtube', 'bee')),
+    kind TEXT NOT NULL DEFAULT 'youtube' CHECK (kind IN ('youtube', 'bee', 'text')),
     locator TEXT NOT NULL,
     title TEXT NOT NULL DEFAULT '',
     channel_id TEXT NOT NULL DEFAULT '',
@@ -776,12 +776,21 @@ def _v9_to_v10_script() -> list[str]:
 
 
 def _v8_to_v9_script(connection: sqlite3.Connection) -> list[str]:
-    """Rebuild `sources` so its `status` CHECK allows `ignored` (a CHECK cannot be altered in
-    place): a new table under another name, every row copied by column name, the old table
-    dropped, the new one renamed. Triggers and views are dropped first and rebuilt from SCHEMA,
-    because SQLite refuses to rename while a trigger or view names a table that is gone. The
-    caller runs this inside one transaction with foreign keys off and checks `foreign_key_check`
-    before COMMIT."""
+    """Rebuild `sources` so its `status` CHECK allows `ignored`."""
+    return _rebuild_sources_script(connection, "sources_v9")
+
+
+def _v10_to_v11_script(connection: sqlite3.Connection) -> list[str]:
+    """Rebuild `sources` so its `kind` CHECK allows `text` (corpuslm.text_source)."""
+    return _rebuild_sources_script(connection, "sources_v11")
+
+
+def _rebuild_sources_script(connection: sqlite3.Connection, scratch_name: str) -> list[str]:
+    """Rebuild `sources` from `SOURCES_TABLE` (a CHECK cannot be altered in place): a new table
+    under `scratch_name`, every row copied by column name, the old table dropped, the new one
+    renamed. Triggers and views are dropped first and rebuilt from SCHEMA, because SQLite refuses
+    to rename while a trigger or view names a table that is gone. The caller runs this inside one
+    transaction with foreign keys off and checks `foreign_key_check` before COMMIT."""
     drops = [
         f"DROP TRIGGER IF EXISTS {name};"
         for (name,) in connection.execute("SELECT name FROM sqlite_master WHERE type = 'trigger'")
@@ -791,20 +800,20 @@ def _v8_to_v9_script(connection: sqlite3.Connection) -> list[str]:
         for (name,) in connection.execute("SELECT name FROM sqlite_master WHERE type = 'view'")
     ]
     made = SOURCES_TABLE.replace(
-        "CREATE TABLE IF NOT EXISTS sources (", "CREATE TABLE sources_v9 ("
+        "CREATE TABLE IF NOT EXISTS sources (", f"CREATE TABLE {scratch_name} ("
     )
     scratch = sqlite3.connect(":memory:")
     try:
         scratch.execute(made)
-        columns = ", ".join(row[1] for row in scratch.execute("PRAGMA table_info(sources_v9)"))
+        columns = ", ".join(row[1] for row in scratch.execute(f"PRAGMA table_info({scratch_name})"))
     finally:
         scratch.close()
     return [
         *drops,
         made,
-        f"INSERT INTO sources_v9 ({columns}) SELECT {columns} FROM sources ORDER BY rowid;",
+        f"INSERT INTO {scratch_name} ({columns}) SELECT {columns} FROM sources ORDER BY rowid;",
         "DROP TABLE sources;",
-        "ALTER TABLE sources_v9 RENAME TO sources;",
+        f"ALTER TABLE {scratch_name} RENAME TO sources;",
         *_statements(SCHEMA),
     ]
 
@@ -1009,12 +1018,12 @@ def migrate(connection: sqlite3.Connection, db_path: Path) -> dict:
         return {"from": version, "to": USER_VERSION, "backup": None, "created": True}
     saved = backup(connection, db_path, label=f"before-v{USER_VERSION}")
     deleted = prune_backups(db_path)  # only after the new one verified
-    if version in (4, 5, 6, 7, 8, 9):
-        # The v8 -> v9 step rebuilds `sources`, so it checks every table, not only the owner's;
-        # the v9 -> v10 step is additive and checks every table too (nothing else may change).
+    if version in (4, 5, 6, 7, 8, 9, 10):
+        # From v8 on, every step checks every table's row count (the v8 -> v9 and v10 -> v11
+        # steps rebuild `sources`; the v9 -> v10 step is additive and nothing else may change).
         watched = (
             sorted(table for table in _tables(connection) if not table.startswith("sqlite_"))
-            if version in (8, 9)
+            if version >= 8
             else OWNER_TABLES
         )
         before = _counts(connection, watched)
@@ -1026,7 +1035,8 @@ def migrate(connection: sqlite3.Connection, db_path: Path) -> dict:
                 *(_v6_to_v7_script() if version <= 6 else []),
                 *(_v7_to_v8_script() if version <= 7 else []),
                 *(_v8_to_v9_script(column) if version <= 8 else []),
-                *_v9_to_v10_script(),
+                *(_v9_to_v10_script() if version <= 9 else []),
+                *_v10_to_v11_script(column),
             ]
 
         if not _run_in_transaction(

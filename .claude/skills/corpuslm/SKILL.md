@@ -20,6 +20,7 @@ corpuslm is a library. ytlm and beelm import it. The command line is for checks.
 | Is the review server up and on the newest code? | `corpuslm review check --config FILE` |
 | What do the sources claim? Build the claims of some sources by a cheap model call per section (billed; `[claims]` and `[llm]` in `review.toml`; always `--dry-run` first and wait for the owner's yes) | `corpuslm claims build --config FILE [--kind K] [--source ID ...] [--dry-run]` |
 | Which sources have current, stale, imported or no claims, and why stale? | `corpuslm claims status --config FILE [--kind K]` (read-only) |
+| Bring a manuscript, paper or book in as a text source from a markdown export the owner made (for an authorlm manuscript: `doc create-manuscript` writes `_exports/<Name>.md`; never read a live manuscript) | `corpuslm text import FILE --config FILE --name NAME [--title T] [--dry-run]` (a re-import replaces the paragraphs and leaves the claims stale; the `Perspective sheet` section is left out) |
 | Turn ytlm's existing digests into claims, no model, no cost | `corpuslm claims import-digests --config FILE [--dry-run]` (safe to run again: a source with claims is left alone) |
 | Shell completion | `corpuslm completion` |
 

@@ -43,7 +43,8 @@ Terms:
 - **claim kind**: assertion, definition, example, story, question, prediction, disagreement.
 - **claim pass**: the model calls per source that list its claims, one per section.
 - **section**: the span of a source's segments one claim-pass call reads, about
-  `section_chars` characters; a text source's sections follow its headings.
+  `section_chars` characters; a text source's sections follow its headings
+  (corpuslm.text_source).
 - **build key**: the hash of a claim pass's inputs (text, prompt, model, section size); every
   claim of the pass carries it.
 """
@@ -55,7 +56,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import llm, prompts
+from . import llm, prompts, text_source
 from .identity import canonical_sha256
 from .store import Store
 
@@ -100,6 +101,25 @@ def sections(segments: list[dict], size: int) -> list[list[dict]]:
             current, character_count = [], 0
     if current:
         out.append(current)
+    return out
+
+
+def sections_of(source_row: dict, segments: list[dict], size: int) -> list[list[dict]]:
+    """A text source's sections follow its headings (corpuslm.text_source); any other source is
+    cut every `size` characters."""
+    recorded = (
+        text_source.sections_of(source_row) if source_row.get("kind") == text_source.KIND else []
+    )
+    if not recorded:
+        return sections(segments, size)
+    by_index = {segment["idx"]: segment for segment in segments}
+    out = []
+    for section in recorded:
+        part = [
+            by_index[index] for index in range(section.first, section.last + 1) if index in by_index
+        ]
+        if part:
+            out.append(part)
     return out
 
 
@@ -220,7 +240,7 @@ def estimate(store: Store, client: llm.Client, source_ids: list[str]) -> Estimat
         row = store.source(source_id)
         if row is None:
             continue
-        parts = sections(store.best_segments(source_id), found["section_chars"])
+        parts = sections_of(row, store.best_segments(source_id), found["section_chars"])
         if not parts:
             continue
         sources += 1
@@ -278,7 +298,7 @@ def build(
         raise KeyError(f"unknown source {source_id!r}")
     found = settings(client.config)
     segments = store.best_segments(source_id)
-    parts = sections(segments, found["section_chars"])
+    parts = sections_of(row, segments, found["section_chars"])
     known = {segment["idx"] for segment in segments}
     claims: list[dict] = []
     dropped = 0

@@ -178,3 +178,63 @@ def test_claims_import_digests_and_status_count_and_show_no_text(tmp_path, capsy
     assert "choice" not in json.dumps(board)  # counts only; no claim text on a board
     assert cli.main(["claims", "status", "--config", config, "--kind", "bee"]) == 0
     assert "none: 1" in capsys.readouterr().out
+
+
+def test_text_import_counts_and_names_what_it_left_out(tmp_path, capsys):
+    config = _claims_world(tmp_path)
+    export = tmp_path / "Book.md"
+    export.write_text(
+        "# Book\n\nOne paragraph.\n\n## Perspective sheet\n\nLeft out.\n\n## Two\n\nSecond.\n"
+    )
+    args = ["text", "import", str(export), "--config", config, "--name", "Book"]
+    assert cli.main(["--json", *args, "--dry-run"]) == 0
+    board = _board(capsys)
+    assert (board["source"], board["paragraphs"], board["left_out"], board["status"]) == (
+        "text:book",
+        2,
+        ["Perspective sheet"],
+        "dry-run",
+    )
+    assert cli.main(["--json", *args]) == 0
+    board = _board(capsys)
+    assert board["created"] is True and board["next"].endswith("--source text:book --dry-run")
+    assert "paragraph" not in json.dumps(board).replace("paragraphs", "")  # counts, never text
+    assert cli.main(["--json", "claims", "status", "--config", config, "--kind", "text"]) == 0
+    assert _board(capsys)["sources"] == 1
+    assert cli.main(["--json", *args]) == 0
+    assert _board(capsys)["created"] is False
+    assert (
+        cli.main(
+            [
+                "--json",
+                "text",
+                "import",
+                str(tmp_path / "nope.md"),
+                "--config",
+                config,
+                "--name",
+                "x",
+            ]
+        )
+        == 1
+    )
+    assert "does not exist" in _board(capsys)["error"]
+
+
+def test_a_missing_model_transport_is_named_without_a_traceback(tmp_path, capsys, monkeypatch):
+    """Seen 2026-10-13: the first live `claims build` fell over with a traceback because the
+    `llm` extra was not installed in corpuslm's own environment."""
+    import builtins
+
+    config = _claims_world(tmp_path)
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    real_import = builtins.__import__
+
+    def no_litellm(name, *args, **kwargs):
+        if name == "litellm":
+            raise ModuleNotFoundError("No module named 'litellm'", name="litellm")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_litellm)
+    assert cli.main(["--json", "claims", "build", "--config", config, "--source", "bee:1"]) == 1
+    assert "litellm is not installed; run: pip install -e '.[llm]'" in _board(capsys)["error"]
