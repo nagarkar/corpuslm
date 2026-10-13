@@ -109,8 +109,8 @@ def _verdict(
 
 
 def test_fresh_file_gets_user_version(database, dbpath):
-    # storage-schema.md: "The schema version is PRAGMA user_version (db.USER_VERSION, now 12)"
-    assert db.USER_VERSION == 12
+    # storage-schema.md: "The schema version is PRAGMA user_version (db.USER_VERSION, now 13)"
+    assert db.USER_VERSION == 13
     assert database.one("PRAGMA user_version")[0] == db.USER_VERSION
     raw = sqlite3.connect(dbpath)
     try:
@@ -319,6 +319,7 @@ def test_append_only_constant_matches_spec():
         "fetch_attempts",
         "change_log",
         "concept_verdicts",
+        "moment_verdicts",
     }
 
 
@@ -959,7 +960,7 @@ def test_v1_backup_is_verified_and_complete(migrated, dbpath):
     assert len(files) == 1
     backup_path = files[0]
     assert backup_path.name.startswith("transcript-") and backup_path.name.endswith(
-        "-before-v12.sqlite"
+        "-before-v13.sqlite"
     )
     assert _rows(backup_path, "PRAGMA integrity_check")[0][0] == "ok"
     assert _rows(backup_path, RV_SQL_V1) == original_rv
@@ -1240,6 +1241,7 @@ def test_the_schema_document_mirrors_the_code():
         "claims": "derived",
         "concepts": "derived",
         "claim_concepts": "derived",
+        "moments": "derived",
         "locks": "coordination",
     }
     for name, kind in objects.items():

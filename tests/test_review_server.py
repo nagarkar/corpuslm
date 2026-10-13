@@ -293,3 +293,47 @@ def test_an_extra_page_is_served_and_a_concept_verdict_lands(corpora, documents)
         assert list(verdicts.values()) == ["in"]
     finally:
         database.close()
+
+
+def test_a_moment_verdict_lands_through_the_api(corpora, documents):
+    path = corpora[0]
+    database = db.Database(path)
+    store = Store(database)
+    store.add_source(BEE_SOURCE, "l", created_by="test", kind="bee")
+    made = store.add_moment(BEE_SOURCE, 0, 1, "x", origin="model", created_by="t")
+    database.close()
+    httpd = review_server.make_server(
+        "127.0.0.1", 0, page=lambda: "<title>page</title>", answers=documents
+    )
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    headers = {"Content-Type": "application/json", "X-Review": "1"}
+    try:
+        status, body = request(
+            httpd, "POST", "/api/review",
+            json.dumps({"method": "moment_verdict", "params": {"id": made, "verdict": "approved"}}),
+            headers,
+        )  # fmt: skip
+        assert status == 200 and json.loads(body)["result"] == {"id": made, "verdict": "approved"}
+        status, body = request(
+            httpd, "POST", "/api/review",
+            json.dumps({"method": "moment_verdict", "params": {"id": made, "verdict": "later"}}),
+            headers,
+        )  # fmt: skip
+        assert status == 400 and "approved or declined" in json.loads(body)["error"]
+        status, _ = request(
+            httpd, "POST", "/api/review",
+            json.dumps(
+                {"method": "moment_verdict", "params": {"id": "mom-nope", "verdict": "approved"}}
+            ),
+            headers,
+        )  # fmt: skip
+        assert status == 404
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+    database = db.Database(path)
+    try:
+        assert list(Store(database).current_moment_verdicts(BEE_SOURCE).values()) == ["approved"]
+    finally:
+        database.close()

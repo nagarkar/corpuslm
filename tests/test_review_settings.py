@@ -175,3 +175,13 @@ def test_the_concepts_table_is_read_with_its_defaults(tmp_path):
 def test_a_wrong_concepts_table_is_named(tmp_path, addition, message):
     with pytest.raises(SettingsError, match=message):
         review_settings.load(write(tmp_path, GOOD + addition))
+
+
+def test_the_moments_table_is_read_with_its_default(tmp_path):
+    settings = review_settings.load(write(tmp_path, GOOD + CLAIMS + "[moments]\nmodel = 'm'\n"))
+    assert (settings.moments.model, settings.moments.max_moments) == ("m", 8)
+    assert settings.client_config()["moments"] == {"model": "m", "max_moments": 8}
+    with pytest.raises(SettingsError, match="max_moments must be"):
+        review_settings.load(write(tmp_path, GOOD + "[moments]\nmodel = 'm'\nmax_moments = 0\n"))
+    with pytest.raises(SettingsError, match="model is missing"):
+        review_settings.load(write(tmp_path, GOOD + "[moments]\nmax_moments = 3\n"))

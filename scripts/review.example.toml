@@ -57,3 +57,9 @@ model = "gemini/gemini-2.5-flash-lite"
 min_sections = 3
 min_claims = 5
 batch_claims = 120
+
+# Optional: the moment proposal pass (`corpuslm moments propose|status|list|verdict`; `moments import`
+# needs no model). Shares the [claims] workspace. `max_moments` is the most moments one source may get.
+[moments]
+model = "gemini/gemini-2.5-flash-lite"
+max_moments = 8

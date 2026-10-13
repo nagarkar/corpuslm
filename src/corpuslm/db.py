@@ -40,7 +40,7 @@ from .identity import canonical_sha256  # noqa: F401  (re-exported: db.canonical
 
 # PRAGMA user_version of the schema below. 0 is a database made before the
 # version was tracked (the v1 schema, frozen in tests/fixtures/schema_v1.sql).
-USER_VERSION = 12
+USER_VERSION = 13
 
 BACKUPS_DIRNAME = "backups"
 # How many verified backups `<workspace>/backups/` keeps (owner ruling
@@ -221,6 +221,42 @@ CONCEPTS_VIEW = """
 CREATE VIEW IF NOT EXISTS vw_current_concept_verdicts AS
 SELECT * FROM concept_verdicts
 WHERE rowid IN (SELECT max(rowid) FROM concept_verdicts GROUP BY concept_id);
+"""
+
+# Moments (corpuslm.moments): the building block of monologues. `moments` is derived state (the
+# model's proposals, rebuilt per source; imported ones kept until re-imported); `moment_verdicts`
+# are the owner's rulings, append-only, keyed by the moment's subject (source and span) so a
+# rebuild that proposes the same span keeps its ruling.
+MOMENTS_TABLES = f"""CREATE TABLE IF NOT EXISTS moments (
+    {KNOWLEDGE_OBJECT_COLUMNS},
+    source_id TEXT NOT NULL REFERENCES sources(id),
+    first_position INTEGER NOT NULL CHECK (first_position >= 0),
+    last_position INTEGER NOT NULL CHECK (last_position >= first_position),
+    insight TEXT NOT NULL,
+    origin TEXT NOT NULL CHECK (origin IN ('import', 'model')),
+    subject_sha256 TEXT NOT NULL CHECK (length(subject_sha256) = 64),
+    build_key TEXT NOT NULL DEFAULT '',
+    UNIQUE (source_id, subject_sha256)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS moments_source ON moments (source_id);
+
+CREATE TABLE IF NOT EXISTS moment_verdicts (
+    {KNOWLEDGE_OBJECT_COLUMNS},
+    source_id TEXT NOT NULL REFERENCES sources(id),
+    subject_sha256 TEXT NOT NULL CHECK (length(subject_sha256) = 64),
+    verdict TEXT NOT NULL CHECK (verdict IN ('approved', 'declined')),
+    source TEXT NOT NULL DEFAULT 'phone page' CHECK (source IN ('review file', 'phone page')),
+    applied_at TEXT NOT NULL
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS moment_verdicts_slot ON moment_verdicts (source_id, subject_sha256);
+"""
+
+MOMENTS_VIEW = """
+CREATE VIEW IF NOT EXISTS vw_current_moment_verdicts AS
+SELECT * FROM moment_verdicts
+WHERE rowid IN (SELECT max(rowid) FROM moment_verdicts GROUP BY source_id, subject_sha256);
 """
 
 SOURCES_TABLE = f"""CREATE TABLE IF NOT EXISTS sources (
@@ -435,6 +471,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS segments_fts USING fts5(
 {CLAIMS_TABLE}
 
 {CONCEPTS_TABLES}
+
+{MOMENTS_TABLES}
 """
 
 # Master data: every column whose change is written to change_log by trigger.
@@ -471,6 +509,7 @@ APPEND_ONLY = (
     "fetch_attempts",
     "change_log",
     "concept_verdicts",
+    "moment_verdicts",
 )
 
 
@@ -574,6 +613,7 @@ SELECT * FROM corrections
 WHERE rowid IN (SELECT max(rowid) FROM corrections GROUP BY span_norm);
 """
     + CONCEPTS_VIEW
+    + MOMENTS_VIEW
 )
 
 TRIGGERS = _triggers()
@@ -657,6 +697,7 @@ OWNER_TABLES = (
     "corrections",
     "review_answers",
     "concept_verdicts",
+    "moment_verdicts",
 )
 
 
@@ -841,6 +882,16 @@ def _v9_to_v10_script() -> list[str]:
 def _v8_to_v9_script(connection: sqlite3.Connection) -> list[str]:
     """Rebuild `sources` so its `status` CHECK allows `ignored`."""
     return _rebuild_sources_script(connection, "sources_v9")
+
+
+def _v12_to_v13_script() -> list[str]:
+    """Additive: the moment tables, their view and the append-only trigger of `moment_verdicts`
+    (all empty; `corpuslm moments import` and `corpuslm moments propose` fill them)."""
+    return [
+        *_statements(MOMENTS_TABLES),
+        *_statements(MOMENTS_VIEW),
+        *_statements(_append_only_trigger("moment_verdicts")),
+    ]
 
 
 def _v11_to_v12_script() -> list[str]:
@@ -1091,7 +1142,7 @@ def migrate(connection: sqlite3.Connection, db_path: Path) -> dict:
         return {"from": version, "to": USER_VERSION, "backup": None, "created": True}
     saved = backup(connection, db_path, label=f"before-v{USER_VERSION}")
     deleted = prune_backups(db_path)  # only after the new one verified
-    if version in (4, 5, 6, 7, 8, 9, 10, 11):
+    if version in (4, 5, 6, 7, 8, 9, 10, 11, 12):
         # From v8 on, every step checks every table's row count (the v8 -> v9 and v10 -> v11
         # steps rebuild `sources`; the v9 -> v10 step is additive and nothing else may change).
         watched = (
@@ -1110,7 +1161,8 @@ def migrate(connection: sqlite3.Connection, db_path: Path) -> dict:
                 *(_v8_to_v9_script(column) if version <= 8 else []),
                 *(_v9_to_v10_script() if version <= 9 else []),
                 *(_v10_to_v11_script(column) if version <= 10 else []),
-                *_v11_to_v12_script(),
+                *(_v11_to_v12_script() if version <= 11 else []),
+                *_v12_to_v13_script(),
             ]
 
         if not _run_in_transaction(

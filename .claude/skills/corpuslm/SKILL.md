@@ -25,6 +25,8 @@ corpuslm is a library. ytlm and beelm import it. The command line is for checks.
 | How many concepts are in, out or on the boundary, the boundary list, the distribution, and which sources' tags are current | `corpuslm concepts status --config FILE [--kind K]` (read-only) |
 | The lexicon, or one concept's co-occurrence edges with the shared claim ids | `corpuslm concepts list --config FILE [--state in\|out\|boundary]`; `corpuslm concepts edges LABEL --config FILE` (read-only) |
 | Rule a boundary concept in or out (the newest ruling wins over the gate; never overwritten) | `corpuslm concepts verdict LABEL --config FILE --in\|--out` |
+| Bring the owner's insight-moment notes in as approved moments (no model; safe to run again) | `corpuslm moments import DIR --config FILE [--dry-run]` |
+| Propose moments from claims (billed; `[moments]` in `review.toml`; `--dry-run` first and the owner's yes); approve or decline them on the moments page (`/moments` on the review server) | `corpuslm moments propose --config FILE [--kind K] [--source ID ...] [--dry-run]`; `corpuslm moments status\|list --config FILE`; `corpuslm moments verdict ID --config FILE --approve\|--decline` |
 | Turn ytlm's existing digests into claims, no model, no cost | `corpuslm claims import-digests --config FILE [--dry-run]` (safe to run again: a source with claims is left alone) |
 | Shell completion | `corpuslm completion` |
 

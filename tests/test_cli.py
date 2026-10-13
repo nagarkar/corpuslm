@@ -135,6 +135,7 @@ def _claims_world(tmp_path, *, claims_table: bool = True) -> str:
             f'[claims]\nmodel = "gemini/gemini-2.5-flash-lite"\nworkspace = "{tmp_path / "ws"}"\n'
             "[llm]\nmax_usd_per_run = 1.0\n"
             '[concepts]\nmodel = "gemini/gemini-2.5-flash-lite"\nmin_sections = 1\nmin_claims = 1\n'
+            '[moments]\nmodel = "gemini/gemini-2.5-flash-lite"\n'
             if claims_table
             else ""
         )
@@ -287,3 +288,47 @@ def test_review_serve_dry_run_names_the_concepts_page_when_the_table_is_set(tmp_
     bare = _claims_world(tmp_path / "bare", claims_table=False)
     assert cli.main(["--json", "review", "serve", "--config", bare, "--dry-run"]) == 0
     assert "concepts_url" not in _board(capsys)
+
+
+def test_moments_verbs_import_count_list_and_rule(tmp_path, capsys, monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    config = _claims_world(tmp_path)
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    (notes / "Group 1 - 1.md").write_text(
+        "## 123456 (not in the database yet)\n\n### Moment 1: a choice\n- 0 to 1 seconds.\n"
+    )
+    assert (
+        cli.main(["--json", "moments", "import", str(notes), "--config", config, "--dry-run"]) == 0
+    )
+    board = _board(capsys)
+    assert (board["imported"], board["unknown_source"], board["status"]) == (0, 1, "dry-run")
+    from corpuslm.store import Store
+
+    database = db.Database(tmp_path / "transcript.sqlite")
+    Store(database).add_source("bee:123456", "l", created_by="t", kind="bee")
+    Store(database).replace_segments("bee:123456", SEGMENTS)
+    database.close()
+    assert cli.main(["--json", "moments", "import", str(notes), "--config", config]) == 0
+    assert _board(capsys)["imported"] == 1
+    assert cli.main(["--json", "moments", "status", "--config", config]) == 0
+    board = _board(capsys)
+    assert board["states"] == {"approved": 1, "declined": 0, "proposed": 0}
+    assert board["sources"]["no_claims"] >= 1
+    assert cli.main(["--json", "moments", "list", "--config", config, "--state", "approved"]) == 0
+    listed = _board(capsys)["moments"]
+    assert [(m["source_id"], m["origin"], m["insight"]) for m in listed] == [
+        ("bee:123456", "import", "a choice")
+    ]
+    assert (
+        cli.main(["--json", "moments", "verdict", listed[0]["id"], "--config", config, "--decline"])
+        == 0
+    )
+    assert _board(capsys)["verdict"] == "declined"
+    assert cli.main(["--json", "claims", "import-digests", "--config", config]) == 0
+    _board(capsys)
+    assert cli.main(["--json", "moments", "propose", "--config", config, "--dry-run"]) == 0
+    board = _board(capsys)
+    assert board["status"] == "dry-run" and board["sources_to_build"] == 1  # the imported video
+    assert cli.main(["--json", "review", "serve", "--config", config, "--dry-run"]) == 0
+    assert _board(capsys)["moments_url"].endswith("/moments")
