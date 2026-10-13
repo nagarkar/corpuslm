@@ -31,6 +31,11 @@ Decisions:
 - Imported digests are never rebuilt by the pass on their own: they stay `imported` until the
   owner runs `build` for that source. Why: a rebuild is a paid run. Enforced by:
   tests/test_claims.py::test_an_imported_source_stays_imported_and_is_not_billed.
+- A reply the model gets wrong for one source (a reply that will not parse twice, a vendor
+  error, a truncated reply) records that source's artifact `failed` with the reason and the run
+  goes on to the next source; only a spend cap stops a run. Seen 2026-10-13: one video's reply
+  listed seven segments for a claim and the whole YouTube run stopped at it. Enforced by:
+  tests/test_claims.py::test_a_bad_reply_fails_one_source_and_the_run_goes_on.
 
 Terms:
 - **claim**: one short sentence (25 words or fewer) restating one thing a source says, with its
@@ -247,6 +252,20 @@ def _estimate_tokens(text: str) -> int:
 
 
 # ---- the pass ---------------------------------------------------------------------------
+
+
+def record_failed(store: Store, source_id: str, reason: str, *, created_by: str) -> None:
+    """The source's `claims` artifact as failed, with the reason; its claims, if any, stay."""
+    store.record_artifact(
+        source_id,
+        NODE,
+        path="",
+        sha256="",
+        state="failed",
+        inputs={},
+        provenance={"stage": STAGE, "failed": reason[:300]},
+        created_by=created_by,
+    )
 
 
 def build(

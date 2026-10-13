@@ -638,6 +638,7 @@ def claims_build_board(
             for entry in claims.status(store, client.config, source_ids)
         }
         built, claims_written, dropped, cost = 0, 0, 0, 0.0
+        failed: dict[str, str] = {}
         stopped = ""
         for source_id in source_ids:
             if standing[source_id] in ("current", "imported"):
@@ -647,6 +648,11 @@ def claims_build_board(
             except llm.SpendCapReached as error:
                 stopped = str(error)
                 break
+            except (llm.BadReply, llm.VendorError, llm.TruncatedReply) as error:
+                # one source's bad reply is that source's failure, not the run's
+                failed[source_id] = f"{type(error).__name__}: {str(error)[:200]}"
+                claims.record_failed(store, source_id, failed[source_id], created_by="corpuslm")
+                continue
             built += 1
             claims_written += out["claims"]
             dropped += out["dropped"]
@@ -655,9 +661,11 @@ def claims_build_board(
             "built": built,
             "claims": claims_written,
             "dropped": dropped,
+            "failed": len(failed),
+            "failed_sources": failed,
             "cost_usd": round(cost, 6),
             "stopped_by": stopped,
-            "ok": not stopped,
+            "ok": not stopped and not failed,
             "next": "corpuslm claims status --config " + str(settings.path),
         }
     finally:

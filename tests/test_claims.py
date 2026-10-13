@@ -150,6 +150,70 @@ def test_the_estimate_calls_no_model_and_counts_what_would_be_billed(tmp_path):
         world.database.close()
 
 
+def test_a_long_segment_list_is_kept_to_six_not_rejected(world):
+    """Seen 2026-10-13: a reply listing seven segments for a claim failed the whole run."""
+    long = {"claims": [FIRST["claims"][0] | {"segments": [0, 1, 0, 1, 0, 1, 0, 1]}]}
+    world.script(f"{SOURCE}-s0", long)
+    out = claims.build(world.store, world.client(), SOURCE, created_by="test")
+    assert out["claims"] == 3 and out["dropped"] == 0
+    assert world.store.claims(SOURCE)[0]["segments"] == [0, 1]  # duplicates folded, six at most
+
+
+def test_a_bad_reply_fails_one_source_and_the_run_goes_on(world, tmp_path):
+    from corpuslm import cli
+
+    world.store.add_source("bee:2", "l2", created_by="test", kind="bee")
+    world.store.replace_segments("bee:2", SEGMENTS)
+    world.script("bee:2-s0", FIRST)
+    world.script("bee:2-s1", SECOND)
+    folder = world.scripts / claims.STAGE
+    (folder / f"{SOURCE}-s0.json").write_text(
+        json.dumps({"reply": "not json", "tokens_in": 1, "tokens_out": 1})
+    )
+    world.database.close()
+    path = tmp_path / "review.toml"
+    path.write_text(
+        f'database = "{tmp_path / "transcript.sqlite"}"\n[kinds.bee]\ndirectory = "{tmp_path}"\n'
+        f'[claims]\nmodel = "{MODEL}"\nworkspace = "{world.root}"\n'
+    )
+    import corpuslm.llm as llm_module
+
+    real_client = llm_module.Client
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(
+        llm_module,
+        "Client",
+        lambda root, config, **kw: real_client(
+            root, config, transport=llm.ScriptedTransport(world.scripts), verb=kw.get("verb", "")
+        ),
+    )
+    try:
+        import io
+        from contextlib import redirect_stdout
+
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = cli.main(["--json", "claims", "build", "--config", str(path)])
+    finally:
+        monkey.undo()
+    board = json.loads(out.getvalue())
+    assert code == 1 and board["ok"] is False
+    assert board["built"] == 1 and board["failed"] == 1
+    assert (
+        list(board["failed_sources"]) == [SOURCE] and "BadReply" in board["failed_sources"][SOURCE]
+    )
+    reopened = db.Database(tmp_path / "transcript.sqlite")
+    try:
+        store = Store(reopened)
+        # one 6000-character section: the first reply's two claims, both in range
+        assert store.claim_count("bee:2") == 2 and store.claim_count(SOURCE) == 0
+        assert store.artifact(SOURCE, claims.NODE)["state"] == "failed"
+        (entry,) = claims.status(store, world.config, [SOURCE])
+        assert entry.state == "stale"
+    finally:
+        reopened.close()
+
+
 def test_the_spend_cap_stops_the_pass_before_the_first_call(world):
     capped = world.client(world.config | {"llm": {"max_usd_per_run": 0.0}})
     with pytest.raises(llm.SpendCapReached, match="per-run cap"):
