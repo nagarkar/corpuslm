@@ -450,8 +450,8 @@ def test_monologue_export_and_the_teleprompter_url(tmp_path, capsys, monkeypatch
 
     doc = document.FakeDocumentStore(tmp_path / "docs")
     doc.ensure("monologue-karma", tmp_path / "ms", "T")
-    doc.add_tab("monologue-karma", "script-1.md", "Script v1")
-    doc.write_tab("monologue-karma", "script-1.md", "# Script v1: T\n\nSpoken words here.\n")
+    doc.add_tab("monologue-karma", "script.md", "Script")
+    doc.write_tab("monologue-karma", "script.md", "# Script v1: T\n\nSpoken words here.\n")
     database = db.Database(tmp_path / "transcript.sqlite")
     Store(database).update_monologue(
         "karma", {"manuscript": "monologue-karma", "directory": str(tmp_path / "ms")}
