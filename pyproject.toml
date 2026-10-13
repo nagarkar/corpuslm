@@ -52,6 +52,7 @@ select = ["E", "F", "I", "B", "UP"]
 # The review page's CSS and script live in Python strings (corpuslm.review_page); their lines
 # are read by a browser, not a linter.
 "src/corpuslm/review_page.py" = ["E501"]
+"src/corpuslm/concepts_page.py" = ["E501"]
 
 [tool.pyright]
 include = ["src"]

@@ -30,6 +30,7 @@ from . import (
     claims,
     clikit,
     concepts,
+    concepts_page,
     db,
     llm,
     review_rebuilders,
@@ -502,6 +503,8 @@ def review_serve_board(settings: ReviewSettings, port: int | None, dry_run: bool
         "answers_waiting": waiting,
         "next": "corpuslm review apply --config " + str(settings.path),
     }
+    if settings.concepts is not None:
+        board["concepts_url"] = f"http://127.0.0.1:{chosen}/concepts"
     if dry_run:
         return None, board | {"note": "dry run: nothing was started"}
     note = _links_note(settings)
@@ -513,7 +516,23 @@ def review_serve_board(settings: ReviewSettings, port: int | None, dry_run: bool
         finally:
             fresh.close()
 
-    server = make_server("127.0.0.1", chosen, page=build_page, answers=Answers(settings.database))
+    pages = {}
+    if settings.concepts is not None:
+        config = settings.client_config()
+
+        def build_concepts_page() -> str:
+            fresh = db.Database(settings.database)
+            try:
+                store = Store(fresh)
+                ruled = [row for row in concepts.listing(store, config) if row.get("verdict")]
+                return concepts_page.render(concepts.summary(store, config), ruled)
+            finally:
+                fresh.close()
+
+        pages["/concepts"] = build_concepts_page
+    server = make_server(
+        "127.0.0.1", chosen, page=build_page, answers=Answers(settings.database), pages=pages
+    )
     return server, board
 
 

@@ -276,3 +276,14 @@ def test_concepts_verbs_count_rule_and_show_edges(tmp_path, capsys, monkeypatch)
     assert cli.main(["--json", "concepts", "edges", "nope", "--config", config]) == 1
     assert cli.main(["concepts", "status", "--config", config]) == 0
     assert "choice" not in capsys.readouterr().out.replace("Choice", "")  # a status shows counts
+
+
+def test_review_serve_dry_run_names_the_concepts_page_when_the_table_is_set(tmp_path, capsys):
+    config = _claims_world(tmp_path)
+    assert cli.main(["--json", "review", "serve", "--config", config, "--dry-run"]) == 0
+    board = _board(capsys)
+    assert board["concepts_url"].endswith("/concepts")
+    (tmp_path / "bare").mkdir()
+    bare = _claims_world(tmp_path / "bare", claims_table=False)
+    assert cli.main(["--json", "review", "serve", "--config", bare, "--dry-run"]) == 0
+    assert "concepts_url" not in _board(capsys)

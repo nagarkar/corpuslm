@@ -8,9 +8,10 @@ of the shared transcript database, through the Store. The page script picks it w
 is absent and a server answers; `corpuslm.review_apply` lands the saved answers and deletes them.
 
 Routes: `GET /` the page (built per request by the function the caller passes in), `GET /health`
-(with the time this server started, for `review check`), and one `POST /api/review` with
-`{"method": ..., "params": {...}}` dispatched to `Answers`. The page's script (never a second copy
-of the page) is the only client.
+(with the time this server started, for `review check`), any other page the caller passes in
+`pages` (`/concepts`, corpuslm.concepts_page, built per request too), and one `POST /api/review`
+with `{"method": ..., "params": {...}}` dispatched to `Answers`, whose `concept_verdict` method
+appends a concept ruling. The pages' scripts (never a second copy of a page) are the only clients.
 
 Never imports: cli, clikit, any model transport.
 
@@ -43,7 +44,7 @@ from __future__ import annotations
 import json
 import re
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -148,12 +149,31 @@ class Answers:
         finally:
             db.close()
 
+    def concept_verdict(self, key: object, verdict: object) -> dict:
+        """Append the owner's ruling on a boundary concept (corpuslm.concepts)."""
+        from . import concepts  # the server knows the lexicon only for this one call
+
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError("key is the concept's label or key")
+        if verdict not in ("in", "out"):
+            raise ValueError("verdict is in or out")
+        with self._lock:
+            db, store = self._store()
+            try:
+                return concepts.verdict(
+                    store, key, verdict, answered_through="phone page", created_by=CREATED_BY
+                )
+            finally:
+                db.close()
+
     def call(self, method: object, params: object) -> object:
         """Dispatch one API call. ValueError for a bad call, KeyError for a missing document."""
         if not isinstance(params, dict):
             raise ValueError("params must be an object")
         if method == "health":
             return {"status": "ok"}
+        if method == "concept_verdict":
+            return self.concept_verdict(params.get("key"), params.get("verdict"))
         if method == "get":
             found = self.get(params.get("path"))
             if found is None:
@@ -166,7 +186,7 @@ class Answers:
             return {"deleted": self.delete(params.get("path"))}
         if method == "list":
             return self.list(params.get("collection"))
-        raise ValueError("method must be one of: health, get, set, delete, list")
+        raise ValueError("method must be one of: health, get, set, delete, list, concept_verdict")
 
 
 def _is_time(text: str) -> bool:
@@ -185,9 +205,16 @@ def _host_is_this_machine(host_header: str) -> bool:
 
 
 def make_server(
-    host: str, port: int, *, page: Callable[[], str], answers: Answers
+    host: str,
+    port: int,
+    *,
+    page: Callable[[], str],
+    answers: Answers,
+    pages: Mapping[str, Callable[[], str]] | None = None,
 ) -> ThreadingHTTPServer:
-    """A server for `page` (called for every `GET /`) over `answers`. Loopback addresses only."""
+    """A server for `page` (called for every `GET /`) and each of `pages` (path -> builder, called
+    for every GET of that path) over `answers`. Loopback addresses only."""
+    extra = dict(pages or {})
     started_at = clock.iso(clock.utc_now())
     if host not in {"127.0.0.1", "::1", "localhost"}:
         raise ValueError(f"the review server binds the loopback address only, not {host!r}")
@@ -223,6 +250,8 @@ def make_server(
             elif self.path in ("/", "/index.html"):
                 html = page()
                 self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
+            elif self.path in extra:
+                self._send(200, extra[self.path]().encode("utf-8"), "text/html; charset=utf-8")
             else:
                 self._json(404, {"error": "not found"})
 
