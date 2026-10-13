@@ -146,7 +146,7 @@ def test_a_run_writes_a_script_tab_an_about_tab_and_the_run_row(world):
     assert (out["run"], out["unchanged"], out["tab"], out["paragraphs"], out["prior"]) == (
         1,
         False,
-        "script-1.md",
+        "script.md",
         2,
         "",
     )
@@ -154,9 +154,9 @@ def test_a_run_writes_a_script_tab_an_about_tab_and_the_run_row(world):
     row = world.store.monologue("karma-walk")
     assert (row["manuscript"], row["title"]) == ("monologue-karma-walk", "As of now")
     tabs = {tab["file"]: tab for tab in world.doc.read("monologue-karma-walk")["tabs"]}
-    assert set(tabs) == {"script-1.md", monologues.ABOUT}
+    assert set(tabs) == {"script.md", monologues.ABOUT}
     assert (
-        tabs["script-1.md"]["settled"] == "# Script v1: As of now\n\nI was walking with my son.\n\n"
+        tabs["script.md"]["settled"] == "# Script v1: As of now\n\nI was walking with my son.\n\n"
         "A choice is right only as of now.\n"
     )
     about = tabs[monologues.ABOUT]["settled"]
@@ -200,7 +200,7 @@ def test_a_changed_ingredient_runs_again_with_the_settled_prior_as_style_guide(w
     world.run()
     # the owner edits the script in the Doc (the fake lets a test write the settled text)
     world.doc.write_tab(
-        "monologue-karma-walk", "script-1.md",
+        "monologue-karma-walk", "script.md",
         "# Script v1: As of now\n\nI was walking with my son, as I often do.\n\n"
         "A choice is right only as of now.\n",
     )  # fmt: skip
@@ -218,9 +218,9 @@ def test_a_changed_ingredient_runs_again_with_the_settled_prior_as_style_guide(w
     )  # fmt: skip
     assert (out["run"], out["prior"], out["changes"], out["tab"]) == (
         2,
-        "script-1.md",
+        "script.md",
         ["brief changed"],
-        "script-2.md",
+        "script.md",
     )
     runs = world.store.monologue_runs(world.store.monologue("karma-walk")["id"])
     assert runs[1]["prior_run_id"] == runs[0]["id"]
@@ -229,8 +229,12 @@ def test_a_changed_ingredient_runs_again_with_the_settled_prior_as_style_guide(w
     assert len(cache) == 2
     payloads = " ".join(path.read_text() for path in cache)
     assert "as I often do" in payloads
-    tabs = {tab["file"] for tab in world.doc.read("monologue-karma-walk")["tabs"]}
-    assert tabs == {"script-1.md", "script-2.md", monologues.ABOUT}
+    tabs = {tab["file"]: tab for tab in world.doc.read("monologue-karma-walk")["tabs"]}
+    assert set(tabs) == {"script.md", monologues.ABOUT}
+    assert tabs["script.md"]["settled"].startswith("# Script v2: As of now\n\nRevised.")
+    assert (
+        "as I often do" in runs[1]["prior"] and runs[0]["prior"] == ""
+    )  # the edited prior is kept
     # a fresh run drops the prior
     monologues.attach(world.store, "karma-walk", body="a talk")
     world.script(f"karma-walk-{world.key()[:12]}")
@@ -238,7 +242,7 @@ def test_a_changed_ingredient_runs_again_with_the_settled_prior_as_style_guide(w
         world.store, world.client(), world.doc, "karma-walk",
         directory=world.root / "monologues" / "karma-walk", fresh=True, created_by="t",
     )  # fmt: skip
-    assert (fresh["run"], fresh["fresh"], fresh["prior"]) == (3, True, "script-2.md")
+    assert (fresh["run"], fresh["fresh"], fresh["prior"]) == (3, True, "script.md")
     assert (
         world.store.monologue_runs(world.store.monologue("karma-walk")["id"])[2]["prior_run_id"]
         == ""

@@ -10,13 +10,15 @@ or its claims build key (occasional). The ingredients hash keys `monologue_runs`
 ingredients return the stored run and spend nothing (nagarkar/corpuslm#50, milestone "Artifacts:
 monologues").
 
-The PRIOR is passed unhashed: the settled text of the latest script tab in the monologue's Doc,
-with the owner's edits, as a style and shape guide, with a note of what changed in the
-ingredients since that run; the recipe keeps the prior's voice, structure and phrasing where the
-new ingredients do not require otherwise and makes no gratuitous change. `--fresh` drops the
-prior for one run. Each run becomes a new tab of the monologue's own Doc (`Script v<n>`) through
-the document store; comments there go through authorlm's comment workflow and never trigger a
-run. `status` names what changed since the latest run.
+The PRIOR is passed unhashed: the settled text of the monologue's one script tab, with the
+owner's edits, as a style and shape guide, with a note of what changed in the ingredients since
+the last run; the recipe keeps the prior's voice, structure and phrasing where the new
+ingredients do not require otherwise and makes no gratuitous change. `--fresh` drops the prior
+for one run. Each run rewrites that one tab (`Script`) whole through the document store, and the
+run row keeps both the prior it was given and its output, so the history is the runs table, not
+the Doc (owner, 2026-10-13: an earlier version's comments are irrelevant once a new one exists).
+Comments on the tab go through authorlm's comment workflow and never trigger a run. `status`
+names what changed since the latest run.
 
 Never imports: cli, clikit. Reads the database only through `Store`; reaches the Doc only
 through `corpuslm.document`.
@@ -39,7 +41,8 @@ Terms:
   claims, bodies with their sheet version or claims key.
 - **prior**: the latest script tab's settled text, the style guide for the next run; not
   hashed.
-- **run**: one execution of the recipe, a row of `monologue_runs` and a script tab.
+- **run**: one execution of the recipe, a row of `monologue_runs` holding the prior it was given
+  and its output; the script tab shows the latest.
 """
 
 from __future__ import annotations
@@ -57,6 +60,7 @@ from .store import Store
 
 STAGE = "monologue"
 ABOUT = "about.md"
+SCRIPT = "script.md"
 DEFAULT_MINUTES = 4
 WORDS_PER_MINUTE = 150
 EXCERPT_CHARS = 2500  # of a moment's span shown to the model
@@ -348,19 +352,16 @@ def manuscript_name(row: dict) -> str:
 
 
 def _latest_script(doc: document.DocumentStore, row: dict) -> tuple[str, str]:
-    """(file, settled text) of the latest script tab; ('', '') when there is none."""
+    """(file, settled text) of the script tab; ('', '') when there is none."""
     if not row["manuscript"]:
         return "", ""
     try:
-        tabs = [
-            tab for tab in doc.read(row["manuscript"])["tabs"] if tab["file"].startswith("script-")
-        ]
+        tabs = {tab["file"]: tab for tab in doc.read(row["manuscript"])["tabs"]}
     except document.DocumentUnavailable:
         return "", ""
-    if not tabs:
+    if SCRIPT not in tabs:
         return "", ""
-    tabs.sort(key=lambda tab: int(re.sub(r"\D", "", tab["file"]) or 0))
-    return tabs[-1]["file"], tabs[-1]["settled"]
+    return SCRIPT, tabs[SCRIPT]["settled"]
 
 
 def _prior_text(settled: str) -> str:
@@ -449,14 +450,16 @@ def run(
     output = "\n\n".join(paragraphs)
     title = " ".join(reply.parsed["title"].split())
     number = len(runs) + 1
-    tab = f"script-{number}.md"
+    tab = SCRIPT
     manuscript = row["manuscript"] or manuscript_name(row)
     made = doc.ensure(manuscript, Path(directory), row["title"] or title)
     if not row["manuscript"]:
         store.update_monologue(row["name"], {"manuscript": manuscript, "directory": str(directory)})
     if not row["title"]:
         store.update_monologue(row["name"], {"title": title})
-    doc.add_tab(manuscript, tab, f"Script v{number}")
+    doc.add_tab(manuscript, tab, "Script")
+    # the one tab is rewritten whole: the owner's edits live on as the prior this run was
+    # given (kept on the run row) and nowhere else
     doc.write_tab(manuscript, tab, f"# Script v{number}: {title}\n\n{output}\n")
     run_id = store.add_monologue_run(
         row["id"],
@@ -469,6 +472,7 @@ def run(
             "prior_run_id": runs[-1]["id"] if (runs and not fresh) else "",
             "fresh": int(fresh),
             "title": title,
+            "prior": prior,
             "output": output,
             "tab": tab,
             "tokens_in": reply.tokens_in,

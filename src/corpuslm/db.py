@@ -315,6 +315,7 @@ CREATE TABLE IF NOT EXISTS monologue_runs (
     prior_run_id TEXT NOT NULL DEFAULT '',
     fresh INTEGER NOT NULL DEFAULT 0 CHECK (fresh IN (0, 1)),
     title TEXT NOT NULL DEFAULT '',
+    prior TEXT NOT NULL DEFAULT '',
     output TEXT NOT NULL,
     tab TEXT NOT NULL DEFAULT '',
     tokens_in INTEGER NOT NULL DEFAULT 0,
