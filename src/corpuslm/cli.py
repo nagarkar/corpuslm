@@ -4,7 +4,9 @@ review verbs `review page`, `review serve`, `review apply`, `review check` and
 `usage serve`, the claim verbs `claims build`, `claims status` and `claims import-digests`, and
 `text import` (a manuscript export as a text source), the concept verbs `concepts build`,
 `concepts status`, `concepts list`, `concepts edges` and `concepts verdict`, and the moment verbs
-`moments import`, `moments propose`, `moments status`, `moments list` and `moments verdict`.
+`moments import`, `moments propose`, `moments status`, `moments list` and `moments verdict`, the
+body-of-work verbs `body add` and `body list`, and the sheet verbs `sheet draft`, `sheet refresh`
+and `sheet status`.
 
 Verbs print a short board (counts, paths, next step), never content;
 `--json` anywhere on the line prints the board as JSON. The review verbs read one settings file
@@ -28,11 +30,13 @@ from datetime import datetime
 from pathlib import Path
 
 from . import (
+    bodies,
     claims,
     clikit,
     concepts,
     concepts_page,
     db,
+    document,
     llm,
     moments,
     moments_page,
@@ -202,6 +206,37 @@ DESCRIPTIONS |= {
     "moments verdict": (
         "Approve or decline one moment by id; the newest ruling wins. Appends a row.",
         "corpuslm moments verdict mom-abc123 --config /path/to/review.toml --approve",
+    ),
+    "body add": (
+        "Name a body of work a monologue may draw on: a standing one (a text source with "
+        "`--text`, or a corpus with `--corpus`), which may carry a perspective sheet in its own "
+        "manuscript (`--manuscript NAME --directory DIR`), or an occasional one (one source with "
+        "`--source`). `--note` is the owner's commitments note, in the owner's words.",
+        'corpuslm body add SMSTTD --text text:smsttd --manuscript SMSTTD --directory "/path/to/'
+        'manuscripts/SMSTTD" --config /path/to/review.toml',
+    ),
+    "body list": (
+        "The bodies of work used so far, most recently used first, with their kind, what they "
+        "are, whether they have a sheet, and the note. Read-only.",
+        "corpuslm body list --config /path/to/review.toml",
+    ),
+    "sheet draft": (
+        "Draft a standing body's perspective sheet (stances, moves, tone) in one model call "
+        "(billed; `[sheet]` plus the `[claims]` workspace and `[llm]` caps) and stage it as "
+        "revisions into the `Perspective sheet` tab of the body's manuscript, for the owner to "
+        "rule on in the Doc; the vocabulary section is written from the concepts in force. "
+        "A tab with open revisions takes none. `--dry-run` estimates and sends nothing.",
+        "corpuslm sheet draft SMSTTD --config /path/to/review.toml --dry-run",
+    ),
+    "sheet refresh": (
+        "Rewrite the sheet's vocabulary section from the concepts in force; the owner's prose "
+        "stays. No model.",
+        "corpuslm sheet refresh SMSTTD --config /path/to/review.toml",
+    ),
+    "sheet status": (
+        "The sheet as it stands: its version hash (recorded on the body when the resolved text "
+        "changed), its open revisions, and whether it has prose yet. Reads the Doc.",
+        "corpuslm sheet status SMSTTD --config /path/to/review.toml",
     ),
     "text import": (
         "Make or refresh a text source (a manuscript, paper or book) from a markdown export the "
@@ -452,6 +487,42 @@ def build_parser() -> argparse.ArgumentParser:
             ruling = sub.add_mutually_exclusive_group(required=True)
             ruling.add_argument("--approve", dest="ruling", action="store_const", const="approved")
             ruling.add_argument("--decline", dest="ruling", action="store_const", const="declined")
+    body_group = verbs.add_parser("body", help="bodies of work a monologue draws on: add, list")
+    body_verbs = body_group.add_subparsers(dest="body_verb", metavar="<subverb>")
+    body_add = leaf(body_verbs, "add", "name a body of work", "body add")
+    body_add.add_argument("name", metavar="NAME", help="the owner's name for it")
+    body_add.add_argument(
+        "--config", required=True, metavar="FILE", help="the review settings file"
+    )
+    what = body_add.add_mutually_exclusive_group(required=True)
+    what.add_argument("--text", metavar="SOURCE_ID", help="a text source (standing)")
+    what.add_argument("--corpus", metavar="CORPUS_NAME", help="a corpus (standing)")
+    what.add_argument("--source", metavar="SOURCE_ID", help="one source (occasional)")
+    body_add.add_argument("--note", default="", metavar="TEXT", help="the owner's commitments note")
+    body_add.add_argument(
+        "--manuscript", default="", metavar="NAME", help="the authorlm manuscript for the sheet"
+    )
+    body_add.add_argument("--directory", default="", metavar="DIR", help="that manuscript's folder")
+    body_list = leaf(body_verbs, "list", "the bodies of work used so far", "body list")
+    body_list.add_argument(
+        "--config", required=True, metavar="FILE", help="the review settings file"
+    )
+    sheet_group = verbs.add_parser(
+        "sheet", help="a standing body's perspective sheet: draft, refresh, status"
+    )
+    sheet_verbs = sheet_group.add_subparsers(dest="sheet_verb", metavar="<subverb>")
+    for name, help_text in (
+        ("draft", "draft the sheet and stage it as revisions (billed)"),
+        ("refresh", "rewrite the vocabulary section; no model"),
+        ("status", "the sheet's version and open revisions"),
+    ):
+        sub = leaf(sheet_verbs, name, help_text, f"sheet {name}")
+        sub.add_argument("body", metavar="BODY", help="the body of work's name")
+        sub.add_argument("--config", required=True, metavar="FILE", help="the review settings file")
+        if name == "draft":
+            sub.add_argument(
+                "--dry-run", action="store_true", help="estimate; send and write nothing"
+            )
     text_group = verbs.add_parser("text", help="text sources (manuscripts, papers, books): import")
     text_verbs = text_group.add_subparsers(dest="text_verb", metavar="<subverb>")
     text_import = leaf(text_verbs, "import", "a markdown export as a text source", "text import")
@@ -1072,6 +1143,108 @@ def concepts_verdict_board(settings: ReviewSettings, label: str, ruling: str) ->
         database.close()
 
 
+def _document_store(settings: ReviewSettings) -> document.DocumentStore:
+    if settings.claims is None:
+        raise SettingsError(
+            f"{settings.path}: [claims] is missing; its workspace is where the document store "
+            "keeps its state"
+        )
+    return document.store(settings.client_config(), settings.claims.workspace, origin="corpuslm")
+
+
+def body_add_board(settings: ReviewSettings, namespace) -> dict:
+    database = _open_existing(settings)
+    try:
+        store = Store(database)
+        corpus_id = None
+        if namespace.corpus:
+            corpus = store.corpus_by_name(namespace.corpus, exact=True)
+            if corpus is None:
+                raise ValueError(f"unknown corpus {namespace.corpus!r}")
+            corpus_id = corpus["id"]
+        out = bodies.add(
+            store,
+            namespace.name,
+            text_source_id=namespace.text,
+            corpus_id=corpus_id,
+            source_id=namespace.source,
+            note=namespace.note,
+            manuscript=namespace.manuscript,
+            directory=namespace.directory,
+            created_by="corpuslm",
+        )
+        return {"verb": "body add", "ok": True} | out
+    finally:
+        database.close()
+
+
+def body_list_board(settings: ReviewSettings) -> dict:
+    database = _open_existing(settings)
+    try:
+        rows = bodies.listing(Store(database))
+        return {"verb": "body list", "ok": True, "count": len(rows), "bodies": rows}
+    finally:
+        database.close()
+
+
+def sheet_draft_board(settings: ReviewSettings, name: str, dry_run: bool) -> dict:
+    if settings.sheet is None:
+        raise SettingsError(f"{settings.path}: [sheet] is missing; add model")
+    database = _open_existing(settings)
+    try:
+        store = Store(database)
+        client = _claims_client(settings, "sheet draft")
+        estimate = bodies.estimate(store, client, name)
+        board = {
+            "verb": "sheet draft",
+            "ok": True,
+            "body": name,
+            "claims_sampled": estimate.claims,
+            "concepts": estimate.concepts,
+            "tokens_in": estimate.tokens_in,
+            "tokens_out_assumed": estimate.tokens_out,
+            "estimated_usd": estimate.usd,
+            "from_cache": estimate.cached,
+            "model": estimate.model,
+            "caps": settings.llm,
+        }
+        if dry_run:
+            return board | {"status": "dry-run", "note": "dry run: nothing was sent or written"}
+        out = bodies.draft(store, client, _document_store(settings), name, created_by="corpuslm")
+        return (
+            board
+            | out
+            | {
+                "next": "rule on the revisions in the Doc, then: corpuslm sheet status "
+                + name
+                + " --config "
+                + str(settings.path)
+            }
+        )
+    finally:
+        database.close()
+
+
+def sheet_refresh_board(settings: ReviewSettings, name: str) -> dict:
+    database = _open_existing(settings)
+    try:
+        out = bodies.refresh_vocabulary(
+            Store(database), _document_store(settings), name, settings.client_config()
+        )
+        return {"verb": "sheet refresh", "ok": True} | out
+    finally:
+        database.close()
+
+
+def sheet_status_board(settings: ReviewSettings, name: str) -> dict:
+    database = _open_existing(settings)
+    try:
+        out = bodies.status(Store(database), _document_store(settings), name)
+        return {"verb": "sheet status", "ok": True} | out
+    finally:
+        database.close()
+
+
 def _moments_client(settings: ReviewSettings, verb: str) -> llm.Client:
     if settings.moments is None:
         raise SettingsError(
@@ -1276,6 +1449,14 @@ def main(argv: list[str] | None = None) -> int:
             text, code = clikit.help_text(parser, PROG, ["usage"])
             print(text, end="")
             return code
+        if namespace.verb == "body" and namespace.body_verb is None:
+            text, code = clikit.help_text(parser, PROG, ["body"])
+            print(text, end="")
+            return code
+        if namespace.verb == "sheet" and namespace.sheet_verb is None:
+            text, code = clikit.help_text(parser, PROG, ["sheet"])
+            print(text, end="")
+            return code
         if namespace.verb == "moments" and namespace.moments_verb is None:
             text, code = clikit.help_text(parser, PROG, ["moments"])
             print(text, end="")
@@ -1293,6 +1474,24 @@ def main(argv: list[str] | None = None) -> int:
             print(text, end="")
             return code
         settings = load(Path(namespace.config))
+        if namespace.verb == "body":
+            board = (
+                body_add_board(settings, namespace)
+                if namespace.body_verb == "add"
+                else body_list_board(settings)
+            )
+            _print(board, as_json)
+            return 0
+        if namespace.verb == "sheet":
+            match namespace.sheet_verb:
+                case "draft":
+                    board = sheet_draft_board(settings, namespace.body, namespace.dry_run)
+                case "refresh":
+                    board = sheet_refresh_board(settings, namespace.body)
+                case _:
+                    board = sheet_status_board(settings, namespace.body)
+            _print(board, as_json)
+            return 0
         if namespace.verb == "moments":
             match namespace.moments_verb:
                 case "import":
@@ -1397,6 +1596,7 @@ def main(argv: list[str] | None = None) -> int:
         OSError,
         ValueError,
         KeyError,
+        document.DocumentUnavailable,
     ) as error:
         _print({"verb": args[0], "ok": False, "error": str(error)}, as_json)
         return 1

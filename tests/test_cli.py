@@ -136,6 +136,7 @@ def _claims_world(tmp_path, *, claims_table: bool = True) -> str:
             "[llm]\nmax_usd_per_run = 1.0\n"
             '[concepts]\nmodel = "gemini/gemini-2.5-flash-lite"\nmin_sections = 1\nmin_claims = 1\n'
             '[moments]\nmodel = "gemini/gemini-2.5-flash-lite"\n'
+            '[sheet]\nmodel = "gemini/gemini-2.5-flash-lite"\n'
             if claims_table
             else ""
         )
@@ -332,3 +333,41 @@ def test_moments_verbs_import_count_list_and_rule(tmp_path, capsys, monkeypatch)
     assert board["status"] == "dry-run" and board["sources_to_build"] == 1  # the imported video
     assert cli.main(["--json", "review", "serve", "--config", config, "--dry-run"]) == 0
     assert _board(capsys)["moments_url"].endswith("/moments")
+
+
+def test_body_and_sheet_verbs_against_the_fake_document_store(tmp_path, capsys, monkeypatch):
+    from corpuslm.store import Store
+
+    monkeypatch.setattr("corpuslm.document.FAKE_DIR", tmp_path / "docs")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    config = _claims_world(tmp_path)
+    database = db.Database(tmp_path / "transcript.sqlite")
+    Store(database).add_source("text:book", "l", created_by="t", kind="text")
+    database.close()
+    assert cli.main(["--json", "body", "add", "Book", "--text", "text:book", "--manuscript", "Book",
+                     "--directory", str(tmp_path / "ms"), "--note", "the standing one",
+                     "--config", config]) == 0  # fmt: skip
+    assert _board(capsys)["kind"] == "standing"
+    assert cli.main(["--json", "body", "add", "Talk", "--source", "bee:1", "--config", config]) == 0
+    assert _board(capsys)["kind"] == "occasional"
+    assert cli.main(["--json", "body", "add", "Nope", "--corpus", "nope", "--config", config]) == 1
+    assert "unknown corpus" in _board(capsys)["error"]
+    assert cli.main(["--json", "body", "list", "--config", config]) == 0
+    board = _board(capsys)
+    assert [(b["name"], b["kind"], b["sheet"]) for b in board["bodies"]] == [
+        ("Book", "standing", "tab"), ("Talk", "occasional", "no")
+    ]  # fmt: skip
+    assert cli.main(["--json", "sheet", "draft", "Book", "--config", config, "--dry-run"]) == 0
+    board = _board(capsys)
+    assert board["status"] == "dry-run" and board["claims_sampled"] == 0 and board["tokens_in"] > 0
+    assert cli.main(["--json", "sheet", "status", "Book", "--config", config]) == 0
+    assert _board(capsys)["sheet"] == "none"  # no tab yet
+    assert cli.main(["--json", "sheet", "draft", "Book", "--config", config]) == 1
+    assert "GEMINI_API_KEY is not set" in _board(capsys)["error"]  # the tab's skeleton is made
+    assert cli.main(["--json", "sheet", "refresh", "Book", "--config", config]) == 0
+    assert _board(capsys)["vocabulary"] == 0
+    assert cli.main(["--json", "sheet", "status", "Book", "--config", config]) == 0
+    board = _board(capsys)
+    assert board["sheet"] == "empty" and len(board["version"]) == 64
+    assert cli.main(["--json", "sheet", "status", "Talk", "--config", config]) == 0
+    assert _board(capsys)["sheet"] == "none"

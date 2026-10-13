@@ -167,7 +167,7 @@ keep lineage.
 
 ## Migrations: user_version, a verified backup, one transaction (2026-10-03)
 
-The schema version is `PRAGMA user_version` (`db.USER_VERSION`, now 13; a
+The schema version is `PRAGMA user_version` (`db.USER_VERSION`, now 14; a
 database made before it was tracked reads 0 and has the v1 schema, frozen
 in `tests/fixtures/schema_v1.sql`). On open, `db.migrate`:
 
@@ -245,6 +245,19 @@ The v12 → v13 step is additive: after the verified backup it creates `moments`
 trigger of `moment_verdicts`, in one transaction, and sets `user_version` 13 inside it.
 `moment_verdicts` is an owner table from then on. `corpuslm moments import` and `corpuslm moments
 propose` fill `moments`; the owner's taps fill the verdicts.
+
+The v13 → v14 step is additive: after the verified backup it creates `bodies_of_work` (empty)
+with its change-log trigger, in one transaction, and sets `user_version` 14 inside it. `corpuslm
+body add` fills it.
+
+Proof of the v13 → v14 step on a copy of the real database (2026-10-13, taken at version 10 while
+the YouTube claim pass was running, so the copy took the v11 to v14 steps in one transaction; 300
+sources, 27,731 claims): the backup was written first and verified, every one of the 840,754 rows
+in every table kept its table's count, `bodies_of_work` appeared empty, `foreign_key_check` was
+empty, `integrity_check` read `ok`, and the triggers and views went from 39 to 46. On the same
+copy, `body add SMSTTD --text text:smsttd` named the standing body with its manuscript, and
+`sheet draft --dry-run` priced the draft at a fraction of a cent before any claims exist for the
+text source.
 
 Proof of the v12 → v13 step on a copy of the real database (2026-10-13, taken at version 10 while
 the first YouTube claim pass was running, so the copy took the v11, v12 and v13 steps in one
@@ -505,6 +518,29 @@ setting `metadata.merged_from` to the folded corpus's id, so the change log reco
 move. The folded corpus's row, lists and members, whole, are appended to the target
 corpus's `metadata.merged_from` before the folded rows are deleted: nothing a corpus
 held is lost with its row.
+
+### `bodies_of_work`
+
+History: master.
+
+A body of work (corpuslm.bodies): a reference a monologue draws on. A standing one (a manuscript
+as a text source, or a corpus) carries a perspective sheet in its own manuscript's tab; an
+occasional one (a single source) does not. Exactly one of `text_source_id`, `corpus_id` and
+`source_id` is set. The history of use is written by the monologues that drew on it (`last_used_at`).
+
+| column | type | null | meaning |
+|---|---|---|---|
+| (base) | | | |
+| name | TEXT | no | the owner's name for it; unique |
+| kind | TEXT | no | one of `standing`, `occasional` |
+| text_source_id | TEXT | yes | the text source (a manuscript export) it is, when it is one |
+| corpus_id | TEXT | yes | the corpus it is, when it is one |
+| source_id | TEXT | yes | the single source it is, when it is one |
+| note | TEXT | no | the owner's commitments note, in the owner's words |
+| manuscript | TEXT | no | the authorlm manuscript whose tab holds the sheet; `''` when none |
+| directory | TEXT | no | that manuscript's folder; `''` when none |
+| sheet_sha256 | TEXT | no | the hash of the resolved sheet text, the sheet version; `''` when none |
+| last_used_at | TEXT | no | when a monologue last drew on it; `''` when never |
 
 ### `review_answers`
 
@@ -902,6 +938,8 @@ segment changed, so it carries the previous hash):
 | `run-0a1b2c3d4e5f` | `cli` | `sources:1` | `running` | `2026-10-02T09:12:40Z` | NULL | 1 | NULL | `` |
 
 ## Changes
+
+- 2026-10-13: Version 14 (nagarkar/corpuslm#49): `bodies_of_work` (master): the references a monologue draws on, standing ones with a perspective sheet in their manuscript's tab, occasional ones without; the history of use
 
 - 2026-10-13: Version 13 (nagarkar/corpuslm#48): `moments` (derived) and `moment_verdicts` (append-only, an owner table): one span of one source with a one-line insight, proposed by a model or imported from the owner's notes, approved or declined by the owner
 

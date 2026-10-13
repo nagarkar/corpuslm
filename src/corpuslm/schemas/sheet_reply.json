@@ -1,0 +1,30 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "corpuslm.sheet_reply/1",
+ "title": "perspective sheet reply",
+ "description": "What the sheet model returns for one body of work (corpuslm.bodies): the stances, the moves and the tone, as paragraphs.",
+ "type": "object",
+ "additionalProperties": false,
+ "required": ["stances", "moves", "tone"],
+ "properties": {
+  "stances": {
+   "type": "array",
+   "description": "Four to eight paragraphs, one stance each.",
+   "items": {"type": "string", "description": "One paragraph.", "minLength": 1},
+   "minItems": 1,
+   "maxItems": 12
+  },
+  "moves": {
+   "type": "array",
+   "description": "Three to six paragraphs, one habitual move each.",
+   "items": {"type": "string", "description": "One paragraph.", "minLength": 1},
+   "minItems": 1,
+   "maxItems": 10
+  },
+  "tone": {
+   "type": "string",
+   "description": "One paragraph on the voice.",
+   "minLength": 1
+  }
+ }
+}
