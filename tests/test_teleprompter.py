@@ -23,8 +23,8 @@ def made(tmp_path):
 
 def _script(store, doc, tmp_path, text="# Script v1: As of now\n\nOne.\n\nTwo & three.\n"):
     doc.ensure("monologue-karma-walk", tmp_path / "ms", "As of now")
-    doc.add_tab("monologue-karma-walk", "script-1.md", "Script v1")
-    doc.write_tab("monologue-karma-walk", "script-1.md", text)
+    doc.add_tab("monologue-karma-walk", "script.md", "Script")
+    doc.write_tab("monologue-karma-walk", "script.md", text)
     store.update_monologue(
         "karma-walk", {"manuscript": "monologue-karma-walk", "directory": str(tmp_path / "ms")}
     )
@@ -37,7 +37,7 @@ def test_export_writes_the_settled_text_with_the_monologue_id_in_the_header(made
     _script(store, doc, tmp_path)
     out = monologues.export(store, doc, "karma-walk", tmp_path / "out.txt")
     assert (out["tab"], out["words"], out["open_revisions"], out["note"]) == (
-        "script-1.md",
+        "script.md",
         4,
         0,
         "",
@@ -45,10 +45,10 @@ def test_export_writes_the_settled_text_with_the_monologue_id_in_the_header(made
     text = (tmp_path / "out.txt").read_text()
     row = store.monologue("karma-walk")
     assert text.startswith(
-        f"monologue: {row['id']}\nname: karma-walk\ntitle: As of now\ntab: script-1.md\n\n"
+        f"monologue: {row['id']}\nname: karma-walk\ntitle: As of now\ntab: script.md\n\n"
     )
     assert text.endswith("One.\n\nTwo & three.\n") and "# Script" not in text
-    doc.stage("monologue-karma-walk", "script-1.md", [{"old": "", "new": "Added.", "after": 2}])
+    doc.stage("monologue-karma-walk", "script.md", [{"old": "", "new": "Added.", "after": 2}])
     out = monologues.export(store, doc, "karma-walk")
     assert out["open_revisions"] == 1 and "open revisions" in out["note"]
     assert out["path"].endswith("ms/karma-walk.teleprompter.txt")
