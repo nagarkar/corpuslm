@@ -1315,6 +1315,26 @@ class Store:
         )
         return None if row is None else dict(row)
 
+    def sources_sharing_concepts(
+        self, keys: Sequence[str], *, kind: str | None = None
+    ) -> list[dict]:
+        """Sources (of `kind` when given) whose claims carry any of the concepts `keys`, most
+        shared first: source id, title, published_at, and the keys shared."""
+        if not keys:
+            return []
+        marks = ", ".join("?" for _ in keys)
+        rows = self.db.all(
+            "SELECT c.source_id AS source_id, o.title AS title, o.published_at AS published_at, "
+            "json_group_array(DISTINCT p.key) AS concepts "
+            "FROM claim_concepts t JOIN concepts p ON p.id = t.concept_id "
+            "JOIN claims c ON c.id = t.claim_id JOIN sources o ON o.id = c.source_id "
+            f"WHERE p.key IN ({marks}) AND o.status <> 'ignored' "
+            + ("AND o.kind = ? " if kind else "")
+            + "GROUP BY c.source_id ORDER BY COUNT(DISTINCT p.key) DESC, o.published_at DESC",
+            [*keys] + ([kind] if kind else []),
+        )
+        return [dict(row) | {"concepts": loads(row["concepts"], [])} for row in rows]
+
     # ---- segments and search (derived index) ---------------------------------------
 
     def replace_segments(self, source_id: str, segments: Iterable[dict]) -> None:

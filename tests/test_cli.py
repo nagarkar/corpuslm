@@ -465,4 +465,6 @@ def test_monologue_export_and_the_teleprompter_url(tmp_path, capsys, monkeypatch
     board = _board(capsys)
     assert board["words"] == 3 and out.read_text().startswith("monologue: mon-")
     assert cli.main(["--json", "review", "serve", "--config", config, "--dry-run"]) == 0
-    assert _board(capsys)["teleprompter_url"].endswith("/teleprompter/<monologue>")
+    board = _board(capsys)
+    assert board["teleprompter_url"].endswith("/teleprompter/<monologue>")
+    assert board["monologues_url"].endswith("/monologues")

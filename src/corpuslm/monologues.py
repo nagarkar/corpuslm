@@ -541,6 +541,160 @@ def export(store: Store, doc: document.DocumentStore, name: str, to: Path | None
     }
 
 
+# ---- what to attach next (the new-monologue page, nagarkar/corpuslm#51) --------------------
+
+CANDIDATE_MOMENTS = 20
+CANDIDATE_SOURCES = 10
+_STOP = frozenset(
+    "the and that with this from what when where which about have been were they them "
+    "their there these those into over under some more most very just like also than then".split()
+)
+
+
+def brief_words(brief: str) -> list[str]:
+    """The words of the brief worth matching: four letters or more, not stop words, unique."""
+    words = re.findall(r"[a-z][a-z'-]{3,}", brief.lower())
+    return list(dict.fromkeys(word for word in words if word not in _STOP))
+
+
+def candidates(store: Store, name: str, config: dict | None = None) -> dict:
+    """What a monologue could draw on next: approved moments not yet attached, ranked by the
+    concepts they share with the attached ones and by the brief's words; bodies of work from
+    history, most used first; YouTube sources whose claims share those concepts or whose
+    transcript matches the brief. Reads only; the owner chooses on the page."""
+    row = _monologue(store, name)
+    attached_moments = store.monologue_moments(row["id"])
+    attached_keys = {(m["source_id"], m["subject_sha256"]) for m in attached_moments}
+    attached_concepts: dict[str, int] = {}
+    for moment in attached_moments:
+        for key in store.moment_concept_keys(moment):
+            attached_concepts[key] = attached_concepts.get(key, 0) + 1
+    words = brief_words(row["brief"])
+    verdicts = store.current_moment_verdicts()
+    moments = []
+    for moment in store.moments():
+        if (moment["source_id"], moment["subject_sha256"]) in attached_keys:
+            continue
+        if moments_module.state_of(verdicts.get(moment["subject_sha256"])) != "approved":
+            continue
+        keys = store.moment_concept_keys(moment)
+        shared = [key for key in keys if key in attached_concepts]
+        matched = [word for word in words if word in moment["insight"].lower()]
+        source = store.source(moment["source_id"]) or {}
+        moments.append(
+            {
+                "id": moment["id"],
+                "source_id": moment["source_id"],
+                "title": source.get("title") or "",
+                "date": (source.get("published_at") or "")[:10],
+                "insight": moment["insight"],
+                "concepts": keys,
+                "shared_concepts": shared,
+                "brief_words": matched,
+                "score": 2 * len(shared) + len(matched),
+            }
+        )
+    moments.sort(key=lambda m: (-m["score"], m["date"], m["source_id"]), reverse=False)
+    if not any(m["score"] for m in moments):
+        moments.sort(key=lambda m: m["date"], reverse=True)  # nothing matches: the most recent
+    attached_bodies = {body["id"] for body in store.monologue_bodies(row["id"])}
+    attached_sources = {
+        body["source_id"] for body in store.monologue_bodies(row["id"]) if body["source_id"]
+    }
+    uses = store.body_use_counts()
+    bodies = [
+        {
+            "name": body["name"],
+            "kind": body["kind"],
+            "used": uses.get(body["id"], 0),
+            "last_used_at": body["last_used_at"][:10],
+            "sheet": bool(body["sheet_sha256"]),
+            "reason": f"used {uses.get(body['id'], 0)} time(s)"
+            if uses.get(body["id"])
+            else "never used yet",
+        }
+        for body in store.bodies()
+        if body["id"] not in attached_bodies
+    ]
+    bodies.sort(key=lambda b: (-b["used"], b["kind"] != "standing", b["name"]))
+    sources: dict[str, dict] = {}
+    if attached_concepts:
+        for hit in store.sources_sharing_concepts(list(attached_concepts), kind="youtube"):
+            if hit["source_id"] in attached_sources:
+                continue
+            sources[hit["source_id"]] = {
+                "source_id": hit["source_id"],
+                "title": hit["title"],
+                "date": (hit["published_at"] or "")[:10],
+                "shared_concepts": hit["concepts"],
+                "full_text": False,
+                "score": 2 * len(hit["concepts"]),
+            }
+    if words:
+        query = " OR ".join(f'"{word}"' for word in words[:8])
+        try:
+            hits = store.search(query, corpus_id=None, limit=40, kind="youtube")
+        except Exception:  # noqa: BLE001 - FTS5 syntax: the brief is free text
+            hits = []
+        for hit in hits:
+            if hit["source_id"] in attached_sources:
+                continue
+            entry = sources.setdefault(
+                hit["source_id"],
+                {
+                    "source_id": hit["source_id"],
+                    "title": hit["title"],
+                    "date": (store.source(hit["source_id"]) or {}).get("published_at", "")[:10],
+                    "shared_concepts": [],
+                    "full_text": False,
+                    "score": 0,
+                },
+            )
+            if not entry["full_text"]:
+                entry["full_text"] = True
+                entry["score"] += 1
+    ranked = sorted(sources.values(), key=lambda s: (-s["score"], s["title"]))
+    return {
+        "name": row["name"],
+        "title": row["title"],
+        "brief": row["brief"],
+        "attached_moments": [
+            {
+                "id": m["id"],
+                "source_id": m["source_id"],
+                "insight": m["insight"],
+                "concepts": store.moment_concept_keys(m),
+            }
+            for m in attached_moments
+        ],
+        "attached_bodies": [
+            {"name": b["name"], "kind": b["kind"]} for b in store.monologue_bodies(row["id"])
+        ],
+        "moments": moments[:CANDIDATE_MOMENTS],
+        "bodies": bodies,
+        "sources": ranked[:CANDIDATE_SOURCES],
+        "concepts": sorted(attached_concepts, key=lambda k: -attached_concepts[k]),
+    }
+
+
+def attach_source(store: Store, name: str, source_id: str, *, created_by: str) -> dict:
+    """Attach one source as an occasional body of work, making the body `source:<id>` when
+    it does not exist yet."""
+    row = store.source(source_id)
+    if row is None:
+        raise KeyError(f"unknown source {source_id!r}")
+    body_name = f"source:{source_id}"
+    if store.body(body_name) is None:
+        bodies_module.add(
+            store,
+            body_name,
+            source_id=source_id,
+            note=row.get("title") or "",
+            created_by=created_by,
+        )
+    return attach(store, name, body=body_name)
+
+
 def about_text(store: Store, row: dict) -> str:
     """The code-owned about tab: what the monologue is made of and its runs."""
     lines = ["# About this monologue", "", OMIT_OPEN, "", f"Name: {row['name']}"]
@@ -593,6 +747,9 @@ __all__ = [
     "Status",
     "about_text",
     "attach",
+    "attach_source",
+    "brief_words",
+    "candidates",
     "changes_between",
     "create",
     "detach",

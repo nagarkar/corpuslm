@@ -72,9 +72,12 @@ class Answers:
     Each call opens its own connection and writes under a lock, so a call never sees another's
     half-written state."""
 
-    def __init__(self, database: Path):
+    def __init__(self, database: Path, settings=None):
         self.database = Path(database)
         self._lock = threading.Lock()
+        # the review settings (corpuslm.review_settings), for the monologue calls that need a
+        # model client and the document store; None leaves those calls declined
+        self.settings = settings
 
     def _store(self) -> tuple[Database, Store]:
         db = Database(self.database)
@@ -185,6 +188,121 @@ class Answers:
             finally:
                 db.close()
 
+    # -- the monologue pages' calls (corpuslm.monologue_page) --
+
+    def _monologue_name(self, params: dict) -> str:
+        name = params.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("name is the monologue's name")
+        return name
+
+    def monologue_new(self, params: dict) -> dict:
+        from . import monologues
+
+        brief = params.get("brief", "")
+        if not isinstance(brief, str) or len(brief) > MAX_VERDICT_CHARS * 10:
+            raise ValueError("brief is text")
+        with self._lock:
+            db, store = self._store()
+            try:
+                return monologues.create(
+                    store, self._monologue_name(params), brief=brief, created_by=CREATED_BY
+                )
+            finally:
+                db.close()
+
+    def monologue_brief(self, params: dict) -> dict:
+        from . import monologues
+
+        changes = {}
+        for key in ("brief", "title"):
+            value = params.get(key)
+            if value is None:
+                continue
+            if not isinstance(value, str) or len(value) > MAX_VERDICT_CHARS * 10:
+                raise ValueError(f"{key} is text")
+            changes[key] = value.strip()
+        with self._lock:
+            db, store = self._store()
+            try:
+                name = monologues.slug(self._monologue_name(params))
+                store.update_monologue(name, changes)
+                return {"name": name, "saved": sorted(changes)}
+            finally:
+                db.close()
+
+    def monologue_attach(self, params: dict, *, detach: bool = False) -> dict:
+        from . import monologues
+
+        name = self._monologue_name(params)
+        moment, body, source = params.get("moment"), params.get("body"), params.get("source")
+        given = [value for value in (moment, body, source) if value is not None]
+        if len(given) != 1 or not isinstance(given[0], str):
+            raise ValueError("give one of moment, body or source")
+        with self._lock:
+            db, store = self._store()
+            try:
+                if detach:
+                    if source is not None:
+                        body = f"source:{source}"
+                    return monologues.detach(store, name, moment_id=moment, body=body)
+                if source is not None:
+                    return monologues.attach_source(store, name, source, created_by=CREATED_BY)
+                return monologues.attach(store, name, moment_id=moment, body=body)
+            finally:
+                db.close()
+
+    def _monologue_tools(self):
+        """(client, document store, workspace) from the settings, for estimate and run."""
+        from . import document, llm
+
+        settings = self.settings
+        if settings is None or settings.claims is None or settings.monologue is None:
+            raise ValueError("the server was started without [claims] and [monologue] settings")
+        config = settings.client_config()
+        client = llm.Client(settings.claims.workspace, config, verb="monologue page")
+        doc = document.store(config, settings.claims.workspace, origin="corpuslm")
+        return client, doc, settings.claims.workspace
+
+    def monologue_estimate(self, params: dict) -> dict:
+        from . import monologues
+
+        name = self._monologue_name(params)
+        client, doc, _ = self._monologue_tools()
+        db, store = self._store()
+        try:
+            estimate = monologues.estimate(
+                store, client, doc, name, fresh=bool(params.get("fresh"))
+            )
+        finally:
+            db.close()
+        return {
+            "moments": estimate.moments,
+            "bodies": estimate.bodies,
+            "stored_run": estimate.stored,
+            "tokens_in": estimate.tokens_in,
+            "tokens_out_assumed": estimate.tokens_out,
+            "estimated_usd": estimate.usd,
+            "model": estimate.model,
+        }
+
+    def monologue_run(self, params: dict) -> dict:
+        """Billed: the owner's second tap after an estimate."""
+        from . import monologues
+
+        name = self._monologue_name(params)
+        client, doc, workspace = self._monologue_tools()
+        with self._lock:
+            db, store = self._store()
+            try:
+                return monologues.run(
+                    store, client, doc, name,
+                    directory=workspace / "monologues" / monologues.slug(name),
+                    fresh=bool(params.get("fresh")), created_by=CREATED_BY,
+                )  # fmt: skip
+            finally:
+                db.close()
+
     def call(self, method: object, params: object) -> object:
         """Dispatch one API call. ValueError for a bad call, KeyError for a missing document."""
         if not isinstance(params, dict):
@@ -195,6 +313,18 @@ class Answers:
             return self.concept_verdict(params.get("key"), params.get("verdict"))
         if method == "moment_verdict":
             return self.moment_verdict(params.get("id"), params.get("verdict"))
+        if method == "monologue_new":
+            return self.monologue_new(params)
+        if method == "monologue_brief":
+            return self.monologue_brief(params)
+        if method == "monologue_attach":
+            return self.monologue_attach(params)
+        if method == "monologue_detach":
+            return self.monologue_attach(params, detach=True)
+        if method == "monologue_estimate":
+            return self.monologue_estimate(params)
+        if method == "monologue_run":
+            return self.monologue_run(params)
         if method == "get":
             found = self.get(params.get("path"))
             if found is None:
@@ -208,7 +338,9 @@ class Answers:
         if method == "list":
             return self.list(params.get("collection"))
         raise ValueError(
-            "method must be one of: health, get, set, delete, list, concept_verdict, moment_verdict"
+            "method must be one of: health, get, set, delete, list, concept_verdict, "
+            "moment_verdict, monologue_new, monologue_brief, monologue_attach, "
+            "monologue_detach, monologue_estimate, monologue_run"
         )
 
 

@@ -41,6 +41,7 @@ from . import (
     llm,
     moments,
     moments_page,
+    monologue_page,
     monologues,
     review_rebuilders,
     teleprompter_page,
@@ -732,6 +733,7 @@ def review_serve_board(settings: ReviewSettings, port: int | None, dry_run: bool
         board["concepts_url"] = f"http://127.0.0.1:{chosen}/concepts"
     board["moments_url"] = f"http://127.0.0.1:{chosen}/moments"
     board["teleprompter_url"] = f"http://127.0.0.1:{chosen}/teleprompter/<monologue>"
+    board["monologues_url"] = f"http://127.0.0.1:{chosen}/monologues"
     if dry_run:
         return None, board | {"note": "dry run: nothing was started"}
     note = _links_note(settings)
@@ -781,12 +783,38 @@ def review_serve_board(settings: ReviewSettings, port: int | None, dry_run: bool
         finally:
             fresh.close()
 
-    prefixes = {"/teleprompter/": build_teleprompter}
+    def build_monologues_list() -> str:
+        fresh = db.Database(settings.database)
+        try:
+            config = settings.client_config() if settings.monologue is not None else None
+            doc = _document_store(settings) if settings.claims is not None else None
+            rows = (
+                monologues.listing(Store(fresh), doc, config)
+                if doc is not None
+                else [
+                    {"name": r["name"], "title": r["title"], "state": r["state"], "moments": 0,
+                     "bodies": [], "runs": 0}
+                    for r in Store(fresh).monologues()
+                ]
+            )  # fmt: skip
+            return monologue_page.render_list(rows)
+        finally:
+            fresh.close()
+
+    def build_monologue(name: str) -> str:
+        fresh = db.Database(settings.database)
+        try:
+            return monologue_page.render(monologues.candidates(Store(fresh), name))
+        finally:
+            fresh.close()
+
+    pages["/monologues"] = build_monologues_list
+    prefixes = {"/teleprompter/": build_teleprompter, "/monologues/": build_monologue}
     server = make_server(
         "127.0.0.1",
         chosen,
         page=build_page,
-        answers=Answers(settings.database),
+        answers=Answers(settings.database, settings),
         pages=pages,
         page_prefixes=prefixes,
     )
