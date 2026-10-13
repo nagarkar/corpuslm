@@ -40,7 +40,7 @@ from .identity import canonical_sha256  # noqa: F401  (re-exported: db.canonical
 
 # PRAGMA user_version of the schema below. 0 is a database made before the
 # version was tracked (the v1 schema, frozen in tests/fixtures/schema_v1.sql).
-USER_VERSION = 13
+USER_VERSION = 14
 
 BACKUPS_DIRNAME = "backups"
 # How many verified backups `<workspace>/backups/` keeps (owner ruling
@@ -259,6 +259,24 @@ SELECT * FROM moment_verdicts
 WHERE rowid IN (SELECT max(rowid) FROM moment_verdicts GROUP BY source_id, subject_sha256);
 """
 
+# Bodies of work (corpuslm.bodies): the references a monologue draws on, and the history of
+# which were used. Master data: the owner names them and writes their note.
+BODIES_TABLE = f"""CREATE TABLE IF NOT EXISTS bodies_of_work (
+    {KNOWLEDGE_OBJECT_COLUMNS},
+    name TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL CHECK (kind IN ('standing', 'occasional')),
+    text_source_id TEXT REFERENCES sources(id),
+    corpus_id TEXT REFERENCES corpora(id),
+    source_id TEXT REFERENCES sources(id),
+    note TEXT NOT NULL DEFAULT '',
+    manuscript TEXT NOT NULL DEFAULT '',
+    directory TEXT NOT NULL DEFAULT '',
+    sheet_sha256 TEXT NOT NULL DEFAULT '',
+    last_used_at TEXT NOT NULL DEFAULT '',
+    CHECK ((text_source_id IS NOT NULL) + (corpus_id IS NOT NULL) + (source_id IS NOT NULL) = 1)
+) STRICT;
+"""
+
 SOURCES_TABLE = f"""CREATE TABLE IF NOT EXISTS sources (
     {KNOWLEDGE_OBJECT_COLUMNS},
     kind TEXT NOT NULL DEFAULT 'youtube' CHECK (kind IN ('youtube', 'bee', 'text')),
@@ -473,6 +491,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS segments_fts USING fts5(
 {CONCEPTS_TABLES}
 
 {MOMENTS_TABLES}
+
+{BODIES_TABLE}
 """
 
 # Master data: every column whose change is written to change_log by trigger.
@@ -489,6 +509,10 @@ MASTER_COLUMNS: dict[str, tuple[str, ...]] = {
     "review_answers": ("verdict", "answered_at", "metadata"),
     "feeds": ("kind", "title", "last_scanned_at", "metadata"),
     "source_skips": ("feed_id", "title", "reason", "skipped_at", "lifted_at", "metadata"),
+    "bodies_of_work": (
+        "name", "kind", "text_source_id", "corpus_id", "source_id", "note", "manuscript",
+        "directory", "sheet_sha256", "last_used_at", "metadata",
+    ),
 }  # fmt: skip
 
 # Lists of a master row, one row per element: (table, parent column, the
@@ -884,6 +908,14 @@ def _v8_to_v9_script(connection: sqlite3.Connection) -> list[str]:
     return _rebuild_sources_script(connection, "sources_v9")
 
 
+def _v13_to_v14_script() -> list[str]:
+    """Additive: the bodies-of-work table (empty) and its change-log trigger."""
+    return [
+        *_statements(BODIES_TABLE),
+        _master_trigger("bodies_of_work", MASTER_COLUMNS["bodies_of_work"]),
+    ]
+
+
 def _v12_to_v13_script() -> list[str]:
     """Additive: the moment tables, their view and the append-only trigger of `moment_verdicts`
     (all empty; `corpuslm moments import` and `corpuslm moments propose` fill them)."""
@@ -1142,7 +1174,7 @@ def migrate(connection: sqlite3.Connection, db_path: Path) -> dict:
         return {"from": version, "to": USER_VERSION, "backup": None, "created": True}
     saved = backup(connection, db_path, label=f"before-v{USER_VERSION}")
     deleted = prune_backups(db_path)  # only after the new one verified
-    if version in (4, 5, 6, 7, 8, 9, 10, 11, 12):
+    if version in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13):
         # From v8 on, every step checks every table's row count (the v8 -> v9 and v10 -> v11
         # steps rebuild `sources`; the v9 -> v10 step is additive and nothing else may change).
         watched = (
@@ -1162,7 +1194,8 @@ def migrate(connection: sqlite3.Connection, db_path: Path) -> dict:
                 *(_v9_to_v10_script() if version <= 9 else []),
                 *(_v10_to_v11_script(column) if version <= 10 else []),
                 *(_v11_to_v12_script() if version <= 11 else []),
-                *_v12_to_v13_script(),
+                *(_v12_to_v13_script() if version <= 12 else []),
+                *_v13_to_v14_script(),
             ]
 
         if not _run_in_transaction(

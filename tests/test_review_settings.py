@@ -185,3 +185,10 @@ def test_the_moments_table_is_read_with_its_default(tmp_path):
         review_settings.load(write(tmp_path, GOOD + "[moments]\nmodel = 'm'\nmax_moments = 0\n"))
     with pytest.raises(SettingsError, match="model is missing"):
         review_settings.load(write(tmp_path, GOOD + "[moments]\nmax_moments = 3\n"))
+
+
+def test_the_sheet_table_is_read(tmp_path):
+    settings = review_settings.load(write(tmp_path, GOOD + CLAIMS + "[sheet]\nmodel = 'm'\n"))
+    assert settings.sheet.model == "m" and settings.client_config()["sheet"] == {"model": "m"}
+    with pytest.raises(SettingsError, match="model is missing"):
+        review_settings.load(write(tmp_path, GOOD + "[sheet]\n"))

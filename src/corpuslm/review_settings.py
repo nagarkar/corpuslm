@@ -45,6 +45,12 @@ sharing the `[claims]` workspace: the model and how many moments a source may ge
     model = "gemini/gemini-2.5-flash-lite"
     max_moments = 8
 
+An optional `[sheet]` table turns on the perspective sheet draft (`corpuslm sheet draft`), sharing
+the `[claims]` workspace: the model.
+
+    [sheet]
+    model = "gemini/gemini-2.5-flash-lite"
+
 An optional `[usage]` table tells the usage dashboard (`corpuslm.usage`) where each
 tool keeps its ledger folder, and where its own settings file holds the spend caps:
 
@@ -137,6 +143,13 @@ class MomentsSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class SheetSettings:
+    """`[sheet]`: the model of the perspective sheet draft."""
+
+    model: str
+
+
+@dataclass(frozen=True, slots=True)
 class ReviewSettings:
     database: Path
     port: int
@@ -147,6 +160,7 @@ class ReviewSettings:
     llm: dict[str, float] = field(default_factory=dict)
     concepts: ConceptsSettings | None = None
     moments: MomentsSettings | None = None
+    sheet: SheetSettings | None = None
 
     def client_config(self) -> dict:
         """What `corpuslm.llm.Client` reads: the `[claims]` stage section and the `[llm]` caps."""
@@ -156,6 +170,8 @@ class ReviewSettings:
                 "model": self.claims.model,
                 "section_chars": self.claims.section_chars,
             }
+        if self.sheet is not None:
+            config["sheet"] = {"model": self.sheet.model}
         if self.moments is not None:
             config["moments"] = {
                 "model": self.moments.model,
@@ -256,6 +272,13 @@ def _moments(raw: object, where: str) -> MomentsSettings:
     return MomentsSettings(_text(raw, "model", where), most)
 
 
+def _sheet(raw: object, where: str) -> SheetSettings:
+    if not isinstance(raw, dict):
+        raise SettingsError(f"{where}: must be a table")
+    _strict(raw, ("model",), where)
+    return SheetSettings(_text(raw, "model", where))
+
+
 def _llm(raw: object, where: str) -> dict[str, float]:
     if not isinstance(raw, dict):
         raise SettingsError(f"{where}: must be a table")
@@ -281,7 +304,7 @@ def load(path: Path) -> ReviewSettings:
         raise SettingsError(f"{path}: not valid TOML ({error})") from error
     _strict(
         raw,
-        ("database", "port", "kinds", "usage", "claims", "llm", "concepts", "moments"),
+        ("database", "port", "kinds", "usage", "claims", "llm", "concepts", "moments", "sheet"),
         str(path),
     )
     port = _port(raw, str(path), DEFAULT_PORT)
@@ -307,6 +330,7 @@ def load(path: Path) -> ReviewSettings:
     caps = _llm(raw["llm"], f"{path} [llm]") if "llm" in raw else {}
     concepts = _concepts(raw["concepts"], f"{path} [concepts]") if "concepts" in raw else None
     moments = _moments(raw["moments"], f"{path} [moments]") if "moments" in raw else None
+    sheet = _sheet(raw["sheet"], f"{path} [sheet]") if "sheet" in raw else None
     return ReviewSettings(
         Path(_text(raw, "database", str(path))).expanduser(),
         port,
@@ -317,6 +341,7 @@ def load(path: Path) -> ReviewSettings:
         caps,
         concepts,
         moments,
+        sheet,
     )
 
 
@@ -333,6 +358,7 @@ __all__ = [
     "ConceptsSettings",
     "DEFAULT_PORT",
     "MomentsSettings",
+    "SheetSettings",
     "DEFAULT_SECTION_CHARS",
     "DEFAULT_USAGE_PORT",
     "KindSettings",

@@ -1120,6 +1120,53 @@ class Store:
             )
         return {row["subject_sha256"]: row["verdict"] for row in rows}
 
+    # ---- bodies of work (corpuslm.bodies) ------------------------------------------------
+
+    def body(self, name: str) -> dict | None:
+        row = self.db.one("SELECT * FROM bodies_of_work WHERE name = ?", (name,))
+        return None if row is None else dict(row)
+
+    def bodies(self) -> list[dict]:
+        """Every body of work, most recently used first, then by name."""
+        return [
+            dict(row)
+            for row in self.db.all("SELECT * FROM bodies_of_work ORDER BY last_used_at DESC, name")
+        ]
+
+    def add_body(
+        self,
+        name: str,
+        kind: str,
+        *,
+        text_source_id: str | None = None,
+        corpus_id: str | None = None,
+        source_id: str | None = None,
+        note: str = "",
+        manuscript: str = "",
+        directory: str = "",
+        created_by: str,
+    ) -> str:
+        return self.db.insert(
+            "bodies_of_work",
+            standard_fields("bow", created_by=created_by)
+            | {
+                "name": name,
+                "kind": kind,
+                "text_source_id": text_source_id,
+                "corpus_id": corpus_id,
+                "source_id": source_id,
+                "note": note,
+                "manuscript": manuscript,
+                "directory": directory,
+            },
+        )
+
+    def update_body(self, name: str, changes: dict[str, Any]) -> None:
+        row = self.body(name)
+        if row is None:
+            raise KeyError(f"no body of work named {name!r}")
+        self.db.update("bodies_of_work", row["id"], changes)
+
     # ---- segments and search (derived index) ---------------------------------------
 
     def replace_segments(self, source_id: str, segments: Iterable[dict]) -> None:
