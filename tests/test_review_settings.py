@@ -150,3 +150,28 @@ def test_the_claims_and_llm_tables_are_read_and_are_optional(tmp_path):
 def test_a_wrong_claims_or_llm_table_is_named(tmp_path, addition, message):
     with pytest.raises(SettingsError, match=message):
         review_settings.load(write(tmp_path, GOOD + addition))
+
+
+def test_the_concepts_table_is_read_with_its_defaults(tmp_path):
+    settings = review_settings.load(write(tmp_path, GOOD + CLAIMS + "[concepts]\nmodel = 'm'\n"))
+    assert settings.concepts.model == "m"
+    assert (settings.concepts.min_sections, settings.concepts.min_claims) == (3, 5)
+    assert settings.concepts.batch_claims == 120
+    assert settings.client_config()["concepts"] == {
+        "model": "m", "min_sections": 3, "min_claims": 5, "batch_claims": 120
+    }  # fmt: skip
+    assert review_settings.load(write(tmp_path)).concepts is None
+
+
+@pytest.mark.parametrize(
+    ("addition", "message"),
+    [
+        ("[concepts]\nmin_sections = 3\n", "model is missing"),
+        ("[concepts]\nmodel = 'm'\nmin_claims = 0\n", "min_claims must be"),
+        ("[concepts]\nmodel = 'm'\nbatch_claims = 5\n", "batch_claims must be"),
+        ("[concepts]\nmodel = 'm'\nfoo = 1\n", "unknown key 'foo'"),
+    ],
+)
+def test_a_wrong_concepts_table_is_named(tmp_path, addition, message):
+    with pytest.raises(SettingsError, match=message):
+        review_settings.load(write(tmp_path, GOOD + addition))

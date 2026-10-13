@@ -29,6 +29,15 @@ ledgers; an optional `[llm]` table holds the spend caps the client enforces:
     max_usd_per_run = 1.0
     max_usd_per_day = 5.0
 
+An optional `[concepts]` table turns on the concept pass (`corpuslm concepts build`), which shares
+the `[claims]` workspace: the model, and the gate (`min_sections`, `min_claims`) and batch size:
+
+    [concepts]
+    model = "gemini/gemini-2.5-flash-lite"
+    min_sections = 3
+    min_claims = 5
+    batch_claims = 120
+
 An optional `[usage]` table tells the usage dashboard (`corpuslm.usage`) where each
 tool keeps its ledger folder, and where its own settings file holds the spend caps:
 
@@ -103,6 +112,16 @@ class ClaimsSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class ConceptsSettings:
+    """`[concepts]`: the model, the gate and the batch size of the concept pass."""
+
+    model: str
+    min_sections: int
+    min_claims: int
+    batch_claims: int
+
+
+@dataclass(frozen=True, slots=True)
 class ReviewSettings:
     database: Path
     port: int
@@ -111,6 +130,7 @@ class ReviewSettings:
     usage: UsageSettings | None = None
     claims: ClaimsSettings | None = None
     llm: dict[str, float] = field(default_factory=dict)
+    concepts: ConceptsSettings | None = None
 
     def client_config(self) -> dict:
         """What `corpuslm.llm.Client` reads: the `[claims]` stage section and the `[llm]` caps."""
@@ -119,6 +139,13 @@ class ReviewSettings:
             config["claims"] = {
                 "model": self.claims.model,
                 "section_chars": self.claims.section_chars,
+            }
+        if self.concepts is not None:
+            config["concepts"] = {
+                "model": self.concepts.model,
+                "min_sections": self.concepts.min_sections,
+                "min_claims": self.concepts.min_claims,
+                "batch_claims": self.concepts.batch_claims,
             }
         return config
 
@@ -181,6 +208,23 @@ def _claims(raw: object, where: str) -> ClaimsSettings:
     )
 
 
+def _concepts(raw: object, where: str) -> ConceptsSettings:
+    if not isinstance(raw, dict):
+        raise SettingsError(f"{where}: must be a table")
+    _strict(raw, ("model", "min_sections", "min_claims", "batch_claims"), where)
+    numbers = {}
+    for name, default, least in (
+        ("min_sections", 3, 1),
+        ("min_claims", 5, 1),
+        ("batch_claims", 120, 10),
+    ):
+        value = raw.get(name, default)
+        if isinstance(value, bool) or not isinstance(value, int) or value < least:
+            raise SettingsError(f"{where}: {name} must be a whole number of at least {least}")
+        numbers[name] = value
+    return ConceptsSettings(_text(raw, "model", where), **numbers)
+
+
 def _llm(raw: object, where: str) -> dict[str, float]:
     if not isinstance(raw, dict):
         raise SettingsError(f"{where}: must be a table")
@@ -204,7 +248,7 @@ def load(path: Path) -> ReviewSettings:
         raw = tomllib.loads(path.read_text("utf-8"))
     except tomllib.TOMLDecodeError as error:
         raise SettingsError(f"{path}: not valid TOML ({error})") from error
-    _strict(raw, ("database", "port", "kinds", "usage", "claims", "llm"), str(path))
+    _strict(raw, ("database", "port", "kinds", "usage", "claims", "llm", "concepts"), str(path))
     port = _port(raw, str(path), DEFAULT_PORT)
     kinds_table = raw.get("kinds")
     if not isinstance(kinds_table, dict) or not kinds_table:
@@ -226,8 +270,16 @@ def load(path: Path) -> ReviewSettings:
     usage = _usage(raw["usage"], f"{path} [usage]") if "usage" in raw else None
     claims = _claims(raw["claims"], f"{path} [claims]") if "claims" in raw else None
     caps = _llm(raw["llm"], f"{path} [llm]") if "llm" in raw else {}
+    concepts = _concepts(raw["concepts"], f"{path} [concepts]") if "concepts" in raw else None
     return ReviewSettings(
-        Path(_text(raw, "database", str(path))).expanduser(), port, kinds, path, usage, claims, caps
+        Path(_text(raw, "database", str(path))).expanduser(),
+        port,
+        kinds,
+        path,
+        usage,
+        claims,
+        caps,
+        concepts,
     )
 
 
@@ -241,6 +293,7 @@ def kind_setups(settings: ReviewSettings) -> dict[str, KindSetup]:
 
 __all__ = [
     "ClaimsSettings",
+    "ConceptsSettings",
     "DEFAULT_PORT",
     "DEFAULT_SECTION_CHARS",
     "DEFAULT_USAGE_PORT",

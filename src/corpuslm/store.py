@@ -13,7 +13,7 @@ readers return the newest row per slot."""
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from typing import Any
 
@@ -846,6 +846,140 @@ class Store:
             }
             for row in rows
         ]
+
+    # ---- concepts (derived lexicon, corpuslm.concepts) ------------------------------------
+
+    def concept(self, key: str) -> dict | None:
+        row = self.db.one("SELECT * FROM concepts WHERE key = ?", (key,))
+        return None if row is None else dict(row) | {"alternates": loads(row["alternates"], [])}
+
+    def concept_by_id(self, concept_id: str) -> dict | None:
+        row = self.db.one("SELECT * FROM concepts WHERE id = ?", (concept_id,))
+        return None if row is None else dict(row) | {"alternates": loads(row["alternates"], [])}
+
+    def concepts(self) -> list[dict]:
+        """Every concept, most used first."""
+        return [
+            dict(row) | {"alternates": loads(row["alternates"], [])}
+            for row in self.db.all(
+                "SELECT * FROM concepts ORDER BY claim_count DESC, section_count DESC, key"
+            )
+        ]
+
+    def concept_count(self) -> int:
+        return self._row("SELECT COUNT(*) AS n FROM concepts")["n"]
+
+    def upsert_concept(self, key: str, label: str, *, created_by: str) -> str:
+        """The concept id for `key`, made with `label` when new; a label that differs from the
+        stored one is kept as an alternate."""
+        row = self.db.one("SELECT id, label, alternates FROM concepts WHERE key = ?", (key,))
+        if row is None:
+            return self.db.insert(
+                "concepts",
+                standard_fields("cpt", created_by=created_by) | {"key": key, "label": label},
+            )
+        alternates = loads(row["alternates"], [])
+        if label != row["label"] and label not in alternates:
+            self.db.update("concepts", row["id"], {"alternates": json.dumps(alternates + [label])})
+        return row["id"]
+
+    def tag_claims(
+        self, tags: Mapping[str, Sequence[tuple[str, str]]], *, build_key: str, created_by: str
+    ) -> int:
+        """`tags` is claim id -> [(key, label), ...]. Each claim's tags are replaced whole, in
+        one transaction, with the concepts made as needed. Returns the tags written."""
+        written = 0
+        with self.db.transaction():
+            for claim_id, pairs in tags.items():
+                self.db.execute("DELETE FROM claim_concepts WHERE claim_id = ?", (claim_id,))
+                seen: set[str] = set()
+                for key, label in pairs:
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    concept_id = self.upsert_concept(key, label, created_by=created_by)
+                    self.db.execute(
+                        "INSERT INTO claim_concepts (claim_id, concept_id, build_key) "
+                        "VALUES (?, ?, ?)",
+                        (claim_id, concept_id, build_key),
+                    )
+                    written += 1
+        return written
+
+    def refresh_concept_counts(self) -> int:
+        """Recount every concept's sections, claims and sources from its tags. Returns how many
+        concepts have at least one tag."""
+        with self.db.transaction():
+            self.db.execute(
+                "UPDATE concepts SET section_count = 0, claim_count = 0, source_count = 0"
+            )
+            rows = self.db.all(
+                "SELECT t.concept_id AS concept_id, "
+                "COUNT(DISTINCT c.source_id || ':' || c.section) AS sections, "
+                "COUNT(DISTINCT c.id) AS claims, COUNT(DISTINCT c.source_id) AS sources "
+                "FROM claim_concepts t JOIN claims c ON c.id = t.claim_id GROUP BY t.concept_id"
+            )
+            for row in rows:
+                self.db.execute(
+                    "UPDATE concepts SET section_count = ?, claim_count = ?, source_count = ? "
+                    "WHERE id = ?",
+                    (row["sections"], row["claims"], row["sources"], row["concept_id"]),
+                )
+        return len(rows)
+
+    def claim_concept_keys(self, claim_id: str) -> list[str]:
+        return [
+            row["key"]
+            for row in self.db.all(
+                "SELECT p.key FROM claim_concepts t JOIN concepts p ON p.id = t.concept_id "
+                "WHERE t.claim_id = ? ORDER BY p.key",
+                (claim_id,),
+            )
+        ]
+
+    def concept_edges(self, concept_id: str) -> list[dict]:
+        """The concepts that share claims with `concept_id`, most shared first, each with the
+        count and the ids of the shared claims: the evidence, never an assertion."""
+        rows = self.db.all(
+            "SELECT b.concept_id AS concept_id, p.key AS key, p.label AS label, "
+            "COUNT(*) AS shared, json_group_array(a.claim_id) AS claim_ids "
+            "FROM claim_concepts a JOIN claim_concepts b ON b.claim_id = a.claim_id "
+            "AND b.concept_id <> a.concept_id JOIN concepts p ON p.id = b.concept_id "
+            "WHERE a.concept_id = ? GROUP BY b.concept_id ORDER BY shared DESC, p.key",
+            (concept_id,),
+        )
+        return [dict(row) | {"claim_ids": loads(row["claim_ids"], [])} for row in rows]
+
+    def concept_section_histogram(self) -> dict[int, int]:
+        """Section count -> how many concepts have it (the distribution the gate is set by)."""
+        return {
+            row["section_count"]: row["n"]
+            for row in self.db.all(
+                "SELECT section_count, COUNT(*) AS n FROM concepts GROUP BY section_count "
+                "ORDER BY section_count"
+            )
+        }
+
+    def append_concept_verdict(
+        self, concept_id: str, verdict: str, *, answered_through: str, created_by: str
+    ) -> str:
+        return self.db.insert(
+            "concept_verdicts",
+            standard_fields("cvr", created_by=created_by)
+            | {
+                "concept_id": concept_id,
+                "verdict": verdict,
+                "source": answered_through,
+                "applied_at": now_iso(),
+            },
+        )
+
+    def current_concept_verdicts(self) -> dict[str, str]:
+        """Concept id -> the verdict in force."""
+        return {
+            row["concept_id"]: row["verdict"]
+            for row in self.db.all("SELECT concept_id, verdict FROM vw_current_concept_verdicts")
+        }
 
     # ---- segments and search (derived index) ---------------------------------------
 

@@ -214,8 +214,8 @@ def test_a_version_10_database_is_rebuilt_so_a_text_source_can_be_added(tmp_path
     old.close()
     opened = db.Database(path)
     try:
-        assert opened.migration["from"] == 10 and opened.migration["to"] == db.USER_VERSION == 11
-        assert opened.migration["backup"].endswith("-before-v11.sqlite")
+        assert opened.migration["from"] == 10 and opened.migration["to"] == db.USER_VERSION == 12
+        assert opened.migration["backup"].endswith("-before-v12.sqlite")
         assert opened.one("PRAGMA integrity_check")[0] == "ok"
         assert opened.all("PRAGMA foreign_key_check") == []
         store = Store(opened)
