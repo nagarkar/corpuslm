@@ -5,7 +5,9 @@
  "description": "What the claims model returns for one section of a source (corpuslm.claims): the claims it makes, each tied to the section's lines by index.",
  "type": "object",
  "additionalProperties": false,
- "required": ["claims"],
+ "required": [
+  "claims"
+ ],
  "properties": {
   "claims": {
    "type": "array",
@@ -14,7 +16,12 @@
     "type": "object",
     "description": "One claim.",
     "additionalProperties": false,
-    "required": ["statement", "speaker", "segments", "kind"],
+    "required": [
+     "statement",
+     "speaker",
+     "segments",
+     "kind"
+    ],
     "properties": {
      "statement": {
       "type": "string",
@@ -27,19 +34,26 @@
      },
      "segments": {
       "type": "array",
-      "description": "Indexes of the lines the claim comes from, clearest first, at most six.",
+      "description": "Indexes of the lines the claim comes from, clearest first; the pass keeps the first six.",
       "items": {
        "type": "integer",
        "description": "A line index from the section.",
        "minimum": 0
       },
-      "minItems": 1,
-      "maxItems": 6
+      "minItems": 1
      },
      "kind": {
       "type": "string",
       "description": "One of assertion, definition, example, story, question, prediction, disagreement.",
-      "enum": ["assertion", "definition", "example", "story", "question", "prediction", "disagreement"]
+      "enum": [
+       "assertion",
+       "definition",
+       "example",
+       "story",
+       "question",
+       "prediction",
+       "disagreement"
+      ]
      }
     }
    }
