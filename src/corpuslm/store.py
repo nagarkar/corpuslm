@@ -18,6 +18,7 @@ from contextlib import contextmanager
 from typing import Any
 
 from .db import Database, loads, now_iso, standard_fields
+from .identity import canonical_sha256
 
 # A master row's lists: list name → (table, parent column, element columns).
 SOURCE_LISTS: dict[str, tuple[str, tuple[str, ...]]] = {
@@ -980,6 +981,144 @@ class Store:
             row["concept_id"]: row["verdict"]
             for row in self.db.all("SELECT concept_id, verdict FROM vw_current_concept_verdicts")
         }
+
+    # ---- moments (corpuslm.moments) ------------------------------------------------------
+
+    @staticmethod
+    def moment_subject(source_id: str, first_position: int, last_position: int) -> str:
+        """The hash that names a moment across rebuilds: its source and span."""
+        return canonical_sha256([source_id, int(first_position), int(last_position)])
+
+    def add_moment(
+        self,
+        source_id: str,
+        first_position: int,
+        last_position: int,
+        insight: str,
+        *,
+        origin: str,
+        build_key: str = "",
+        created_by: str,
+    ) -> str | None:
+        """A moment row; None when the source already has one for this span."""
+        subject = self.moment_subject(source_id, first_position, last_position)
+        if self.db.one(
+            "SELECT 1 FROM moments WHERE source_id = ? AND subject_sha256 = ?",
+            (source_id, subject),
+        ):
+            return None
+        return self.db.insert(
+            "moments",
+            standard_fields("mom", created_by=created_by)
+            | {
+                "source_id": source_id,
+                "first_position": int(first_position),
+                "last_position": int(last_position),
+                "insight": insight,
+                "origin": origin,
+                "subject_sha256": subject,
+                "build_key": build_key,
+            },
+        )
+
+    def replace_model_moments(
+        self, source_id: str, moments: Iterable[dict], *, build_key: str, created_by: str
+    ) -> int:
+        """The model's moments of one source, rebuilt whole in one transaction; the imported
+        ones are left alone. Each moment is `{"first", "last", "insight"}`. Returns how many
+        were written (a span the imported ones already hold is left out)."""
+        written = 0
+        with self.db.transaction():
+            self.db.execute(
+                "DELETE FROM moments WHERE source_id = ? AND origin = 'model'", (source_id,)
+            )
+            for moment in moments:
+                made = self.add_moment(
+                    source_id,
+                    moment["first"],
+                    moment["last"],
+                    moment["insight"],
+                    origin="model",
+                    build_key=build_key,
+                    created_by=created_by,
+                )
+                written += made is not None
+        return written
+
+    def moments(self, source_id: str | None = None, *, origin: str | None = None) -> list[dict]:
+        """Moments in order of source and span."""
+        clauses, args = [], []
+        if source_id is not None:
+            clauses.append("source_id = ?")
+            args.append(source_id)
+        if origin is not None:
+            clauses.append("origin = ?")
+            args.append(origin)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        return [
+            dict(row)
+            for row in self.db.all(
+                f"SELECT * FROM moments {where} ORDER BY source_id, first_position, last_position",
+                args,
+            )
+        ]
+
+    def moment(self, moment_id: str) -> dict | None:
+        row = self.db.one("SELECT * FROM moments WHERE id = ?", (moment_id,))
+        return None if row is None else dict(row)
+
+    def moment_count(self, source_id: str | None = None, *, origin: str | None = None) -> int:
+        return len(self.moments(source_id, origin=origin))
+
+    def moment_claims(self, moment: dict) -> list[dict]:
+        """The claims whose first cited segment lies in the moment's span."""
+        return [
+            claim
+            for claim in self.claims(moment["source_id"])
+            if claim["segments"]
+            and moment["first_position"] <= min(claim["segments"]) <= moment["last_position"]
+        ]
+
+    def moment_concept_keys(self, moment: dict) -> list[str]:
+        """The concepts the moment's claims use, most frequent first."""
+        counts: dict[str, int] = {}
+        for claim in self.moment_claims(moment):
+            for key in self.claim_concept_keys(claim["id"]):
+                counts[key] = counts.get(key, 0) + 1
+        return [key for key, _ in sorted(counts.items(), key=lambda item: (-item[1], item[0]))]
+
+    def append_moment_verdict(
+        self,
+        source_id: str,
+        subject_sha256: str,
+        verdict: str,
+        *,
+        answered_through: str,
+        created_by: str,
+    ) -> str:
+        return self.db.insert(
+            "moment_verdicts",
+            standard_fields("mvr", created_by=created_by)
+            | {
+                "source_id": source_id,
+                "subject_sha256": subject_sha256,
+                "verdict": verdict,
+                "source": answered_through,
+                "applied_at": now_iso(),
+            },
+        )
+
+    def current_moment_verdicts(self, source_id: str | None = None) -> dict[str, str]:
+        """Subject hash -> the verdict in force (one source, or every source)."""
+        if source_id is None:
+            rows = self.db.all("SELECT subject_sha256, verdict FROM vw_current_moment_verdicts")
+        else:
+            rows = self.db.all(
+                "SELECT subject_sha256, verdict FROM vw_current_moment_verdicts "
+                "WHERE source_id = ?",
+                (source_id,),
+            )
+        return {row["subject_sha256"]: row["verdict"] for row in rows}
 
     # ---- segments and search (derived index) ---------------------------------------
 

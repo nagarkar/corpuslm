@@ -38,6 +38,13 @@ the `[claims]` workspace: the model, and the gate (`min_sections`, `min_claims`)
     min_claims = 5
     batch_claims = 120
 
+An optional `[moments]` table turns on the moment proposal pass (`corpuslm moments propose`),
+sharing the `[claims]` workspace: the model and how many moments a source may get at most:
+
+    [moments]
+    model = "gemini/gemini-2.5-flash-lite"
+    max_moments = 8
+
 An optional `[usage]` table tells the usage dashboard (`corpuslm.usage`) where each
 tool keeps its ledger folder, and where its own settings file holds the spend caps:
 
@@ -122,6 +129,14 @@ class ConceptsSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class MomentsSettings:
+    """`[moments]`: the model and the most moments one source may get."""
+
+    model: str
+    max_moments: int
+
+
+@dataclass(frozen=True, slots=True)
 class ReviewSettings:
     database: Path
     port: int
@@ -131,6 +146,7 @@ class ReviewSettings:
     claims: ClaimsSettings | None = None
     llm: dict[str, float] = field(default_factory=dict)
     concepts: ConceptsSettings | None = None
+    moments: MomentsSettings | None = None
 
     def client_config(self) -> dict:
         """What `corpuslm.llm.Client` reads: the `[claims]` stage section and the `[llm]` caps."""
@@ -139,6 +155,11 @@ class ReviewSettings:
             config["claims"] = {
                 "model": self.claims.model,
                 "section_chars": self.claims.section_chars,
+            }
+        if self.moments is not None:
+            config["moments"] = {
+                "model": self.moments.model,
+                "max_moments": self.moments.max_moments,
             }
         if self.concepts is not None:
             config["concepts"] = {
@@ -225,6 +246,16 @@ def _concepts(raw: object, where: str) -> ConceptsSettings:
     return ConceptsSettings(_text(raw, "model", where), **numbers)
 
 
+def _moments(raw: object, where: str) -> MomentsSettings:
+    if not isinstance(raw, dict):
+        raise SettingsError(f"{where}: must be a table")
+    _strict(raw, ("model", "max_moments"), where)
+    most = raw.get("max_moments", 8)
+    if isinstance(most, bool) or not isinstance(most, int) or not 1 <= most <= 50:
+        raise SettingsError(f"{where}: max_moments must be a whole number from 1 to 50")
+    return MomentsSettings(_text(raw, "model", where), most)
+
+
 def _llm(raw: object, where: str) -> dict[str, float]:
     if not isinstance(raw, dict):
         raise SettingsError(f"{where}: must be a table")
@@ -248,7 +279,11 @@ def load(path: Path) -> ReviewSettings:
         raw = tomllib.loads(path.read_text("utf-8"))
     except tomllib.TOMLDecodeError as error:
         raise SettingsError(f"{path}: not valid TOML ({error})") from error
-    _strict(raw, ("database", "port", "kinds", "usage", "claims", "llm", "concepts"), str(path))
+    _strict(
+        raw,
+        ("database", "port", "kinds", "usage", "claims", "llm", "concepts", "moments"),
+        str(path),
+    )
     port = _port(raw, str(path), DEFAULT_PORT)
     kinds_table = raw.get("kinds")
     if not isinstance(kinds_table, dict) or not kinds_table:
@@ -271,6 +306,7 @@ def load(path: Path) -> ReviewSettings:
     claims = _claims(raw["claims"], f"{path} [claims]") if "claims" in raw else None
     caps = _llm(raw["llm"], f"{path} [llm]") if "llm" in raw else {}
     concepts = _concepts(raw["concepts"], f"{path} [concepts]") if "concepts" in raw else None
+    moments = _moments(raw["moments"], f"{path} [moments]") if "moments" in raw else None
     return ReviewSettings(
         Path(_text(raw, "database", str(path))).expanduser(),
         port,
@@ -280,6 +316,7 @@ def load(path: Path) -> ReviewSettings:
         claims,
         caps,
         concepts,
+        moments,
     )
 
 
@@ -295,6 +332,7 @@ __all__ = [
     "ClaimsSettings",
     "ConceptsSettings",
     "DEFAULT_PORT",
+    "MomentsSettings",
     "DEFAULT_SECTION_CHARS",
     "DEFAULT_USAGE_PORT",
     "KindSettings",

@@ -2,8 +2,9 @@
 review verbs `review page`, `review serve`, `review apply`, `review check` and
 `review accept-suggestions`, `suggestions record`, the usage verbs `usage show` and
 `usage serve`, the claim verbs `claims build`, `claims status` and `claims import-digests`, and
-`text import` (a manuscript export as a text source), and the concept verbs `concepts build`,
-`concepts status`, `concepts list`, `concepts edges` and `concepts verdict`.
+`text import` (a manuscript export as a text source), the concept verbs `concepts build`,
+`concepts status`, `concepts list`, `concepts edges` and `concepts verdict`, and the moment verbs
+`moments import`, `moments propose`, `moments status`, `moments list` and `moments verdict`.
 
 Verbs print a short board (counts, paths, next step), never content;
 `--json` anywhere on the line prints the board as JSON. The review verbs read one settings file
@@ -33,6 +34,8 @@ from . import (
     concepts_page,
     db,
     llm,
+    moments,
+    moments_page,
     review_rebuilders,
     text_source,
     usage,
@@ -170,6 +173,35 @@ DESCRIPTIONS |= {
         "Rule a boundary concept in or out; the newest ruling wins over the gate. Appends a row; "
         "nothing is ever overwritten.",
         'corpuslm concepts verdict "beat" --config /path/to/review.toml --in',
+    ),
+    "moments import": (
+        "Bring the owner's insight-moment notes in as approved moments: every `.md` file in a "
+        "folder, one `## <conversation id>` heading per Bee conversation, one `### Moment N: "
+        "<insight>` per moment whose first bullet names a seconds range. A moment already present "
+        "is left alone. No model. `--dry-run` counts and writes nothing.",
+        'corpuslm moments import "/path/to/Insight moments" --config /path/to/review.toml '
+        "--dry-run",
+    ),
+    "moments propose": (
+        "Propose each chosen source's moments from its claims, one cheap model call per source "
+        "(billed; `[moments]` plus the `[claims]` workspace and `[llm]` caps). The model's "
+        "moments of a source are rebuilt whole; imported ones stay; a ruling on the same span "
+        "survives. `--dry-run` counts the calls and estimates the cost.",
+        "corpuslm moments propose --config /path/to/review.toml --kind bee --dry-run",
+    ),
+    "moments status": (
+        "How many moments are approved, proposed or declined, by origin, and which sources' "
+        "proposals are current, stale or missing. Read-only.",
+        "corpuslm moments status --config /path/to/review.toml",
+    ),
+    "moments list": (
+        "The moments with their state, span, origin and concepts, newest source first; "
+        "`--state` and `--source` narrow it. Read-only.",
+        "corpuslm moments list --config /path/to/review.toml --state proposed",
+    ),
+    "moments verdict": (
+        "Approve or decline one moment by id; the newest ruling wins. Appends a row.",
+        "corpuslm moments verdict mom-abc123 --config /path/to/review.toml --approve",
     ),
     "text import": (
         "Make or refresh a text source (a manuscript, paper or book) from a markdown export the "
@@ -375,6 +407,51 @@ def build_parser() -> argparse.ArgumentParser:
             ruling = sub.add_mutually_exclusive_group(required=True)
             ruling.add_argument("--in", dest="ruling", action="store_const", const="in")
             ruling.add_argument("--out", dest="ruling", action="store_const", const="out")
+    moments_group = verbs.add_parser(
+        "moments", help="the building block of monologues: import, propose, status, list, verdict"
+    )
+    moments_verbs = moments_group.add_subparsers(dest="moments_verb", metavar="<subverb>")
+    for name, help_text in (
+        ("import", "the owner's insight-moment notes as approved moments; no model"),
+        ("propose", "propose moments from claims (billed)"),
+        ("status", "counts by state and origin, and what stands per source; read-only"),
+        ("list", "the moments with state, span and concepts; read-only"),
+        ("verdict", "approve or decline one moment"),
+    ):
+        sub = leaf(moments_verbs, name, help_text, f"moments {name}")
+        if name == "import":
+            sub.add_argument("folder", metavar="DIR", help="the folder of note files")
+        if name == "verdict":
+            sub.add_argument("moment", metavar="MOMENT_ID", help="the moment's id")
+        sub.add_argument("--config", required=True, metavar="FILE", help="the review settings file")
+        if name in ("propose", "status"):
+            sub.add_argument(
+                "--kind", default=None, metavar="SOURCE_KIND", help="only sources of this kind"
+            )
+        if name == "propose":
+            sub.add_argument(
+                "--source",
+                action="append",
+                default=None,
+                metavar="SOURCE_ID",
+                help="one source (repeatable); without it, every source of --kind or all",
+            )
+        if name in ("import", "propose"):
+            sub.add_argument(
+                "--dry-run", action="store_true", help="count and estimate; send and write nothing"
+            )
+        if name == "list":
+            sub.add_argument(
+                "--state",
+                default=None,
+                choices=("approved", "proposed", "declined"),
+                help="only this state",
+            )
+            sub.add_argument("--source", default=None, metavar="SOURCE_ID", help="one source")
+        if name == "verdict":
+            ruling = sub.add_mutually_exclusive_group(required=True)
+            ruling.add_argument("--approve", dest="ruling", action="store_const", const="approved")
+            ruling.add_argument("--decline", dest="ruling", action="store_const", const="declined")
     text_group = verbs.add_parser("text", help="text sources (manuscripts, papers, books): import")
     text_verbs = text_group.add_subparsers(dest="text_verb", metavar="<subverb>")
     text_import = leaf(text_verbs, "import", "a markdown export as a text source", "text import")
@@ -505,6 +582,7 @@ def review_serve_board(settings: ReviewSettings, port: int | None, dry_run: bool
     }
     if settings.concepts is not None:
         board["concepts_url"] = f"http://127.0.0.1:{chosen}/concepts"
+    board["moments_url"] = f"http://127.0.0.1:{chosen}/moments"
     if dry_run:
         return None, board | {"note": "dry run: nothing was started"}
     note = _links_note(settings)
@@ -530,6 +608,17 @@ def review_serve_board(settings: ReviewSettings, port: int | None, dry_run: bool
                 fresh.close()
 
         pages["/concepts"] = build_concepts_page
+
+    def build_moments_page() -> str:
+        fresh = db.Database(settings.database)
+        try:
+            store = Store(fresh)
+            rows = moments.listing(store, state="proposed")
+            return moments_page.render(moments.summary(store), rows)
+        finally:
+            fresh.close()
+
+    pages["/moments"] = build_moments_page
     server = make_server(
         "127.0.0.1", chosen, page=build_page, answers=Answers(settings.database), pages=pages
     )
@@ -983,6 +1072,130 @@ def concepts_verdict_board(settings: ReviewSettings, label: str, ruling: str) ->
         database.close()
 
 
+def _moments_client(settings: ReviewSettings, verb: str) -> llm.Client:
+    if settings.moments is None:
+        raise SettingsError(
+            f"{settings.path}: [moments] is missing; add model (see scripts/review.example.toml)"
+        )
+    return _claims_client(settings, verb)
+
+
+def moments_import_board(settings: ReviewSettings, folder: Path, dry_run: bool) -> dict:
+    database = _open_existing(settings)
+    try:
+        out = moments.import_notes(Store(database), folder, created_by="corpuslm", dry_run=dry_run)
+        return (
+            {"verb": "moments import", "ok": True}
+            | out
+            | ({"status": "dry-run", "note": "dry run: nothing was written"} if dry_run else {})
+        )
+    finally:
+        database.close()
+
+
+def moments_propose_board(
+    settings: ReviewSettings, kind: str | None, chosen: list[str] | None, dry_run: bool
+) -> dict:
+    database = _open_existing(settings)
+    try:
+        store = Store(database)
+        client = _moments_client(settings, "moments propose")
+        source_ids = _claims_sources(store, kind, chosen)
+        estimate = moments.estimate(store, client, source_ids)
+        board = {
+            "verb": "moments propose",
+            "ok": True,
+            "sources_chosen": len(source_ids),
+            "sources_to_build": estimate.sources,
+            "from_cache": estimate.from_cache,
+            "calls_billed": estimate.calls,
+            "tokens_in": estimate.tokens_in,
+            "tokens_out_assumed": estimate.tokens_out,
+            "estimated_usd": estimate.usd,
+            "model": estimate.model,
+            "caps": settings.llm,
+        }
+        if dry_run:
+            return board | {"status": "dry-run", "note": "dry run: nothing was sent or written"}
+        standing = {
+            entry.source_id: entry.state
+            for entry in moments.status(store, client.config, source_ids)
+        }
+        built = proposed = dropped = 0
+        cost = 0.0
+        failed: dict[str, str] = {}
+        stopped = ""
+        for source_id in source_ids:
+            if standing[source_id] in ("current", "no_claims"):
+                continue
+            try:
+                out = moments.build(store, client, source_id, created_by="corpuslm")
+            except llm.SpendCapReached as error:
+                stopped = str(error)
+                break
+            except (llm.BadReply, llm.VendorError, llm.TruncatedReply) as error:
+                failed[source_id] = f"{type(error).__name__}: {str(error)[:200]}"
+                continue
+            built += 1
+            proposed += out["proposed"]
+            dropped += out["dropped"]
+            cost += out["cost_usd"]
+        return board | {
+            "built": built,
+            "proposed": proposed,
+            "dropped": dropped,
+            "failed": len(failed),
+            "failed_sources": failed,
+            "cost_usd": round(cost, 6),
+            "stopped_by": stopped,
+            "ok": not stopped and not failed,
+            "next": "open the moments page, or corpuslm moments list --config "
+            + str(settings.path)
+            + " --state proposed",
+        }
+    finally:
+        database.close()
+
+
+def moments_status_board(settings: ReviewSettings, kind: str | None) -> dict:
+    database = _open_existing(settings)
+    try:
+        store = Store(database)
+        board = {"verb": "moments status", "ok": True} | moments.summary(store)
+        if settings.moments is not None:
+            states = {state: 0 for state in ("current", "stale", "none", "no_claims")}
+            config = settings.client_config()
+            for entry in moments.status(
+                store, config, store.source_ids(kind, include_ignored=False)
+            ):
+                states[entry.state] += 1
+            board["sources"] = states
+        return board
+    finally:
+        database.close()
+
+
+def moments_list_board(settings: ReviewSettings, state: str | None, source: str | None) -> dict:
+    database = _open_existing(settings)
+    try:
+        rows = moments.listing(Store(database), state=state, source_id=source)
+        return {"verb": "moments list", "ok": True, "count": len(rows), "moments": rows}
+    finally:
+        database.close()
+
+
+def moments_verdict_board(settings: ReviewSettings, moment_id: str, ruling: str) -> dict:
+    database = _open_existing(settings)
+    try:
+        out = moments.verdict(
+            Store(database), moment_id, ruling, answered_through="review file",
+            created_by="corpuslm",
+        )  # fmt: skip
+        return {"verb": "moments verdict", "ok": True} | out
+    finally:
+        database.close()
+
+
 def text_import_board(
     settings: ReviewSettings, file: Path, name: str, title: str, dry_run: bool
 ) -> dict:
@@ -1063,6 +1276,10 @@ def main(argv: list[str] | None = None) -> int:
             text, code = clikit.help_text(parser, PROG, ["usage"])
             print(text, end="")
             return code
+        if namespace.verb == "moments" and namespace.moments_verb is None:
+            text, code = clikit.help_text(parser, PROG, ["moments"])
+            print(text, end="")
+            return code
         if namespace.verb == "text" and namespace.text_verb is None:
             text, code = clikit.help_text(parser, PROG, ["text"])
             print(text, end="")
@@ -1076,6 +1293,24 @@ def main(argv: list[str] | None = None) -> int:
             print(text, end="")
             return code
         settings = load(Path(namespace.config))
+        if namespace.verb == "moments":
+            match namespace.moments_verb:
+                case "import":
+                    board = moments_import_board(
+                        settings, Path(namespace.folder), namespace.dry_run
+                    )
+                case "propose":
+                    board = moments_propose_board(
+                        settings, namespace.kind, namespace.source, namespace.dry_run
+                    )
+                case "status":
+                    board = moments_status_board(settings, namespace.kind)
+                case "list":
+                    board = moments_list_board(settings, namespace.state, namespace.source)
+                case _:
+                    board = moments_verdict_board(settings, namespace.moment, namespace.ruling)
+            _print(board, as_json)
+            return 0 if board["ok"] else 1
         if namespace.verb == "text":
             board = text_import_board(
                 settings,

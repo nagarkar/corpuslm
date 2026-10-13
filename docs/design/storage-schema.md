@@ -128,7 +128,7 @@ places. The stored copy could disagree (a metadata failure left members
 | Kind | Tables | Rule |
 |---|---|---|
 | master data | `sources`, `corpora`, `corpus_members`, `review_answers`, `feeds`, `source_skips` and the list tables | mutable; `version` bumps on every update; a trigger writes every changed column to `change_log` (old value, new value, row version); list tables are written position by position and log each element added or removed (an element that moves counts as removed and added) |
-| decisions | `review_verdicts`, `speaker_verdicts`, `corrections`, `concept_verdicts` | append-only (a trigger aborts UPDATE and DELETE); an answer given again or changed is a new row; the newest row per slot is in force (`vw_current_*`) |
+| decisions | `review_verdicts`, `speaker_verdicts`, `corrections`, `concept_verdicts`, `moment_verdicts` | append-only (a trigger aborts UPDATE and DELETE); an answer given again or changed is a new row; the newest row per slot is in force (`vw_current_*`) |
 | evidence | `fetch_attempts`, `change_log` | append-only |
 | runs | `runs` | one row per pipeline run (`ytlm run`), opened `running` and closed once as `ok` or `error` |
 | derived state | `artifacts`, `segments`, `segments_fts`, `cleaned_segments`, `cleaned_segments_fts`, `model_suggestions`, `model_suggestion_candidates` | rebuilt from files; no history |
@@ -167,7 +167,7 @@ keep lineage.
 
 ## Migrations: user_version, a verified backup, one transaction (2026-10-03)
 
-The schema version is `PRAGMA user_version` (`db.USER_VERSION`, now 12; a
+The schema version is `PRAGMA user_version` (`db.USER_VERSION`, now 13; a
 database made before it was tracked reads 0 and has the v1 schema, frozen
 in `tests/fixtures/schema_v1.sql`). On open, `db.migrate`:
 
@@ -239,6 +239,22 @@ and `concept_verdicts` (all empty) with the view `vw_current_concept_verdicts` a
 trigger of `concept_verdicts`, in one transaction, and sets `user_version` 12 inside it.
 `concept_verdicts` is an owner table from then on. `corpuslm concepts build` fills the derived
 tables; the owner's taps fill the verdicts.
+
+The v12 → v13 step is additive: after the verified backup it creates `moments` and
+`moment_verdicts` (both empty) with the view `vw_current_moment_verdicts` and the append-only
+trigger of `moment_verdicts`, in one transaction, and sets `user_version` 13 inside it.
+`moment_verdicts` is an owner table from then on. `corpuslm moments import` and `corpuslm moments
+propose` fill `moments`; the owner's taps fill the verdicts.
+
+Proof of the v12 → v13 step on a copy of the real database (2026-10-13, taken at version 10 while
+the first YouTube claim pass was running, so the copy took the v11, v12 and v13 steps in one
+transaction; 300 sources, 23,716 claims): the backup was written first and verified, every one of
+the 836,720 rows in every table kept its table's count, the five new tables appeared empty,
+`foreign_key_check` was empty, `integrity_check` read `ok`, and the triggers and views went from
+39 to 45. On the same copy, `moments import` turned the owner's five note files into 83 approved
+moments across 22 conversations with nothing unknown or unranged, and `moments propose --dry-run`
+estimated the first proposal pass over the 246 sources with claims at 246 calls, about $0.43, on
+the cheap tier.
 
 Proof of the v11 → v12 step on a copy of the real database (2026-10-13, taken at version 10 while
 the first claim pass was running, so the copy took the v10 → v11 and v11 → v12 steps in one
@@ -725,6 +741,42 @@ The owner's ruling on a boundary concept: in or out. The newest row per concept 
 | source | TEXT | no | one of `review file`, `phone page` (where it was answered) |
 | applied_at | TEXT | no | when |
 
+### `moments`
+
+History: derived.
+
+A moment (corpuslm.moments): one span of one source with a one-line insight, the building block
+of a monologue. The model's proposals are rebuilt per source; imported ones (the owner's notes)
+stay until the file is imported again. Approved, declined or proposed is derived from the verdict
+in force for the moment's subject (its source and span), never stored.
+
+| column | type | null | meaning |
+|---|---|---|---|
+| (base) | | | |
+| source_id | TEXT | no | the source |
+| first_position | INTEGER | no | the first segment of the span |
+| last_position | INTEGER | no | the last segment of the span, never before the first |
+| insight | TEXT | no | one line: what the moment shows |
+| origin | TEXT | no | one of `import` (the owner's notes), `model` (the proposal pass) |
+| subject_sha256 | TEXT | no | the hash of (source, first, last): the moment's name across rebuilds |
+| build_key | TEXT | no | the hash of the pass's inputs, `''` for an import |
+
+### `moment_verdicts`
+
+History: append-only.
+
+The owner's ruling on a moment: approved or declined. The newest row per (source, subject) is in
+force (`vw_current_moment_verdicts`); a rebuild that proposes the same span keeps it.
+
+| column | type | null | meaning |
+|---|---|---|---|
+| (base) | | | |
+| source_id | TEXT | no | the source |
+| subject_sha256 | TEXT | no | the moment's subject hash |
+| verdict | TEXT | no | one of `approved`, `declined` |
+| source | TEXT | no | one of `review file`, `phone page` (where it was answered) |
+| applied_at | TEXT | no | when |
+
 ### `segments`
 
 History: derived.
@@ -810,6 +862,10 @@ Every column of `speaker_verdicts`; the newest row per (source_id, role).
 
 Every column of `concept_verdicts`; the newest row per concept.
 
+### `vw_current_moment_verdicts` (view)
+
+Every column of `moment_verdicts`; the newest row per (source, subject).
+
 ### `vw_current_corrections` (view)
 
 Every column of `corrections`; the newest row per span_norm.
@@ -846,6 +902,8 @@ segment changed, so it carries the previous hash):
 | `run-0a1b2c3d4e5f` | `cli` | `sources:1` | `running` | `2026-10-02T09:12:40Z` | NULL | 1 | NULL | `` |
 
 ## Changes
+
+- 2026-10-13: Version 13 (nagarkar/corpuslm#48): `moments` (derived) and `moment_verdicts` (append-only, an owner table): one span of one source with a one-line insight, proposed by a model or imported from the owner's notes, approved or declined by the owner
 
 - 2026-10-13: Version 12 (nagarkar/corpuslm#47): `concepts` and `claim_concepts` (derived) and `concept_verdicts` (append-only, an owner table): the lexicon derived from claims by recurrence, the tags, and the owner's rulings on boundary cases
 

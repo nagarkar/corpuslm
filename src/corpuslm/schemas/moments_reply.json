@@ -1,0 +1,38 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "corpuslm.moments_reply/1",
+ "title": "moments reply",
+ "description": "What the moments model returns for one source (corpuslm.moments): the moments it proposes, each with its insight and the claims it draws on.",
+ "type": "object",
+ "additionalProperties": false,
+ "required": ["moments"],
+ "properties": {
+  "moments": {
+   "type": "array",
+   "description": "The proposed moments, in the order they occur.",
+   "items": {
+    "type": "object",
+    "description": "One moment.",
+    "additionalProperties": false,
+    "required": ["insight", "claims"],
+    "properties": {
+     "insight": {
+      "type": "string",
+      "description": "One sentence of at most 25 words saying what the moment shows.",
+      "minLength": 1
+     },
+     "claims": {
+      "type": "array",
+      "description": "Indexes of the claims the moment draws on, at least one.",
+      "items": {
+       "type": "integer",
+       "description": "A claim index from the list.",
+       "minimum": 0
+      },
+      "minItems": 1
+     }
+    }
+   }
+  }
+ }
+}

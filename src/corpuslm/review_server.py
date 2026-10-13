@@ -9,9 +9,10 @@ is absent and a server answers; `corpuslm.review_apply` lands the saved answers 
 
 Routes: `GET /` the page (built per request by the function the caller passes in), `GET /health`
 (with the time this server started, for `review check`), any other page the caller passes in
-`pages` (`/concepts`, corpuslm.concepts_page, built per request too), and one `POST /api/review`
-with `{"method": ..., "params": {...}}` dispatched to `Answers`, whose `concept_verdict` method
-appends a concept ruling. The pages' scripts (never a second copy of a page) are the only clients.
+`pages` (`/concepts`, corpuslm.concepts_page; `/moments`, corpuslm.moments_page; built per
+request too), and one `POST /api/review` with `{"method": ..., "params": {...}}` dispatched to
+`Answers`, whose `concept_verdict` and `moment_verdict` methods append a ruling. The pages'
+scripts (never a second copy of a page) are the only clients.
 
 Never imports: cli, clikit, any model transport.
 
@@ -166,6 +167,23 @@ class Answers:
             finally:
                 db.close()
 
+    def moment_verdict(self, moment_id: object, verdict: object) -> dict:
+        """Append the owner's ruling on a moment (corpuslm.moments)."""
+        from . import moments  # the server knows moments only for this one call
+
+        if not isinstance(moment_id, str) or not moment_id.strip():
+            raise ValueError("id is the moment's id")
+        if verdict not in ("approved", "declined"):
+            raise ValueError("verdict is approved or declined")
+        with self._lock:
+            db, store = self._store()
+            try:
+                return moments.verdict(
+                    store, moment_id, verdict, answered_through="phone page", created_by=CREATED_BY
+                )
+            finally:
+                db.close()
+
     def call(self, method: object, params: object) -> object:
         """Dispatch one API call. ValueError for a bad call, KeyError for a missing document."""
         if not isinstance(params, dict):
@@ -174,6 +192,8 @@ class Answers:
             return {"status": "ok"}
         if method == "concept_verdict":
             return self.concept_verdict(params.get("key"), params.get("verdict"))
+        if method == "moment_verdict":
+            return self.moment_verdict(params.get("id"), params.get("verdict"))
         if method == "get":
             found = self.get(params.get("path"))
             if found is None:
@@ -186,7 +206,9 @@ class Answers:
             return {"deleted": self.delete(params.get("path"))}
         if method == "list":
             return self.list(params.get("collection"))
-        raise ValueError("method must be one of: health, get, set, delete, list, concept_verdict")
+        raise ValueError(
+            "method must be one of: health, get, set, delete, list, concept_verdict, moment_verdict"
+        )
 
 
 def _is_time(text: str) -> bool:
