@@ -433,3 +433,36 @@ def test_monologue_verbs_against_the_fake_document_store(tmp_path, capsys, monke
     assert [(m["name"], m["moments"], m["runs"]) for m in board["monologues"]] == [
         ("karma-walk", 0, 0)
     ]
+
+
+def test_monologue_export_and_the_teleprompter_url(tmp_path, capsys, monkeypatch):
+    from corpuslm import document
+
+    monkeypatch.setattr("corpuslm.document.FAKE_DIR", tmp_path / "docs")
+    config = _claims_world(tmp_path)
+    assert (
+        cli.main(["--json", "monologue", "new", "karma", "--title", "T", "--config", config]) == 0
+    )
+    _board(capsys)
+    assert cli.main(["--json", "monologue", "export", "karma", "--config", config]) == 1
+    assert "no script yet" in _board(capsys)["error"]
+    from corpuslm.store import Store
+
+    doc = document.FakeDocumentStore(tmp_path / "docs")
+    doc.ensure("monologue-karma", tmp_path / "ms", "T")
+    doc.add_tab("monologue-karma", "script-1.md", "Script v1")
+    doc.write_tab("monologue-karma", "script-1.md", "# Script v1: T\n\nSpoken words here.\n")
+    database = db.Database(tmp_path / "transcript.sqlite")
+    Store(database).update_monologue(
+        "karma", {"manuscript": "monologue-karma", "directory": str(tmp_path / "ms")}
+    )
+    database.close()
+    out = tmp_path / "karma.txt"
+    assert (
+        cli.main(["--json", "monologue", "export", "karma", "--to", str(out), "--config", config])
+        == 0
+    )
+    board = _board(capsys)
+    assert board["words"] == 3 and out.read_text().startswith("monologue: mon-")
+    assert cli.main(["--json", "review", "serve", "--config", config, "--dry-run"]) == 0
+    assert _board(capsys)["teleprompter_url"].endswith("/teleprompter/<monologue>")

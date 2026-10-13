@@ -502,6 +502,41 @@ def run(
     }
 
 
+def script_text(doc: document.DocumentStore, row: dict) -> tuple[str, str, int]:
+    """(tab file, settled script text without its heading, open revisions) of the latest script
+    tab; ('', '', 0) when there is none."""
+    file, settled = _latest_script(doc, row)
+    if not file:
+        return "", "", 0
+    tabs = {tab["file"]: tab for tab in doc.read(row["manuscript"])["tabs"]}
+    return file, _prior_text(settled), len(tabs[file]["open"])
+
+
+def export(store: Store, doc: document.DocumentStore, name: str, to: Path | None = None) -> dict:
+    """Write the latest script tab's settled text as plain text, headed by the monologue's id and
+    title so podlm can record where an episode came from (nagarkar/podlm#33). Returns the path
+    and counts; open revisions are reported, and the settled text is what is exported."""
+    row = _monologue(store, name)
+    file, text, open_revisions = script_text(doc, row)
+    if not file:
+        raise ValueError(f"{row['name']} has no script yet; run it first")
+    path = Path(to) if to else Path(row["directory"]) / f"{row['name']}.teleprompter.txt"
+    header = f"monologue: {row['id']}\nname: {row['name']}\ntitle: {row['title']}\ntab: {file}\n\n"
+    from .files import write_atomic
+
+    write_atomic(path, header + text + "\n")
+    return {
+        "monologue": row["name"],
+        "path": str(path),
+        "tab": file,
+        "words": len(text.split()),
+        "open_revisions": open_revisions,
+        "note": "the Doc has open revisions; the settled text was exported"
+        if open_revisions
+        else "",
+    }
+
+
 def about_text(store: Store, row: dict) -> str:
     """The code-owned about tab: what the monologue is made of and its runs."""
     lines = ["# About this monologue", "", OMIT_OPEN, "", f"Name: {row['name']}"]
@@ -558,11 +593,13 @@ __all__ = [
     "create",
     "detach",
     "estimate",
+    "export",
     "ingredients",
     "ingredients_sha256",
     "listing",
     "manuscript_name",
     "run",
+    "script_text",
     "settings",
     "slug",
     "status",
