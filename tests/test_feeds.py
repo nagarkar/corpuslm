@@ -144,8 +144,8 @@ def test_a_version_6_database_gains_the_feed_tables_after_a_verified_backup(tmp_
     connection.close()
     opened = db.Database(path)
     try:
-        assert opened.migration["from"] == 6 and opened.migration["to"] == db.USER_VERSION == 9
-        assert opened.migration["backup"].endswith("-before-v9.sqlite")
+        assert opened.migration["from"] == 6 and opened.migration["to"] == db.USER_VERSION == 10
+        assert opened.migration["backup"].endswith("-before-v10.sqlite")
         assert opened.one("PRAGMA integrity_check")[0] == "ok"
         assert opened.one("SELECT COUNT(*) FROM feeds")[0] == 0
         assert opened.one("SELECT COUNT(*) FROM source_skips")[0] == 0

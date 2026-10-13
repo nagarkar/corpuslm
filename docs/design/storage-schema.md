@@ -167,7 +167,7 @@ keep lineage.
 
 ## Migrations: user_version, a verified backup, one transaction (2026-10-03)
 
-The schema version is `PRAGMA user_version` (`db.USER_VERSION`, now 9; a
+The schema version is `PRAGMA user_version` (`db.USER_VERSION`, now 10; a
 database made before it was tracked reads 0 and has the v1 schema, frozen
 in `tests/fixtures/schema_v1.sql`). On open, `db.migrate`:
 
@@ -223,6 +223,21 @@ order becomes the fresh schema's), `sources` is dropped, `sources_v9` is renamed
 every table (the author tables and every other table included) are compared with the counts taken
 before. An older additive database takes the earlier steps in the same transaction. No row changes
 its status: `ignored` is only ever set by a tool afterwards.
+
+The v9 → v10 step is additive: after the verified backup it creates `claims` and its index
+`claims_source` (empty) in one transaction and sets `user_version` 10 inside it; an older additive
+database takes the earlier steps in the same transaction. The row count of every table is compared
+with the counts taken before, as the v8 → v9 step does: nothing but the new table may change.
+`corpuslm claims build` (billed) and `corpuslm claims import-digests` (no model) fill it.
+
+Proof of the v9 → v10 step on a copy of the real database (2026-10-13, 299 sources: 197 YouTube,
+102 Bee): the backup was written first and verified (`user_version` 9, `integrity_check` ok), the
+only table that changed was the new one (`claims` appeared empty), every one of the 545,944 rows in
+the 26 other tables kept its table's count, `foreign_key_check` was empty, `integrity_check` read
+`ok`, and the 39 triggers and views were unchanged. On the same copy, `claims import-digests`
+turned the 100 existing digests into 11,546 claims with none dropped (97 videos have no digest
+yet), and `claims build --dry-run` estimated the first Bee pass at 356 calls, about $0.18, and the
+remaining 97 videos at 715 calls, about $0.46, on the cheap tier.
 
 Proof of the v8 → v9 step on a copy of the real database (2026-10-11, 299 sources: 197 YouTube,
 102 Bee): the backup was written first and verified, every one of the 807,544 rows in every table
@@ -615,6 +630,28 @@ History: coordination.
 | acquired_at | TEXT | no | |
 | expires_at | TEXT | no | |
 
+### `claims`
+
+History: derived.
+
+What a source claims (corpuslm.claims): one short sentence per claim, a restatement in a model's
+words, with the segment positions that support it. One list per source, rebuilt whole by the claim
+pass or filled once by the digest import; the source's `artifacts` row for node `claims` records
+the inputs the list was built from. No row ever links one claim to another.
+
+| column | type | null | meaning |
+|---|---|---|---|
+| (base) | | | |
+| source_id | TEXT | no | the source |
+| position | INTEGER | no | the claim's place in the source's list, from 0 |
+| section | INTEGER | no | the claim-pass section the claim came from, from 0 |
+| segments | TEXT | no | JSON list of the supporting segment positions, clearest first, at most six |
+| text | TEXT | no | the claim, 25 words or fewer |
+| kind | TEXT | no | one of `assertion`, `definition`, `example`, `story`, `question`, `prediction`, `disagreement` |
+| speaker | TEXT | no | the speaker label on the cited lines, `''` when none |
+| build_key | TEXT | no | the hash of the pass's inputs (text, prompt, model, section size) |
+| run_id | TEXT | no | the run that built it, `''` when none |
+
 ### `segments`
 
 History: derived.
@@ -732,6 +769,8 @@ segment changed, so it carries the previous hash):
 | `run-0a1b2c3d4e5f` | `cli` | `sources:1` | `running` | `2026-10-02T09:12:40Z` | NULL | 1 | NULL | `` |
 
 ## Changes
+
+- 2026-10-13: Version 10 (nagarkar/corpuslm#45): `claims` (derived): what each source claims, one short sentence per claim tied to its segments, built by `corpuslm claims build` or imported from ytlm's digests by `corpuslm claims import-digests`; freshness through the source's `artifacts` row for node `claims`
 
 - 2026-10-05: Corpora merge: `Store.merge_corpora` folds corpora into one in a transaction; each folded corpus is kept whole in the target's `metadata.merged_from` (nagarkar/ytlm#21)
 - 2026-10-03: Written: the Repository, STRICT/CHECK/FOREIGN KEY, lists as rows, explicit segment column names, derived membership status, history per kind (change log by trigger, append-only decisions), verdict content hashes with lineage, the `runs` table, user_version migrations with a verified backup under `<workspace>/backups/`, and the state-file tables, metalm conformance (#23)

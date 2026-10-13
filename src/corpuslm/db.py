@@ -40,7 +40,7 @@ from .identity import canonical_sha256  # noqa: F401  (re-exported: db.canonical
 
 # PRAGMA user_version of the schema below. 0 is a database made before the
 # version was tracked (the v1 schema, frozen in tests/fixtures/schema_v1.sql).
-USER_VERSION = 9
+USER_VERSION = 10
 
 BACKUPS_DIRNAME = "backups"
 # How many verified backups `<workspace>/backups/` keeps (owner ruling
@@ -155,6 +155,34 @@ END;"""
 
 # The `sources` table, a constant of its own: the v8 -> v9 step rebuilds it under another name
 # (a CHECK cannot be altered in place).
+CLAIM_KINDS = (
+    "assertion",
+    "definition",
+    "example",
+    "story",
+    "question",
+    "prediction",
+    "disagreement",
+)
+
+# The claims of a source (corpuslm.claims): derived state, rebuilt whole per source.
+CLAIMS_TABLE = f"""CREATE TABLE IF NOT EXISTS claims (
+    {KNOWLEDGE_OBJECT_COLUMNS},
+    source_id TEXT NOT NULL REFERENCES sources(id),
+    position INTEGER NOT NULL CHECK (position >= 0),
+    section INTEGER NOT NULL CHECK (section >= 0),
+    segments TEXT NOT NULL CHECK (json_valid(segments)),
+    text TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ({", ".join(f"'{kind}'" for kind in CLAIM_KINDS)})),
+    speaker TEXT NOT NULL DEFAULT '',
+    build_key TEXT NOT NULL,
+    run_id TEXT NOT NULL DEFAULT '',
+    UNIQUE (source_id, position)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS claims_source ON claims (source_id);
+"""
+
 SOURCES_TABLE = f"""CREATE TABLE IF NOT EXISTS sources (
     {KNOWLEDGE_OBJECT_COLUMNS},
     kind TEXT NOT NULL DEFAULT 'youtube' CHECK (kind IN ('youtube', 'bee')),
@@ -363,6 +391,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS segments_fts USING fts5(
     content='segments', content_rowid='rowid',
     tokenize='unicode61'
 );
+
+{CLAIMS_TABLE}
 """
 
 # Master data: every column whose change is written to change_log by trigger.
@@ -739,6 +769,12 @@ def _v7_to_v8_script() -> list[str]:
     return [*_statements(CLEANED_SEGMENTS_TABLES), *_statements(CLEANED_SEGMENTS_TRIGGERS)]
 
 
+def _v9_to_v10_script() -> list[str]:
+    """Additive: the claims table and its index (empty; `corpuslm claims build` and
+    `corpuslm claims import-digests` fill it)."""
+    return _statements(CLAIMS_TABLE)
+
+
 def _v8_to_v9_script(connection: sqlite3.Connection) -> list[str]:
     """Rebuild `sources` so its `status` CHECK allows `ignored` (a CHECK cannot be altered in
     place): a new table under another name, every row copied by column name, the old table
@@ -973,11 +1009,12 @@ def migrate(connection: sqlite3.Connection, db_path: Path) -> dict:
         return {"from": version, "to": USER_VERSION, "backup": None, "created": True}
     saved = backup(connection, db_path, label=f"before-v{USER_VERSION}")
     deleted = prune_backups(db_path)  # only after the new one verified
-    if version in (4, 5, 6, 7, 8):
-        # The v8 -> v9 step rebuilds `sources`, so it checks every table, not only the owner's.
+    if version in (4, 5, 6, 7, 8, 9):
+        # The v8 -> v9 step rebuilds `sources`, so it checks every table, not only the owner's;
+        # the v9 -> v10 step is additive and checks every table too (nothing else may change).
         watched = (
             sorted(table for table in _tables(connection) if not table.startswith("sqlite_"))
-            if version == 8
+            if version in (8, 9)
             else OWNER_TABLES
         )
         before = _counts(connection, watched)
@@ -988,7 +1025,8 @@ def migrate(connection: sqlite3.Connection, db_path: Path) -> dict:
                 *(_v5_to_v6_script() if version <= 5 else []),
                 *(_v6_to_v7_script() if version <= 6 else []),
                 *(_v7_to_v8_script() if version <= 7 else []),
-                *_v8_to_v9_script(column),
+                *(_v8_to_v9_script(column) if version <= 8 else []),
+                *_v9_to_v10_script(),
             ]
 
         if not _run_in_transaction(

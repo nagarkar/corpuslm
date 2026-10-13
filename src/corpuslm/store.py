@@ -755,6 +755,98 @@ class Store:
             "provisional": provisional,
         }
 
+    # ---- claims (derived state, corpuslm.claims) --------------------------------------
+
+    def replace_claims(
+        self,
+        source_id: str,
+        claims: Iterable[dict],
+        *,
+        build_key: str,
+        run_id: str = "",
+        created_by: str,
+    ) -> int:
+        """One source's claims, rebuilt whole in one transaction. Each claim is
+        `{"section", "segments": [position, ...], "text", "kind", "speaker"}`; its
+        position is its place in the list. Returns how many were written."""
+        written = 0
+        with self.db.transaction():
+            self.db.execute("DELETE FROM claims WHERE source_id = ?", (source_id,))
+            for position, claim in enumerate(claims):
+                self.db.insert(
+                    "claims",
+                    standard_fields("clm", created_by=created_by)
+                    | {
+                        "source_id": source_id,
+                        "position": position,
+                        "section": int(claim["section"]),
+                        "segments": json.dumps([int(index) for index in claim["segments"]]),
+                        "text": claim["text"],
+                        "kind": claim["kind"],
+                        "speaker": claim.get("speaker", ""),
+                        "build_key": build_key,
+                        "run_id": run_id,
+                    },
+                )
+                written += 1
+        return written
+
+    def claims(self, source_id: str) -> list[dict]:
+        """One source's claims in order; `segments` is the list of segment positions."""
+        return [
+            dict(row) | {"segments": loads(row["segments"], [])}
+            for row in self.db.all(
+                "SELECT * FROM claims WHERE source_id = ? ORDER BY position", (source_id,)
+            )
+        ]
+
+    def delete_claims(self, source_id: str) -> int:
+        return self.db.execute("DELETE FROM claims WHERE source_id = ?", (source_id,)).rowcount
+
+    def claim_count(self, source_id: str | None = None) -> int:
+        if source_id is None:
+            return self._row("SELECT COUNT(*) AS n FROM claims")["n"]
+        return self._row("SELECT COUNT(*) AS n FROM claims WHERE source_id = ?", (source_id,))["n"]
+
+    def claim_counts_by_source(self) -> dict[str, int]:
+        """Source id -> how many claims it has, for every source with at least one."""
+        return {
+            row["source_id"]: row["n"]
+            for row in self.db.all(
+                "SELECT source_id, COUNT(*) AS n FROM claims GROUP BY source_id ORDER BY source_id"
+            )
+        }
+
+    def claim_kind_counts(self) -> dict[str, int]:
+        return {
+            row["kind"]: row["n"]
+            for row in self.db.all(
+                "SELECT kind, COUNT(*) AS n FROM claims GROUP BY kind ORDER BY kind"
+            )
+        }
+
+    def best_segments(self, source_id: str) -> list[dict]:
+        """The segments a reader should see: the cleaned ones when the source has them (Bee),
+        else the raw ones (YouTube, whose raw lines are already the best transcript). The JSON
+        names (idx, t0, t1, speaker, text), in order."""
+        rows = self.db.all(
+            "SELECT position, start_seconds, end_seconds, speaker, text FROM cleaned_segments "
+            "WHERE source_id = ? ORDER BY position",
+            (source_id,),
+        )
+        if not rows:
+            return self.segments(source_id)
+        return [
+            {
+                "idx": row["position"],
+                "t0": row["start_seconds"],
+                "t1": row["end_seconds"],
+                "speaker": row["speaker"],
+                "text": row["text"],
+            }
+            for row in rows
+        ]
+
     # ---- segments and search (derived index) ---------------------------------------
 
     def replace_segments(self, source_id: str, segments: Iterable[dict]) -> None:

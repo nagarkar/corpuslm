@@ -94,3 +94,87 @@ def test_usage_verbs_without_a_usage_table_say_so(tmp_path, capsys):
     )
     assert cli.main(["usage", "serve", "--config", str(path), "--dry-run", "--json"]) == 1
     assert "no [usage] table" in _board(capsys)["error"]
+
+
+# ---- the claim verbs (corpuslm.claims) -----------------------------------------------------
+
+SEGMENTS = [
+    {"idx": index, "t0": float(index), "t1": float(index + 1), "speaker": "Quill", "text": text}
+    for index, text in enumerate(["a choice is right as of now", "so you choose again"])
+]
+
+
+def _claims_world(tmp_path, *, claims_table: bool = True) -> str:
+    from corpuslm.store import Store
+
+    database = db.Database(tmp_path / "transcript.sqlite")
+    store = Store(database)
+    store.add_source("bee:1", "l", created_by="test", kind="bee")
+    store.replace_segments("bee:1", SEGMENTS)
+    store.add_source("Xq3vT9bLk2A", "u", created_by="test", kind="youtube")
+    store.replace_segments("Xq3vT9bLk2A", SEGMENTS)
+    database.close()
+    (tmp_path / "videos" / "Xq3vT9bLk2A").mkdir(parents=True)
+    (tmp_path / "videos" / "Xq3vT9bLk2A" / "digest.json").write_text(
+        json.dumps(
+            {
+                "claims": [
+                    {"statement": "A choice is right only now.", "speaker": "", "segments": [0],
+                     "kind": "assertion"},
+                ],
+                "provenance": {"transcript_sha256": "t", "prompt_sha256": "p", "model": "m",
+                               "section_chars": 6000},
+            }
+        )
+    )  # fmt: skip
+    path = tmp_path / "review.toml"
+    path.write_text(
+        f'database = "{tmp_path / "transcript.sqlite"}"\n'
+        f'[kinds.youtube]\ndirectory = "{tmp_path / "videos"}"\n'
+        + (
+            f'[claims]\nmodel = "gemini/gemini-2.5-flash-lite"\nworkspace = "{tmp_path / "ws"}"\n'
+            "[llm]\nmax_usd_per_run = 1.0\n"
+            if claims_table
+            else ""
+        )
+    )
+    return str(path)
+
+
+def test_claims_build_dry_run_estimates_and_sends_nothing(tmp_path, capsys, monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    config = _claims_world(tmp_path)
+    assert cli.main(["--json", "claims", "build", "--config", config, "--dry-run"]) == 0
+    board = _board(capsys)
+    assert board["status"] == "dry-run" and board["sources_chosen"] == 2
+    assert board["sources_to_build"] == 2 and board["calls_billed"] == 2
+    assert board["estimated_usd"] > 0 and board["caps"] == {"max_usd_per_run": 1.0}
+    assert not (tmp_path / "ws").exists()  # no cache, no ledger: nothing was sent
+    assert cli.main(["--json", "claims", "build", "--config", config, "--source", "bee:1"]) == 1
+    assert "GEMINI_API_KEY is not set" in _board(capsys)["error"]  # offline: the call is off
+    assert cli.main(["--json", "claims", "build", "--config", config, "--source", "nope"]) == 1
+    assert "unknown source: nope" in _board(capsys)["error"]
+
+
+def test_claims_build_without_the_claims_table_says_what_to_add(tmp_path, capsys):
+    config = _claims_world(tmp_path, claims_table=False)
+    assert cli.main(["--json", "claims", "build", "--config", config, "--dry-run"]) == 1
+    assert "[claims] is missing" in _board(capsys)["error"]
+
+
+def test_claims_import_digests_and_status_count_and_show_no_text(tmp_path, capsys):
+    config = _claims_world(tmp_path)
+    assert cli.main(["--json", "claims", "import-digests", "--config", config, "--dry-run"]) == 0
+    board = _board(capsys)
+    assert (board["imported"], board["claims"], board["status"]) == (1, 1, "dry-run")
+    assert cli.main(["--json", "claims", "status", "--config", config]) == 0
+    assert _board(capsys)["states"] == {"current": 0, "stale": 0, "imported": 0, "none": 2}
+    assert cli.main(["--json", "claims", "import-digests", "--config", config]) == 0
+    assert _board(capsys)["imported"] == 1
+    assert cli.main(["--json", "claims", "status", "--config", config]) == 0
+    board = _board(capsys)
+    assert board["states"] == {"current": 0, "stale": 0, "imported": 1, "none": 1}
+    assert board["claims"] == 1 and board["by_kind"] == {"assertion": 1}
+    assert "choice" not in json.dumps(board)  # counts only; no claim text on a board
+    assert cli.main(["claims", "status", "--config", config, "--kind", "bee"]) == 0
+    assert "none: 1" in capsys.readouterr().out

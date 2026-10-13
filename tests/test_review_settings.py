@@ -110,3 +110,43 @@ def test_the_usage_table_is_read_and_is_optional(tmp_path):
 def test_a_wrong_usage_table_is_named(tmp_path, addition, message):
     with pytest.raises(SettingsError, match=message):
         review_settings.load(write(tmp_path, GOOD + addition))
+
+
+CLAIMS = """
+[claims]
+model = "gemini/gemini-2.5-flash-lite"
+workspace = "{folder}/corpuslm"
+
+[llm]
+max_usd_per_run = 1.5
+"""
+
+
+def test_the_claims_and_llm_tables_are_read_and_are_optional(tmp_path):
+    bare = review_settings.load(write(tmp_path))
+    assert bare.claims is None and bare.llm == {} and bare.client_config() == {"llm": {}}
+    settings = review_settings.load(write(tmp_path, GOOD + CLAIMS))
+    assert settings.claims.model == "gemini/gemini-2.5-flash-lite"
+    assert settings.claims.section_chars == review_settings.DEFAULT_SECTION_CHARS
+    assert settings.claims.workspace == tmp_path / "corpuslm"
+    assert settings.llm == {"max_usd_per_run": 1.5}
+    assert settings.client_config() == {
+        "llm": {"max_usd_per_run": 1.5},
+        "claims": {"model": "gemini/gemini-2.5-flash-lite", "section_chars": 6000},
+    }
+
+
+@pytest.mark.parametrize(
+    ("addition", "message"),
+    [
+        ("[claims]\nmodel = 'm'\n", "workspace is missing"),
+        ("[claims]\nworkspace = '/x'\n", "model is missing"),
+        ("[claims]\nmodel = 'm'\nworkspace = '/x'\nsection_chars = 10\n", "at least 500"),
+        ("[claims]\nmodel = 'm'\nworkspace = '/x'\nfoo = 1\n", "unknown key 'foo'"),
+        ("[llm]\nmax_usd_per_run = 0\n", "positive number of dollars"),
+        ("[llm]\nmax_usd_per_hour = 1\n", "unknown key 'max_usd_per_hour'"),
+    ],
+)
+def test_a_wrong_claims_or_llm_table_is_named(tmp_path, addition, message):
+    with pytest.raises(SettingsError, match=message):
+        review_settings.load(write(tmp_path, GOOD + addition))

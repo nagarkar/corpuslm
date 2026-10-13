@@ -16,7 +16,20 @@ serve every kind without importing ytlm or beelm. See `scripts/review.example.to
     owner_first_name = "Quill"
 
 `directory` holds `<source id>/transcript.json` and `<source id>/speaker_map.json` for each source
-of the kind. An optional `[usage]` table tells the usage dashboard (`corpuslm.usage`) where each
+of the kind. An optional `[claims]` table turns on the claim pass (`corpuslm claims build`): the
+model, the section size, and the folder where the model client keeps its reply cache and
+ledgers; an optional `[llm]` table holds the spend caps the client enforces:
+
+    [claims]
+    model = "gemini/gemini-2.5-flash-lite"
+    section_chars = 6000
+    workspace = "/path/to/corpuslm"
+
+    [llm]
+    max_usd_per_run = 1.0
+    max_usd_per_day = 5.0
+
+An optional `[usage]` table tells the usage dashboard (`corpuslm.usage`) where each
 tool keeps its ledger folder, and where its own settings file holds the spend caps:
 
     [usage]
@@ -50,7 +63,7 @@ Terms:
 from __future__ import annotations
 
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .review_kinds import KINDS, kinds_for_settings
@@ -58,6 +71,7 @@ from .review_page import KindSetup
 
 DEFAULT_PORT = 8781
 DEFAULT_USAGE_PORT = 8779
+DEFAULT_SECTION_CHARS = 6000
 
 
 class SettingsError(ValueError):
@@ -80,12 +94,33 @@ class UsageSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class ClaimsSettings:
+    """`[claims]`: the model, the section size and the client's folder (cache and ledgers)."""
+
+    model: str
+    section_chars: int
+    workspace: Path
+
+
+@dataclass(frozen=True, slots=True)
 class ReviewSettings:
     database: Path
     port: int
     kinds: dict[str, KindSettings]
     path: Path
     usage: UsageSettings | None = None
+    claims: ClaimsSettings | None = None
+    llm: dict[str, float] = field(default_factory=dict)
+
+    def client_config(self) -> dict:
+        """What `corpuslm.llm.Client` reads: the `[claims]` stage section and the `[llm]` caps."""
+        config: dict = {"llm": dict(self.llm)}
+        if self.claims is not None:
+            config["claims"] = {
+                "model": self.claims.model,
+                "section_chars": self.claims.section_chars,
+            }
+        return config
 
 
 def _strict(table: dict, known: tuple[str, ...], where: str) -> None:
@@ -134,6 +169,30 @@ def _usage(raw: object, where: str) -> UsageSettings:
     return UsageSettings(_port(raw, where, DEFAULT_USAGE_PORT), ledgers, tool_settings)
 
 
+def _claims(raw: object, where: str) -> ClaimsSettings:
+    if not isinstance(raw, dict):
+        raise SettingsError(f"{where}: must be a table")
+    _strict(raw, ("model", "section_chars", "workspace"), where)
+    size = raw.get("section_chars", DEFAULT_SECTION_CHARS)
+    if isinstance(size, bool) or not isinstance(size, int) or size < 500:
+        raise SettingsError(f"{where}: section_chars must be a whole number of at least 500")
+    return ClaimsSettings(
+        _text(raw, "model", where), size, Path(_text(raw, "workspace", where)).expanduser()
+    )
+
+
+def _llm(raw: object, where: str) -> dict[str, float]:
+    if not isinstance(raw, dict):
+        raise SettingsError(f"{where}: must be a table")
+    _strict(raw, ("max_usd_per_run", "max_usd_per_day"), where)
+    out: dict[str, float] = {}
+    for key, value in raw.items():
+        if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
+            raise SettingsError(f"{where}: {key} must be a positive number of dollars")
+        out[key] = float(value)
+    return out
+
+
 def load(path: Path) -> ReviewSettings:
     """Read and check the settings file at `path`."""
     path = Path(path).expanduser()
@@ -145,7 +204,7 @@ def load(path: Path) -> ReviewSettings:
         raw = tomllib.loads(path.read_text("utf-8"))
     except tomllib.TOMLDecodeError as error:
         raise SettingsError(f"{path}: not valid TOML ({error})") from error
-    _strict(raw, ("database", "port", "kinds", "usage"), str(path))
+    _strict(raw, ("database", "port", "kinds", "usage", "claims", "llm"), str(path))
     port = _port(raw, str(path), DEFAULT_PORT)
     kinds_table = raw.get("kinds")
     if not isinstance(kinds_table, dict) or not kinds_table:
@@ -165,8 +224,10 @@ def load(path: Path) -> ReviewSettings:
             _text(table, "owner_first_name", where, required=False),
         )
     usage = _usage(raw["usage"], f"{path} [usage]") if "usage" in raw else None
+    claims = _claims(raw["claims"], f"{path} [claims]") if "claims" in raw else None
+    caps = _llm(raw["llm"], f"{path} [llm]") if "llm" in raw else {}
     return ReviewSettings(
-        Path(_text(raw, "database", str(path))).expanduser(), port, kinds, path, usage
+        Path(_text(raw, "database", str(path))).expanduser(), port, kinds, path, usage, claims, caps
     )
 
 
@@ -179,7 +240,9 @@ def kind_setups(settings: ReviewSettings) -> dict[str, KindSetup]:
 
 
 __all__ = [
+    "ClaimsSettings",
     "DEFAULT_PORT",
+    "DEFAULT_SECTION_CHARS",
     "DEFAULT_USAGE_PORT",
     "KindSettings",
     "ReviewSettings",

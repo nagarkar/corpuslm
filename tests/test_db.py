@@ -109,8 +109,8 @@ def _verdict(
 
 
 def test_fresh_file_gets_user_version(database, dbpath):
-    # storage-schema.md: "The schema version is PRAGMA user_version (db.USER_VERSION, now 9)"
-    assert db.USER_VERSION == 9
+    # storage-schema.md: "The schema version is PRAGMA user_version (db.USER_VERSION, now 10)"
+    assert db.USER_VERSION == 10
     assert database.one("PRAGMA user_version")[0] == db.USER_VERSION
     raw = sqlite3.connect(dbpath)
     try:
@@ -958,7 +958,7 @@ def test_v1_backup_is_verified_and_complete(migrated, dbpath):
     assert len(files) == 1
     backup_path = files[0]
     assert backup_path.name.startswith("transcript-") and backup_path.name.endswith(
-        "-before-v9.sqlite"
+        "-before-v10.sqlite"
     )
     assert _rows(backup_path, "PRAGMA integrity_check")[0][0] == "ok"
     assert _rows(backup_path, RV_SQL_V1) == original_rv
@@ -1236,6 +1236,7 @@ def test_the_schema_document_mirrors_the_code():
         "model_suggestion_candidates": "derived",
         "segments": "derived",
         "cleaned_segments": "derived",
+        "claims": "derived",
         "locks": "coordination",
     }
     for name, kind in objects.items():
