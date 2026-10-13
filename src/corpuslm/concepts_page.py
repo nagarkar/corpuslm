@@ -1,8 +1,9 @@
 """Concepts page: the phone page for ruling on boundary concepts (corpuslm.concepts).
 
-One self-contained page at `/concepts` on the review server: the gate, the counts by state, the
-section-count distribution as bars, and one row per boundary concept with two buttons, In and
-Out. A tap posts `{"method": "concept_verdict", "params": {"key", "verdict"}}` to the server's
+One self-contained page at `/concepts` on the review server: the gate, the counts by state, one
+row per boundary concept with two buttons, In and Out, then the concepts in force with their
+counts (Out demotes one), the ones out in a collapsed section (In promotes one), and the
+section-count distribution as bars. A tap posts `{"method": "concept_verdict", "params": {"key", "verdict"}}` to the server's
 one API route under the same write check as the review page, and the row shows the ruling. The
 page shows concept labels and counts only: no claim's text and no transcript text.
 
@@ -67,7 +68,7 @@ _SCRIPT = """
     .catch(function(){flash('Not saved: no server',true)})}
   document.querySelectorAll('article[data-key] button').forEach(function(b){
     b.addEventListener('click',function(){rule(b.closest('article'),b.getAttribute('data-v'))})});
-  status.textContent=document.querySelectorAll('section:first-of-type article[data-key]').length+' to rule';
+  status.textContent=document.querySelectorAll('section:first-of-type article[data-key]').length+' on the boundary';
 })();
 """
 
@@ -101,16 +102,19 @@ def _row(entry: dict, verdict: str = "") -> str:
     )
 
 
-def render(summary: dict, ruled: list[dict] | None = None) -> str:
-    """`summary` is `corpuslm.concepts.summary`; `ruled` the concepts with a verdict in force
-    (`corpuslm.concepts.listing` rows whose `verdict` is set), offered again so a ruling can be
-    changed."""
+def render(summary: dict, rows: list[dict] | None = None) -> str:
+    """`summary` is `corpuslm.concepts.summary`; `rows` is `corpuslm.concepts.listing` (every
+    concept with its state, counts and verdict), from which the in-force and out lists are
+    drawn; a concept's own verdict shows as the pressed button."""
     states = summary["states"]
     gate = summary["gate"]
     boundary = "".join(_row(entry) for entry in summary["boundary"]) or (
         '<p class="empty">Nothing on the boundary.</p>'
     )
-    ruled_rows = "".join(_row(entry, entry.get("verdict", "")) for entry in ruled or [])
+    rows = rows or []
+    in_rows = "".join(_row(e, e.get("verdict", "")) for e in rows if e["state"] == "in")
+    out_rows = "".join(_row(e, e.get("verdict", "")) for e in rows if e["state"] == "out")
+    out_count = sum(1 for e in rows if e["state"] == "out")
     counts = json.dumps(states)
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
@@ -122,8 +126,11 @@ def render(summary: dict, ruled: list[dict] | None = None) -> str:
         f"{states['out']} out · gate {gate['min_sections']} sections, {gate['min_claims']} claims"
         "</p></header><main>"
         f"<section><h2>Boundary: tap In or Out</h2>{boundary}</section>"
-        + (f"<section><h2>Ruled</h2>{ruled_rows}</section>" if ruled_rows else "")
-        + f"<section><h2>Concepts by section count</h2>"
+        f"<section><h2>In force ({states['in']})</h2>"
+        f"{in_rows or '<p class="empty">None yet.</p>'}</section>"
+        f"<section><details><summary>Out ({out_count}): tap In to bring one in</summary>"
+        f"{out_rows or '<p class="empty">None.</p>'}</details></section>"
+        f"<section><h2>Concepts by section count</h2>"
         f"{_bars(summary['sections_histogram'], gate['min_sections'])}"
         '<p class="note">Green bars are at or above the gate.</p></section>'
         f'</main><div class="saved" id="saved">Saved</div>'
