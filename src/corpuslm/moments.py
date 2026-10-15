@@ -30,6 +30,11 @@ Decisions:
 - A moment's identity across rebuilds is its source and span, so a ruling survives a rebuild
   that proposes the same span. Enforced by:
   tests/test_moments.py::test_a_rebuild_keeps_the_ruling_on_the_same_span.
+- The owner may reword a moment's insight; the model's wording stays in the moment's metadata,
+  and a proposed moment the owner words is approved. A ruled moment is never deleted by a
+  rebuild, so the wording survives. Deleting a moment is declining it (owner, 2026-10-15: no
+  start or end pickers and no merge; attaching neighbouring moments shows them as one stretch).
+  Enforced by: tests/test_moments.py::test_the_owner_rewords_an_insight_and_it_survives_a_rebuild.
 - A rebuild never deletes a moment the owner has ruled on, approved or declined, even when the
   new claims no longer propose its span. Why: 2026-10-14 the Bee claims were rebuilt from
   corrected speakers and 44 approved moments would have gone. Enforced by:
@@ -376,6 +381,7 @@ def listing(store: Store, *, state: str | None = None, source_id: str | None = N
                 "insight": moment["insight"],
                 "origin": moment["origin"],
                 "state": found,
+                "edited": _metadata(moment).get("insight_by") == "owner",
                 "concepts": store.moment_concept_keys(moment),
             }
         )
@@ -410,8 +416,50 @@ def verdict(
     return {"id": moment_id, "verdict": ruling}
 
 
+MAX_INSIGHT_CHARS = 400
+
+
+def _metadata(moment: dict) -> dict:
+    try:
+        found = json.loads(moment.get("metadata") or "{}")
+    except ValueError:
+        return {}
+    return found if isinstance(found, dict) else {}
+
+
+def edit(
+    store: Store, moment_id: str, insight: str, *, answered_through: str, created_by: str
+) -> dict:
+    """The owner's wording of a moment's insight. The model's wording stays in the moment's
+    metadata; a proposed moment the owner words is approved with it."""
+    text = " ".join(str(insight).split())
+    if not text or len(text) > MAX_INSIGHT_CHARS:
+        raise ValueError(f"an insight is 1 to {MAX_INSIGHT_CHARS} characters")
+    moment = store.moment(moment_id)
+    if moment is None:
+        raise KeyError(f"no moment {moment_id!r}")
+    metadata = _metadata(moment)
+    metadata.setdefault("model_insight", moment["insight"])
+    metadata["insight_by"] = "owner"
+    state = state_of(store.current_moment_verdicts(moment["source_id"]).get(
+        moment["subject_sha256"]
+    ))  # fmt: skip
+    with store.transaction():
+        store.update_moment_insight(moment_id, text, metadata)
+        if state == "proposed":
+            store.append_moment_verdict(
+                moment["source_id"],
+                moment["subject_sha256"],
+                "approved",
+                answered_through=answered_through,
+                created_by=created_by,
+            )
+    return {"id": moment_id, "insight": text, "state": "approved" if state == "proposed" else state}
+
+
 __all__ = [
     "Estimate",
+    "edit",
     "Note",
     "SourceStatus",
     "build",

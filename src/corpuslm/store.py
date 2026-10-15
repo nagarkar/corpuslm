@@ -1071,6 +1071,15 @@ class Store:
         row = self.db.one("SELECT * FROM moments WHERE id = ?", (moment_id,))
         return None if row is None else dict(row)
 
+    def update_moment_insight(self, moment_id: str, insight: str, metadata: dict) -> None:
+        """The owner's wording of a moment's insight, with the moment's metadata (which keeps the
+        model's wording)."""
+        self.db.update(
+            "moments",
+            moment_id,
+            {"insight": insight, "metadata": json.dumps(metadata, sort_keys=True)},
+        )
+
     def moment_count(self, source_id: str | None = None, *, origin: str | None = None) -> int:
         return len(self.moments(source_id, origin=origin))
 

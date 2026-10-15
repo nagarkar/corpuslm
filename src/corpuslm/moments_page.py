@@ -2,7 +2,9 @@
 
 One self-contained page at `/moments` on the review server: the counts by state, then one card
 per proposed moment, grouped by source (title and date), each with its insight, its span in
-minutes and seconds, its concepts, and two buttons, Approve and Decline. A tap posts
+minutes and seconds, its concepts, an Edit link that rewords the insight (`moment_edit`; a
+proposed moment the owner words is approved), and two buttons, Approve and Decline; approved
+moments follow with one button, Delete (a decline). A tap posts
 `{"method": "moment_verdict", "params": {"id", "verdict"}}` to the server's one API route under
 the same write check as the review page. Under each card, folded, the moment's lines: time, who
 spoke and the words, with a picker on each line; a pick posts `{"method": "line_speaker",
@@ -34,7 +36,12 @@ border-radius:999px;padding:2px 8px;font-size:12px;margin:2px 4px 0 0}
 padding:11px 10px;border-radius:9px;border:1.5px solid var(--line);background:transparent;color:var(--ink);min-height:44px}
 .buttons button[aria-pressed="true"]{background:var(--good);border-color:var(--good);color:#fff}
 .buttons button.decline[aria-pressed="true"]{background:var(--muted);border-color:var(--muted)}
-.card.done{opacity:.55}.card.done details{opacity:1}
+.card.done{opacity:.55}.card.done details{opacity:1}.card.approved{opacity:1}
+.edit{font:inherit;font-size:13px;background:transparent;border:0;color:var(--muted);text-decoration:underline;padding:0;
+justify-self:start;min-height:32px}.editbox{display:grid;gap:6px}.editbox textarea{font:inherit;font-size:16px;width:100%;
+min-height:5em;resize:vertical;padding:8px;border-radius:8px;border:1.5px solid var(--line);background:var(--ground);color:var(--ink)}
+.editbox div{display:flex;gap:8px}.editbox button{font:inherit;font-size:14px;padding:8px 14px;border-radius:8px;
+border:1.5px solid var(--line);background:transparent;color:var(--ink);min-height:40px}.badge{font-size:11px;color:var(--good)}
 details.lines summary{font-size:13px;color:var(--muted);cursor:pointer;min-height:32px}
 .line{display:grid;grid-template-columns:44px 118px 1fr;gap:6px;font-size:14px;padding:4px 0;border-top:1px solid var(--line)}
 .line .t{color:var(--muted);font-size:12px}.line select{font:inherit;font-size:13px;max-width:116px}
@@ -79,6 +86,22 @@ _SCRIPT = """
       .then(function(out){if(!out.ok){flash('Not saved: '+(out.body.error||'error'),true);return}
         row.classList.remove('unknown');row.setAttribute('data-pick',s.value);flash('Saved: '+s.options[s.selectedIndex].text)})
       .catch(function(){flash('Not saved: no server',true)})})}
+  function edit(card){
+    var shown=card.querySelector('.insight');if(card.querySelector('.editbox'))return;
+    var box=document.createElement('div');box.className='editbox';
+    var area=document.createElement('textarea');area.value=shown.textContent;box.appendChild(area);
+    var row=document.createElement('div');var save=document.createElement('button');save.textContent='Save';
+    var cancel=document.createElement('button');cancel.textContent='Cancel';row.appendChild(save);row.appendChild(cancel);box.appendChild(row);
+    shown.after(box);shown.hidden=true;area.focus();
+    cancel.addEventListener('click',function(){box.remove();shown.hidden=false});
+    save.addEventListener('click',function(){
+      post({method:'moment_edit',params:{id:card.getAttribute('data-id'),insight:area.value}})
+      .then(function(out){if(!out.ok){flash('Not saved: '+(out.body.error||'error'),true);return}
+        shown.textContent=out.body.result.insight;box.remove();shown.hidden=false;
+        if(out.body.result.state==='approved'&&!card.classList.contains('approved')){mark(card,'approved');count()}
+        flash('Saved')})
+      .catch(function(){flash('Not saved: no server',true)})})}
+  document.querySelectorAll('.card .edit').forEach(function(b){b.addEventListener('click',function(){edit(b.closest('.card'))})});
   document.querySelectorAll('.card .buttons button').forEach(function(b){
     b.addEventListener('click',function(){rule(b.closest('.card'),b.getAttribute('data-v'))})});
   document.querySelectorAll('.all button').forEach(function(b){
@@ -126,18 +149,32 @@ def _lines(moment: dict, choices: list[tuple[str, str]]) -> str:
 
 def _card(moment: dict, choices: list[tuple[str, str]] | None = None) -> str:
     state = moment["state"]
-    done = " done" if state != "proposed" else ""
     chips = "".join(f"<span>{html.escape(key)}</span>" for key in moment.get("concepts") or [])
-    pressed_yes = "true" if state == "approved" else "false"
-    pressed_no = "true" if state == "declined" else "false"
+    if state == "approved":
+        classes = "card done approved"
+        buttons = (
+            '<div class="buttons" style="grid-template-columns:1fr">'
+            '<button class="decline" data-v="declined" aria-pressed="false">Delete</button></div>'
+        )
+    else:
+        classes = "card" + (" done" if state != "proposed" else "")
+        pressed_yes = "true" if state == "approved" else "false"
+        pressed_no = "true" if state == "declined" else "false"
+        buttons = (
+            f'<div class="buttons"><button data-v="approved" aria-pressed="{pressed_yes}">Approve'
+            f'</button><button class="decline" data-v="declined" aria-pressed="{pressed_no}">'
+            "Decline</button></div>"
+        )
+    badge = ' <span class="badge">approved</span>' if state == "approved" else ""
+    edited = " · your wording" if moment.get("edited") else ""
     return (
-        f'<div class="card{done}" data-id="{html.escape(moment["id"])}">'
+        f'<div class="{classes}" data-id="{html.escape(moment["id"])}">'
         f'<div class="insight">{html.escape(moment["insight"])}</div>'
+        '<button class="edit" type="button">Edit</button>'
         f'<div class="meta">{_clock(moment.get("start_seconds"))} to '
-        f"{_clock(moment.get('end_seconds'))} · {html.escape(moment['origin'])}</div>"
+        f"{_clock(moment.get('end_seconds'))} · {html.escape(moment['origin'])}{edited}{badge}</div>"
         + (f'<div class="chips">{chips}</div>' if chips else "")
-        + f'<div class="buttons"><button data-v="approved" aria-pressed="{pressed_yes}">Approve</button>'
-        f'<button class="decline" data-v="declined" aria-pressed="{pressed_no}">Decline</button></div>'
+        + buttons
         + _lines(moment, choices or [])
         + "</div>"
     )

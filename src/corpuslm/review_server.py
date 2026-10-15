@@ -188,6 +188,23 @@ class Answers:
             finally:
                 db.close()
 
+    def moment_edit(self, moment_id: object, insight: object) -> dict:
+        """The owner's wording of a moment's insight (corpuslm.moments.edit)."""
+        from . import moments
+
+        if not isinstance(moment_id, str) or not moment_id.strip():
+            raise ValueError("id is the moment's id")
+        if not isinstance(insight, str):
+            raise ValueError("insight is text")
+        with self._lock:
+            db, store = self._store()
+            try:
+                return moments.edit(
+                    store, moment_id, insight, answered_through="phone page", created_by=CREATED_BY
+                )
+            finally:
+                db.close()
+
     def moment_verdicts(self, moment_ids: object, verdict: object) -> dict:
         """Append one ruling on several moments at once (a source's Approve all or Decline
         all), in one transaction: all land or none."""
@@ -361,6 +378,8 @@ class Answers:
             return self.concept_verdict(params.get("key"), params.get("verdict"))
         if method == "moment_verdict":
             return self.moment_verdict(params.get("id"), params.get("verdict"))
+        if method == "moment_edit":
+            return self.moment_edit(params.get("id"), params.get("insight"))
         if method == "moment_verdicts":
             return self.moment_verdicts(params.get("ids"), params.get("verdict"))
         if method == "line_speaker":
@@ -391,8 +410,8 @@ class Answers:
             return self.list(params.get("collection"))
         raise ValueError(
             "method must be one of: health, get, set, delete, list, concept_verdict, "
-            "moment_verdict, moment_verdicts, line_speaker, monologue_new, monologue_brief, "
-            "monologue_attach, monologue_detach, monologue_estimate, monologue_run"
+            "moment_verdict, moment_verdicts, moment_edit, line_speaker, monologue_new, "
+            "monologue_brief, monologue_attach, monologue_detach, monologue_estimate, monologue_run"
         )
 
 

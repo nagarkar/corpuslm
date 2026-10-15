@@ -29,12 +29,13 @@ def test_the_page_shows_insights_spans_and_concepts_and_escapes():
     assert "A choice is right only as of now &amp; then." in html
     assert "0:25 to 1:10 · model" in html and "1:30 to 2:00 · import" in html
     assert "<span>choice</span><span>beat</span>" in html
-    assert 'data-id="mom-1"' in html and 'class="card done" data-id="mom-2"' in html
+    assert 'data-id="mom-1"' in html and 'class="card done approved" data-id="mom-2"' in html
     assert html.count('<div class="all">') == 1  # one pair of Approve all / Decline all per source
     assert 'data-v="approved">Approve all<' in html and 'data-v="declined">Decline all<' in html
+    assert html.count('data-v="approved"') == 2  # the proposed card and Approve all
     assert (
-        html.count('data-v="approved"') == 3 and 'data-v="approved" aria-pressed="true"' in html
-    )  # two cards and Approve all
+        ">Delete</button>" in html and html.count('class="edit"') == 2
+    )  # approved: Delete; all: Edit
     assert "line 2" not in html and "<details" not in html  # no lines unless the caller adds them
 
 
