@@ -109,9 +109,9 @@ def test_a_version_4_database_gains_the_table_after_a_verified_backup(tmp_path):
 
     opened = db.Database(path)
     try:
-        assert opened.migration["from"] == 4 and opened.migration["to"] == db.USER_VERSION == 15
+        assert opened.migration["from"] == 4 and opened.migration["to"] == db.USER_VERSION == 16
         backup = opened.migration["backup"]
-        assert backup.endswith("-before-v15.sqlite")
+        assert backup.endswith("-before-v16.sqlite")
         assert opened.one("PRAGMA user_version")[0] == db.USER_VERSION
         assert opened.one("SELECT COUNT(*) FROM model_suggestions")[0] == 0
         assert opened.one("PRAGMA integrity_check")[0] == "ok"

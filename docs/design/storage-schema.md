@@ -128,7 +128,7 @@ places. The stored copy could disagree (a metadata failure left members
 | Kind | Tables | Rule |
 |---|---|---|
 | master data | `sources`, `corpora`, `corpus_members`, `review_answers`, `feeds`, `source_skips` and the list tables | mutable; `version` bumps on every update; a trigger writes every changed column to `change_log` (old value, new value, row version); list tables are written position by position and log each element added or removed (an element that moves counts as removed and added) |
-| decisions | `review_verdicts`, `speaker_verdicts`, `corrections`, `concept_verdicts`, `moment_verdicts` | append-only (a trigger aborts UPDATE and DELETE); an answer given again or changed is a new row; the newest row per slot is in force (`vw_current_*`) |
+| decisions | `review_verdicts`, `speaker_verdicts`, `corrections`, `concept_verdicts`, `moment_verdicts`, `line_speaker_verdicts` | append-only (a trigger aborts UPDATE and DELETE); an answer given again or changed is a new row; the newest row per slot is in force (`vw_current_*`) |
 | evidence | `fetch_attempts`, `change_log` | append-only |
 | runs | `runs` | one row per pipeline run (`ytlm run`), opened `running` and closed once as `ok` or `error` |
 | derived state | `artifacts`, `segments`, `segments_fts`, `cleaned_segments`, `cleaned_segments_fts`, `model_suggestions`, `model_suggestion_candidates` | rebuilt from files; no history |
@@ -167,7 +167,7 @@ keep lineage.
 
 ## Migrations: user_version, a verified backup, one transaction (2026-10-03)
 
-The schema version is `PRAGMA user_version` (`db.USER_VERSION`, now 15; a
+The schema version is `PRAGMA user_version` (`db.USER_VERSION`, now 16; a
 database made before it was tracked reads 0 and has the v1 schema, frozen
 in `tests/fixtures/schema_v1.sql`). On open, `db.migrate`:
 
@@ -253,6 +253,12 @@ body add` fills it.
 The v14 → v15 step is additive: after the verified backup it creates `monologues` (with its
 change-log trigger), `monologue_moments`, `monologue_bodies` and `monologue_runs` (all empty) in
 one transaction and sets `user_version` 15 inside it. `corpuslm monologue new` fills them.
+
+The v15 → v16 step is additive: after the verified backup it creates `line_speakers` and
+`line_speaker_verdicts` (both empty) with the view `vw_current_line_speaker_verdicts` and the
+append-only trigger of `line_speaker_verdicts`, in one transaction, and sets `user_version` 16
+inside it. `line_speaker_verdicts` is an owner table from then on. `corpuslm speakers attribute`
+fills `line_speakers`; the owner's picks fill the verdicts.
 
 Proof of the v14 → v15 step on a copy of the real database (2026-10-13, taken at version 10 at
 the end of the YouTube claim pass, so the copy took the v11 to v15 steps in one transaction; 300
@@ -896,6 +902,40 @@ force (`vw_current_moment_verdicts`); a rebuild that proposes the same span keep
 | source | TEXT | no | one of `review file`, `phone page` (where it was answered) |
 | applied_at | TEXT | no | when |
 
+### `line_speakers`
+
+History: derived.
+
+Who spoke one line of a source whose recorder leaves lines unidentified (Bee's `Unknown`), as a
+model picked it (corpuslm.line_speakers): a household name, or `media`, `other`, `noise`,
+`unclear`, with the model's confidence. Rebuilt whole per source; a pick at or above
+`[line_speakers].min_confidence` names the line in the transcript, a lower one goes to the owner.
+
+| column | type | null | meaning |
+|---|---|---|---|
+| (base) | | | |
+| source_id | TEXT | no | the source |
+| position | INTEGER | no | the segment's position |
+| name | TEXT | no | the pick |
+| confidence | REAL | no | 0 to 1 |
+| build_key | TEXT | no | the hash of the pass's inputs |
+
+### `line_speaker_verdicts`
+
+History: append-only.
+
+The owner's pick for one line. The newest row per (source, position) is in force
+(`vw_current_line_speaker_verdicts`) and always wins over the model's pick.
+
+| column | type | null | meaning |
+|---|---|---|---|
+| (base) | | | |
+| source_id | TEXT | no | the source |
+| position | INTEGER | no | the segment's position |
+| name | TEXT | no | who spoke the line |
+| source | TEXT | no | one of `review file`, `phone page` |
+| applied_at | TEXT | no | when it was recorded |
+
 ### `segments`
 
 History: derived.
@@ -985,6 +1025,10 @@ Every column of `concept_verdicts`; the newest row per concept.
 
 Every column of `moment_verdicts`; the newest row per (source, subject).
 
+### `vw_current_line_speaker_verdicts` (view)
+
+Every column of `line_speaker_verdicts`; the newest row per (source, position).
+
 ### `vw_current_corrections` (view)
 
 Every column of `corrections`; the newest row per span_norm.
@@ -1021,6 +1065,8 @@ segment changed, so it carries the previous hash):
 | `run-0a1b2c3d4e5f` | `cli` | `sources:1` | `running` | `2026-10-02T09:12:40Z` | NULL | 1 | NULL | `` |
 
 ## Changes
+
+- 2026-10-14: Version 16 (nagarkar/corpuslm#66): `line_speakers` (derived) and `line_speaker_verdicts` (append-only, an owner table): who spoke each line the recorder left unidentified, the model's pick with its confidence and the owner's pick, which always wins
 
 - 2026-10-13: Version 15 (nagarkar/corpuslm#50): `monologues` (master) with `monologue_moments`, `monologue_bodies` and `monologue_runs` (derived): the first artifact, its attached moments and bodies, and every recipe run keyed by its ingredients hash
 

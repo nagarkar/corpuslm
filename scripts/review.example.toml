@@ -64,6 +64,21 @@ batch_claims = 120
 model = "gemini/gemini-2.5-flash-lite"
 max_moments = 8
 
+# Optional: who spoke each line the recorder left unidentified (`corpuslm speakers attribute`).
+# Shares the [claims] workspace; the vendor key (ANTHROPIC_API_KEY) comes from the environment.
+# One [[line_speakers.household]] table per person who usually speaks: the names the recognizer
+# writes for them go in `aliases`.
+[line_speakers]
+model = "anthropic/claude-opus-5-5"
+owner = "Owner"
+[[line_speakers.household]]
+name = "Owner"
+role = "the owner, a parent; the children call them Baba"
+[[line_speakers.household]]
+name = "Child"
+role = "their son, a schoolboy"
+aliases = ["Chyld"]
+
 # Optional: the perspective sheet draft (`corpuslm sheet draft BODY`). Shares the [claims] workspace.
 [sheet]
 model = "gemini/gemini-2.5-flash-lite"

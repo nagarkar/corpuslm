@@ -1120,6 +1120,75 @@ class Store:
             )
         return {row["subject_sha256"]: row["verdict"] for row in rows}
 
+    # ---- line speakers (corpuslm.line_speakers) -------------------------------------------
+
+    def replace_line_speakers(
+        self, source_id: str, picks: Iterable[dict], *, build_key: str, created_by: str
+    ) -> int:
+        """The model's pick per line of one source, rebuilt whole in one transaction. Each pick
+        is `{"position", "name", "confidence"}`. The owner's picks are a separate table and are
+        never touched here. Returns how many were written."""
+        written = 0
+        with self.db.transaction():
+            self.db.execute("DELETE FROM line_speakers WHERE source_id = ?", (source_id,))
+            for pick in picks:
+                self.db.insert(
+                    "line_speakers",
+                    standard_fields("lsp", created_by=created_by)
+                    | {
+                        "source_id": source_id,
+                        "position": int(pick["position"]),
+                        "name": str(pick["name"]),
+                        "confidence": float(pick["confidence"]),
+                        "build_key": build_key,
+                    },
+                )
+                written += 1
+        return written
+
+    def line_speakers(self, source_id: str) -> dict[int, dict]:
+        """Position -> the model's `{"name", "confidence"}` for one source."""
+        return {
+            row["position"]: {"name": row["name"], "confidence": row["confidence"]}
+            for row in self.db.all(
+                "SELECT position, name, confidence FROM line_speakers WHERE source_id = ? "
+                "ORDER BY position",
+                (source_id,),
+            )
+        }
+
+    def append_line_speaker_verdict(
+        self,
+        source_id: str,
+        position: int,
+        name: str,
+        *,
+        answered_through: str,
+        created_by: str,
+    ) -> str:
+        return self.db.insert(
+            "line_speaker_verdicts",
+            standard_fields("lsv", created_by=created_by)
+            | {
+                "source_id": source_id,
+                "position": int(position),
+                "name": name,
+                "source": answered_through,
+                "applied_at": now_iso(),
+            },
+        )
+
+    def current_line_speaker_verdicts(self, source_id: str) -> dict[int, str]:
+        """Position -> the owner's pick in force for one source."""
+        return {
+            row["position"]: row["name"]
+            for row in self.db.all(
+                "SELECT position, name FROM vw_current_line_speaker_verdicts WHERE source_id = ? "
+                "ORDER BY position",
+                (source_id,),
+            )
+        }
+
     # ---- bodies of work (corpuslm.bodies) ------------------------------------------------
 
     def body(self, name: str) -> dict | None:

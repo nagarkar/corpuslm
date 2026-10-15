@@ -26,6 +26,9 @@ Decisions:
   without blocking. Enforced by:
   tests/test_speaker_map.py::test_a_label_with_no_binding_or_a_conflict_needs_the_owner.
 - A binding below LOW_CONFIDENCE is a question for the owner, not a fact.
+- Per-line picks (corpuslm.line_speakers) apply after the per-label map: the owner's pick for a
+  line, else a model pick at or above MIN_LINE_CONFIDENCE; an unsure pick leaves the recorder
+  label. Enforced by: tests/test_line_speakers.py::test_an_unsure_pick_keeps_the_recorder_label.
 
 Terms:
 - **speaker scheme**: how one source labels its speakers and resolves a label to a name.
@@ -46,6 +49,9 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 LOW_CONFIDENCE = 0.6  # below this a binding goes to the owner
+MIN_LINE_CONFIDENCE = 0.9  # below this a line pick names nothing (corpuslm.line_speakers)
+NON_PERSONS = {"media": "Media", "other": "Someone else", "noise": "Noise"}
+UNCLEAR = "unclear"
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,6 +150,30 @@ def apply_map(document: dict, speaker_map: dict, *, scheme: SpeakerScheme) -> di
             segment["speaker"] = entry["name"]
         else:
             segment["speaker"] = role
+    return document
+
+
+def confident_line_pick(pick: dict | None) -> bool:
+    return bool(pick) and pick["name"] != UNCLEAR and pick["confidence"] >= MIN_LINE_CONFIDENCE
+
+
+def line_display(name: str) -> str:
+    return NON_PERSONS.get(name, name)
+
+
+def apply_line_speakers(document: dict, picks: dict[int, dict], verdicts: dict[int, str]) -> dict:
+    """After `apply_map`: name each line the owner picked, else each line with a confident
+    model pick (corpuslm.line_speakers); a line with an unsure pick keeps its recorder label,
+    so the per-label name no longer reaches it. Lines with neither stay as the map named them."""
+    for segment in document["segments"]:
+        index = segment.get("idx")
+        if index in verdicts:
+            segment["speaker"] = line_display(verdicts[index])
+        elif index in picks:
+            pick = picks[index]
+            segment["speaker"] = (
+                line_display(pick["name"]) if confident_line_pick(pick) else segment.get("role", "")
+            )
     return document
 
 

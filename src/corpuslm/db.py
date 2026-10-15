@@ -40,7 +40,7 @@ from .identity import canonical_sha256  # noqa: F401  (re-exported: db.canonical
 
 # PRAGMA user_version of the schema below. 0 is a database made before the
 # version was tracked (the v1 schema, frozen in tests/fixtures/schema_v1.sql).
-USER_VERSION = 15
+USER_VERSION = 16
 
 BACKUPS_DIRNAME = "backups"
 # How many verified backups `<workspace>/backups/` keeps (owner ruling
@@ -257,6 +257,41 @@ MOMENTS_VIEW = """
 CREATE VIEW IF NOT EXISTS vw_current_moment_verdicts AS
 SELECT * FROM moment_verdicts
 WHERE rowid IN (SELECT max(rowid) FROM moment_verdicts GROUP BY source_id, subject_sha256);
+"""
+
+# Line speakers (corpuslm.line_speakers): who spoke each line of a source whose recorder leaves
+# lines unidentified (Bee's "Unknown"). `line_speakers` is derived state, the model's pick and
+# confidence per line, rebuilt whole per source; `line_speaker_verdicts` are the owner's picks,
+# append-only, keyed by (source, position), and always win over the model's.
+LINE_SPEAKERS_TABLES = f"""CREATE TABLE IF NOT EXISTS line_speakers (
+    {KNOWLEDGE_OBJECT_COLUMNS},
+    source_id TEXT NOT NULL REFERENCES sources(id),
+    position INTEGER NOT NULL CHECK (position >= 0),
+    name TEXT NOT NULL CHECK (name <> ''),
+    confidence REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
+    build_key TEXT NOT NULL DEFAULT '',
+    UNIQUE (source_id, position)
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS line_speaker_verdicts (
+    {KNOWLEDGE_OBJECT_COLUMNS},
+    source_id TEXT NOT NULL REFERENCES sources(id),
+    position INTEGER NOT NULL CHECK (position >= 0),
+    name TEXT NOT NULL CHECK (name <> ''),
+    source TEXT NOT NULL DEFAULT 'phone page' CHECK (source IN ('review file', 'phone page')),
+    applied_at TEXT NOT NULL
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS line_speaker_verdicts_slot
+    ON line_speaker_verdicts (source_id, position);
+"""
+
+LINE_SPEAKERS_VIEW = """
+CREATE VIEW IF NOT EXISTS vw_current_line_speaker_verdicts AS
+SELECT * FROM line_speaker_verdicts
+WHERE rowid IN (
+    SELECT max(rowid) FROM line_speaker_verdicts GROUP BY source_id, position
+);
 """
 
 # Bodies of work (corpuslm.bodies): the references a monologue draws on, and the history of
@@ -544,6 +579,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS segments_fts USING fts5(
 {BODIES_TABLE}
 
 {MONOLOGUES_TABLES}
+
+{LINE_SPEAKERS_TABLES}
 """
 
 # Master data: every column whose change is written to change_log by trigger.
@@ -586,6 +623,7 @@ APPEND_ONLY = (
     "change_log",
     "concept_verdicts",
     "moment_verdicts",
+    "line_speaker_verdicts",
 )
 
 
@@ -690,6 +728,7 @@ WHERE rowid IN (SELECT max(rowid) FROM corrections GROUP BY span_norm);
 """
     + CONCEPTS_VIEW
     + MOMENTS_VIEW
+    + LINE_SPEAKERS_VIEW
 )
 
 TRIGGERS = _triggers()
@@ -774,6 +813,7 @@ OWNER_TABLES = (
     "review_answers",
     "concept_verdicts",
     "moment_verdicts",
+    "line_speaker_verdicts",
 )
 
 
@@ -958,6 +998,16 @@ def _v9_to_v10_script() -> list[str]:
 def _v8_to_v9_script(connection: sqlite3.Connection) -> list[str]:
     """Rebuild `sources` so its `status` CHECK allows `ignored`."""
     return _rebuild_sources_script(connection, "sources_v9")
+
+
+def _v15_to_v16_script() -> list[str]:
+    """Additive: the line-speaker tables (empty), their view and the append-only trigger of
+    `line_speaker_verdicts` (`corpuslm speakers attribute` and the review page fill them)."""
+    return [
+        *_statements(LINE_SPEAKERS_TABLES),
+        *_statements(LINE_SPEAKERS_VIEW),
+        *_statements(_append_only_trigger("line_speaker_verdicts")),
+    ]
 
 
 def _v14_to_v15_script() -> list[str]:
@@ -1234,7 +1284,7 @@ def migrate(connection: sqlite3.Connection, db_path: Path) -> dict:
         return {"from": version, "to": USER_VERSION, "backup": None, "created": True}
     saved = backup(connection, db_path, label=f"before-v{USER_VERSION}")
     deleted = prune_backups(db_path)  # only after the new one verified
-    if version in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14):
+    if version in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15):
         # From v8 on, every step checks every table's row count (the v8 -> v9 and v10 -> v11
         # steps rebuild `sources`; the v9 -> v10 step is additive and nothing else may change).
         watched = (
@@ -1256,7 +1306,8 @@ def migrate(connection: sqlite3.Connection, db_path: Path) -> dict:
                 *(_v11_to_v12_script() if version <= 11 else []),
                 *(_v12_to_v13_script() if version <= 12 else []),
                 *(_v13_to_v14_script() if version <= 13 else []),
-                *_v14_to_v15_script(),
+                *(_v14_to_v15_script() if version <= 14 else []),
+                *_v15_to_v16_script(),
             ]
 
         if not _run_in_transaction(

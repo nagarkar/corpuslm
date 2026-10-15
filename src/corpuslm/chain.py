@@ -438,7 +438,11 @@ def best_transcript(
             document = chain.load(source_id, node)
             if speaker_map:
                 document = speaker_map_module.apply_map(document, speaker_map, scheme=scheme)
-            return document
+            return speaker_map_module.apply_line_speakers(
+                document,
+                chain.store.line_speakers(source_id),
+                chain.store.current_line_speaker_verdicts(source_id),
+            )
     raise schemas.SchemaError("no transcript artifact is built for this video")
 
 

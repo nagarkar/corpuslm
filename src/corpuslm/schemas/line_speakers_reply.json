@@ -1,0 +1,59 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "corpuslm.line_speakers_reply/1",
+ "title": "line speakers reply",
+ "description": "What the line-speakers model returns for one window of a source (corpuslm.line_speakers): who it found present, and who spoke each unidentified line of the window.",
+ "type": "object",
+ "additionalProperties": false,
+ "required": ["lines"],
+ "properties": {
+  "present": {
+   "type": "array",
+   "description": "The people the model found evidence of in the window.",
+   "items": {
+    "type": "object",
+    "description": "One person found present.",
+    "additionalProperties": false,
+    "required": ["name"],
+    "properties": {
+     "name": {
+      "type": "string",
+      "description": "A household name, or other."
+     },
+     "evidence": {
+      "type": "string",
+      "description": "A few words on why."
+     }
+    }
+   }
+  },
+  "lines": {
+   "type": "array",
+   "description": "One pick per unidentified line of the window.",
+   "items": {
+    "type": "object",
+    "description": "Who spoke one line.",
+    "additionalProperties": false,
+    "required": ["index", "who", "confidence"],
+    "properties": {
+     "index": {
+      "type": "integer",
+      "description": "The line's index as shown.",
+      "minimum": 0
+     },
+     "who": {
+      "type": "string",
+      "description": "A household name, or media, other, noise, unclear.",
+      "minLength": 1
+     },
+     "confidence": {
+      "type": "number",
+      "description": "The model's confidence, 0 to 1.",
+      "minimum": 0,
+      "maximum": 1
+     }
+    }
+   }
+  }
+ }
+}
