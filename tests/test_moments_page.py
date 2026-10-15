@@ -38,23 +38,26 @@ def test_the_page_shows_insights_spans_and_concepts_and_escapes():
     assert "line 2" not in html and "<details" not in html  # no lines unless the caller adds them
 
 
-def test_a_moment_folds_its_lines_with_a_speaker_picker_on_each():
+def test_a_moment_folds_its_lines_and_offers_one_shared_picker_list():
     rows = [dict(ROWS[0]) | {"lines": [
-        {"idx": 4, "t0": 25.0, "speaker": "Teo", "text": "a <b> line", "unidentified": False,
-         "pick": ""},
-        {"idx": 5, "t0": 30.0, "speaker": "Unknown", "text": "who said it", "unidentified": True,
-         "pick": ""},
-        {"idx": 6, "t0": 35.0, "speaker": "Ana", "text": "picked", "unidentified": True,
-         "pick": "Ana"},
+        {"idx": 4, "t0": 25.0, "speaker": "Teo", "label": "Unknown", "text": "a <b> line",
+         "unidentified": True, "pick": ""},  # named by a confident model pick
+        {"idx": 5, "t0": 30.0, "speaker": "Unknown", "label": "Unknown", "text": "who said it",
+         "unidentified": True, "pick": ""},  # still unsure
+        {"idx": 6, "t0": 35.0, "speaker": "Ana", "label": "Unknown", "text": "picked",
+         "unidentified": True, "pick": "Ana"},
+        {"idx": 7, "t0": 40.0, "speaker": "Ana", "label": "Ana", "text": "hers",
+         "unidentified": False, "pick": ""},
     ]}]  # fmt: skip
-    choices = [("Ana", "Ana"), ("Teo", "Teo"), ("media", "Media")]
+    choices = [("Ana", "Ana"), ("Teo", "Teo"), ("media", "Media</script>")]
     html = moments_page.render(SUMMARY, rows, choices)
-    assert "<summary>Lines (3, 2 Unknown) · who spoke</summary>" in html
+    assert "<summary>Lines (4, 1 unsure) · who spoke</summary>" in html
     assert "a &lt;b&gt; line" in html
-    assert html.count('class="line unknown"') == 1  # the unidentified line not yet picked
-    assert 'data-source="bee:1" data-position="5"' in html
-    assert '<option value="Ana" selected>Ana</option>' in html
-    assert '<option value="media">Media</option>' in html
+    assert html.count('class="line unknown"') == 1
+    assert 'data-source="bee:1" data-position="5" data-pick="" data-shown="Unknown"' in html
+    assert 'data-pick="Ana"' in html
+    assert html.count("<select") == 0  # built on the phone when a fold opens
+    assert '"Media\\u003c/script>"' in html  # the shared list cannot close its script tag
 
 
 def test_an_empty_list_says_so():

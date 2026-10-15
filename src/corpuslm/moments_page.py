@@ -20,6 +20,7 @@ Decisions:
 from __future__ import annotations
 
 import html
+import json
 
 from .concepts_page import _CSS as _BASE_CSS
 
@@ -64,13 +65,20 @@ _SCRIPT = """
     .then(function(out){if(!out.ok){flash('Not saved: '+(out.body.error||'error'),true);return}
       cards.forEach(function(c){mark(c,verdict)});count();flash('Saved: '+cards.length+' '+verdict)})
     .catch(function(){flash('Not saved: no server',true)})}
-  document.querySelectorAll('.line select').forEach(function(s){
+  var choices=JSON.parse(document.getElementById('choices').textContent||'[]');
+  function picker(row){var s=document.createElement('select');var pick=row.getAttribute('data-pick');
+    if(!pick){var o=document.createElement('option');o.value='';o.textContent=row.getAttribute('data-shown');s.appendChild(o)}
+    choices.forEach(function(c){var o=document.createElement('option');o.value=c[0];o.textContent=c[1];if(c[0]===pick)o.selected=true;s.appendChild(o)});
+    var who=row.querySelector('.who');who.textContent='';who.appendChild(s);wire(s)}
+  document.querySelectorAll('details.lines').forEach(function(d){d.addEventListener('toggle',function(){
+    if(d.open&&!d.getAttribute('data-built')){d.setAttribute('data-built','1');d.querySelectorAll('.line').forEach(picker)}})});
+  function wire(s){
     s.addEventListener('change',function(){var row=s.closest('.line');
       post({method:'line_speaker',params:{source:row.getAttribute('data-source'),
         position:Number(row.getAttribute('data-position')),name:s.value}})
       .then(function(out){if(!out.ok){flash('Not saved: '+(out.body.error||'error'),true);return}
-        row.classList.remove('unknown');flash('Saved: '+s.options[s.selectedIndex].text)})
-      .catch(function(){flash('Not saved: no server',true)})})});
+        row.classList.remove('unknown');row.setAttribute('data-pick',s.value);flash('Saved: '+s.options[s.selectedIndex].text)})
+      .catch(function(){flash('Not saved: no server',true)})})}
   document.querySelectorAll('.card .buttons button').forEach(function(b){
     b.addEventListener('click',function(){rule(b.closest('.card'),b.getAttribute('data-v'))})});
   document.querySelectorAll('.all button').forEach(function(b){
@@ -88,32 +96,29 @@ def _clock(seconds: float | None) -> str:
 
 
 def _lines(moment: dict, choices: list[tuple[str, str]]) -> str:
+    """The moment's lines, folded. Each line carries its speaker as text; the picker is built
+    from one shared list when the fold opens, so the page stays light."""
     rows = moment.get("lines") or []
     if not rows or not choices:
         return ""
-    unknown = sum(1 for line in rows if line.get("unidentified"))
+    unsure = 0
     out = []
     for line in rows:
         current = line.get("pick") or ""
-        options = "".join(
-            f'<option value="{html.escape(value)}"{" selected" if value == current else ""}>'
-            f"{html.escape(label)}</option>"
-            for value, label in choices
-        )
-        if not current:
-            options = (
-                f'<option value="" selected>{html.escape(line.get("speaker") or "?")}</option>'
-                + options
-            )
+        shown = line.get("speaker") or "?"
+        waiting = bool(line.get("unidentified")) and not current and shown == line.get("label")
+        unsure += waiting
         out.append(
-            f'<div class="line{" unknown" if line.get("unidentified") and not current else ""}"'
-            f' data-source="{html.escape(moment["source_id"])}" data-position="{int(line["idx"])}">'
-            f'<span class="t">{_clock(line.get("t0"))}</span><select>{options}</select>'
+            f'<div class="line{" unknown" if waiting else ""}"'
+            f' data-source="{html.escape(moment["source_id"])}" data-position="{int(line["idx"])}"'
+            f' data-pick="{html.escape(current)}" data-shown="{html.escape(shown)}">'
+            f'<span class="t">{_clock(line.get("t0"))}</span>'
+            f'<span class="who">{html.escape(shown)}</span>'
             f"<span>{html.escape(line.get('text') or '')}</span></div>"
         )
     return (
         f'<details class="lines"><summary>Lines ({len(rows)}'
-        f"{f', {unknown} Unknown' if unknown else ''}) · who spoke</summary>"
+        f"{f', {unsure} unsure' if unsure else ''}) · who spoke</summary>"
         + "".join(out)
         + "</details>"
     )
@@ -136,6 +141,10 @@ def _card(moment: dict, choices: list[tuple[str, str]] | None = None) -> str:
         + _lines(moment, choices or [])
         + "</div>"
     )
+
+
+def _choices_json(choices: list[tuple[str, str]] | None) -> str:
+    return json.dumps([list(choice) for choice in choices or []]).replace("<", "\\u003c")
 
 
 def render(summary: dict, moments: list[dict], choices: list[tuple[str, str]] | None = None) -> str:
@@ -169,6 +178,7 @@ def render(summary: dict, moments: list[dict], choices: list[tuple[str, str]] | 
         f"{states['proposed']} proposed, {states['declined']} declined</p></header>"
         f"<main>{body}</main>"
         f'<div class="saved" id="saved">Saved</div>'
+        f'<script type="application/json" id="choices">{_choices_json(choices)}</script>'
         f"<script>{_SCRIPT}</script></body></html>"
     )
 
