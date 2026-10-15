@@ -341,3 +341,19 @@ def test_a_version_14_database_gains_the_monologue_tables_after_a_verified_backu
             )  # fmt: skip
     finally:
         opened.close()
+
+
+def test_nearby_moments_of_one_source_show_as_one_stretch(world):
+    moments_at = [
+        {"source_id": BEE, "first_position": 0, "last_position": 0},
+        {"source_id": BEE, "first_position": 2, "last_position": 3},  # 20 s later: joined
+        {"source_id": TEXT, "first_position": 1, "last_position": 1},
+    ]
+    assert monologues.stretches(world.store, moments_at) == [(BEE, 0, 3), (TEXT, 1, 1)]
+    far = [moments_at[0], {"source_id": BEE, "first_position": 3, "last_position": 3}]
+    old = monologues.GAP_SECONDS
+    monologues.GAP_SECONDS = 10
+    try:
+        assert monologues.stretches(world.store, far) == [(BEE, 0, 0), (BEE, 3, 3)]
+    finally:
+        monologues.GAP_SECONDS = old

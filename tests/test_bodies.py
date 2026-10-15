@@ -272,3 +272,41 @@ def test_a_version_13_database_gains_the_bodies_table_after_a_verified_backup(tm
             store.add_body("two", "standing", text_source_id=TEXT, source_id=TEXT, created_by="t")
     finally:
         opened.close()
+
+
+def test_a_bodys_vocabulary_is_only_its_own_concepts(world):
+    world.body()
+    other = "bee:9"
+    world.store.add_source(other, "l", created_by="t", kind="bee")
+    world.store.replace_segments(
+        other, [{"idx": i, "t0": float(i), "t1": i + 1.0, "text": f"q {i}"} for i in range(3)]
+    )
+    world.store.replace_claims(
+        other,
+        [
+            {"section": i, "segments": [i], "text": f"Sim {i}.", "kind": "assertion"}
+            for i in range(3)
+        ],
+        build_key="k",
+        created_by="t",
+    )
+    ids = [row["id"] for row in world.store.claims(other)]
+    world.store.tag_claims(
+        {claim_id: [("simulation", "simulation")] for claim_id in ids},
+        build_key="k",
+        created_by="t",
+    )
+    world.store.refresh_concept_counts()
+    shared = bodies.vocabulary_lines(world.store, CONFIG)
+    assert "- simulation" in shared  # in force across the whole lexicon
+    assert bodies.vocabulary_lines(world.store, CONFIG, world.store.body("SMSTTD")) == ["- beat"]
+
+
+def test_a_tab_with_bold_and_repeated_vocabulary_headings_keeps_one_section():
+    text = (
+        "# **Perspective sheet**\n\n[Omit]\n\n## **Stances**\n\nA stance.\n\n## **Vocabulary**\n\n"
+        "- old\n\n## **Vocabulary**\n\n- older\n\n## Vocabulary\n\n- oldest\n\n[/Omit]\n"
+    )
+    out = bodies.with_vocabulary(text, ["- beat"])
+    assert out.count("Vocabulary") == 1 and "- beat" in out and "old" not in out
+    assert "A stance." in out and out.endswith("[/Omit]\n")

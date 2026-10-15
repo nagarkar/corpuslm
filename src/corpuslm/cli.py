@@ -1652,6 +1652,7 @@ def monologue_run_board(settings: ReviewSettings, name: str, fresh: bool, dry_ru
             return board | {"status": "dry-run", "note": "dry run: nothing was sent or written"}
         assert settings.claims is not None
         directory = settings.claims.workspace / "monologues" / monologues.slug(name)
+        directory.mkdir(parents=True, exist_ok=True)  # inside corpuslm's own workspace
         out = monologues.run(
             store, client, doc, name, directory=directory, fresh=fresh, created_by="corpuslm"
         )
