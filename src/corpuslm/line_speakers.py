@@ -7,7 +7,8 @@ owner's own included, to one person (nagarkar/corpuslm#66). This pass asks a mod
 unidentified line instead, reading the source's summary (the recorder's own, kept as the
 source's `description`), the household (`[line_speakers].household`: names, roles, the
 misspellings the recognizer uses) and the lines around it, in windows of `window_lines` lines
-with `context_lines` lines before each window shown as context only.
+with `context_lines` lines before each window shown as context only; the default window holds
+a whole conversation, so only the longest are split.
 
 A pick is a household name, or `media`, `other`, `noise` or `unclear`, with a confidence. The
 picks of a source are rows of `line_speakers`, rebuilt whole by the pass; the owner's picks are
@@ -32,15 +33,17 @@ Decisions:
   it. Enforced by:
   tests/test_line_speakers.py::test_the_owner_pick_wins_and_survives_a_rebuild.
 - A pick below `speaker_map.MIN_LINE_CONFIDENCE` names nothing: the line keeps its recorder
-  label and goes to the owner. Why: on the owner's marked lines (2026-10-14) picks at 0.6 or
-  above were right about nine times in ten and those below it about seven in ten. Enforced by:
+  label and goes to the owner. Why: on the owner's marked lines (2026-10-14) GPT-6.1 Sol's picks
+  at 0.9 or above were right 48 times in 52 and those below it 2 in 8. Enforced by:
   tests/test_line_speakers.py::test_an_unsure_pick_keeps_the_recorder_label.
 - The model reads the recorder's own words, not the AI cleanup's. Why: on the owner's marked
   lines (2026-10-14) the same prompt was right on 50 of 60 over the raw words and on 45 over the
   cleaned ones; the cleanup smooths the phrasing that tells speakers apart.
-- The model is Claude Opus (owner, 2026-10-14): on 60 lines the owner marked it was right on
-  52, Sonnet 50, the best Gemini 31, Jev 26; a cheap-first cascade cost more than Opus alone,
-  since an escalated window must be read again whole. (owner)
+- The model is GPT-6.1 Sol, one call per whole conversation (owner, 2026-10-14): on 60 lines the
+  owner marked it was right on 50 for $0.11, Claude Opus on 46 to 52 for $0.40 to $0.49, the best
+  Gemini 31, Jev 26; its confidence tracks its accuracy (48 of 52 right at 0.9 or above, 2 of 8
+  below), Opus's did not. A cheap-first cascade cost more than one good model, since an
+  escalated window must be read again whole. (owner)
 
 Terms:
 - **line speaker**: who spoke one line, as the model picked it (a row of `line_speakers`) or
@@ -65,8 +68,8 @@ from .store import Store
 
 STAGE = "line_speakers"
 NODE = "line_speakers"
-WINDOW_LINES = 150
-CONTEXT_LINES = 20
+WINDOW_LINES = 1500  # one call per conversation; only the longest are split
+CONTEXT_LINES = 50
 OUTPUT_TOKENS_PER_LINE = 60  # what `estimate` assumes one pick costs (Opus measured about 46)
 SUMMARY_SECTIONS = ("Summary", "Atmosphere")
 

@@ -49,7 +49,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 LOW_CONFIDENCE = 0.6  # below this a binding goes to the owner
-MIN_LINE_CONFIDENCE = 0.6  # below this a line pick names nothing (corpuslm.line_speakers)
+MIN_LINE_CONFIDENCE = 0.9  # below this a line pick names nothing (corpuslm.line_speakers)
 NON_PERSONS = {"media": "Media", "other": "Someone else", "noise": "Noise"}
 UNCLEAR = "unclear"
 

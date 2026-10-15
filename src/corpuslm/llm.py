@@ -379,6 +379,7 @@ _PRICES_PER_M = {
     "anthropic/claude-opus-5-5": (4.0, 20.0),
     "anthropic/claude-sonnet-5-5": (2.0, 10.0),
     "anthropic/claude-haiku-5-5": (0.10, 0.50),
+    "openai/gpt-6.1-sol": (2.0, 10.0),
     # The arbiter (ytlm's TypeSafe adapter). TypeSafe bills input tokens only; verified
     # 2026-09-29 at docs.typesafe.ai/models. Keyed on the alias the owner
     # chose to follow.

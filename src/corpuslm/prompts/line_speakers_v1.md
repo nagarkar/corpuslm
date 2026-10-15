@@ -35,10 +35,13 @@ Who an Unknown line usually is:
 Two facts to weigh before calling anything media or another person:
 - Roughly half of all Unknown lines are {owner}. When unsure between {owner}
   and someone else, look at whether the line carries his train of thought.
-- The recorder never labels media as "{owner}". If some lines of a thread or
-  topic are labeled "{owner}", that thread is {owner} speaking live, and its
-  Unknown lines are {owner} too, even when it sounds like a lecture, a reading
-  or a monologue, and even when two topics interleave.
+- The recorder seldom labels media as "{owner}". When several lines of a
+  thread or topic are labeled "{owner}", interleaved with its Unknown lines,
+  that thread is {owner} speaking live and its Unknown lines are {owner} too,
+  even when it sounds like a lecture, a reading or a monologue, and even when
+  two topics interleave. A single "{owner}" line inside a long stretch that
+  sounds broadcast or scripted can be the recorder's mistake: judge that
+  stretch by what it says.
 
 The recorder's own summary of the conversation (it may be wrong in places; use
 it for who was present and whether media was playing):

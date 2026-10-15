@@ -86,7 +86,7 @@ def world(tmp_path):
         4,
         [
             {"index": 4, "who": "Mallory", "confidence": 0.95},
-            {"index": 5, "who": "media", "confidence": 0.8},
+            {"index": 5, "who": "media", "confidence": 0.95},
             {"index": 9, "who": "Teo", "confidence": 0.9},  # outside the window: ignored
         ],
     )
@@ -113,7 +113,7 @@ def test_the_pass_keeps_one_pick_per_unidentified_line_of_each_window(world):
     assert out["picks"] == 4 and out["confident"] == 2 and out["unsure"] == 2
     picks = world.store.line_speakers(SOURCE)
     assert sorted(picks) == [1, 2, 4, 5]
-    assert picks[5] == {"name": "media", "confidence": 0.8}
+    assert picks[5] == {"name": "media", "confidence": 0.95}
 
 
 def test_a_name_outside_the_household_is_read_as_unclear(world):
@@ -132,8 +132,8 @@ def test_an_unsure_pick_keeps_the_recorder_label():
     }
     picks = {
         0: {"name": "Ana", "confidence": 0.9},
-        1: {"name": "Ana", "confidence": 0.5},
-        2: {"name": "media", "confidence": 0.7},
+        1: {"name": "Ana", "confidence": 0.85},
+        2: {"name": "media", "confidence": 0.95},
     }
     out = speaker_map.apply_line_speakers(document, picks, {})
     assert [segment["speaker"] for segment in out["segments"]] == [
