@@ -8,7 +8,8 @@ unidentified line instead, reading the source's summary (the recorder's own, kep
 source's `description`), the household (`[line_speakers].household`: names, roles, the
 misspellings the recognizer uses) and the lines around it, in windows of `window_lines` lines
 with `context_lines` lines before each window shown as context only; the default window holds
-a whole conversation, so only the longest are split.
+a whole conversation, so only the longest are split. A long conversation's reply takes minutes:
+`[line_speakers].timeout_seconds` raises the client's wait for this stage (not an input).
 
 A pick is a household name, or `media`, `other`, `noise` or `unclear`, with a confidence. The
 picks of a source are rows of `line_speakers`, rebuilt whole by the pass; the owner's picks are

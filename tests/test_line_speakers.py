@@ -243,3 +243,23 @@ def test_a_version_15_database_gains_the_line_speaker_tables_after_a_verified_ba
             opened.execute("DELETE FROM line_speaker_verdicts")
     finally:
         opened.close()
+
+
+def test_a_stage_timeout_reaches_the_vendor_request(tmp_path, monkeypatch):
+    seen = []
+
+    class Transport(llm.LiteLLMTransport):
+        def send(self, model, messages, params, *, tag):
+            seen.append(params.get("timeout"))
+            return llm.RawReply(
+                '{"lines": [{"index": 1, "who": "Ana", "confidence": 1}]}', 1, 1, 0.0
+            )
+
+    config = json.loads(json.dumps(CONFIG))
+    config["line_speakers"]["timeout_seconds"] = 900
+    client = llm.Client(tmp_path / "ws", config, transport=Transport())
+    variables = {"owner": "Ana", "household": "", "evidence": "", "summary": "", "transcript": "",
+                 "first": "1", "last": "1"}  # fmt: skip
+    monkeypatch.setenv("GEMINI_API_KEY", "test")
+    client.complete(line_speakers.STAGE, line_speakers.prompt(), variables, tag="t")
+    assert seen == [900.0]
