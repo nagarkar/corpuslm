@@ -1024,13 +1024,17 @@ class Store:
     def replace_model_moments(
         self, source_id: str, moments: Iterable[dict], *, build_key: str, created_by: str
     ) -> int:
-        """The model's moments of one source, rebuilt whole in one transaction; the imported
-        ones are left alone. Each moment is `{"first", "last", "insight"}`. Returns how many
-        were written (a span the imported ones already hold is left out)."""
+        """The model's moments of one source, rebuilt in one transaction; the imported ones and
+        every moment the owner has ruled on (approved or declined) are left alone. Each moment is
+        `{"first", "last", "insight"}`. Returns how many were written (a span already held is
+        left out)."""
         written = 0
         with self.db.transaction():
             self.db.execute(
-                "DELETE FROM moments WHERE source_id = ? AND origin = 'model'", (source_id,)
+                "DELETE FROM moments WHERE source_id = ? AND origin = 'model' "
+                "AND subject_sha256 NOT IN (SELECT subject_sha256 FROM moment_verdicts "
+                "WHERE source_id = ?)",
+                (source_id, source_id),
             )
             for moment in moments:
                 made = self.add_moment(

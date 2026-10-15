@@ -30,6 +30,10 @@ Decisions:
 - A moment's identity across rebuilds is its source and span, so a ruling survives a rebuild
   that proposes the same span. Enforced by:
   tests/test_moments.py::test_a_rebuild_keeps_the_ruling_on_the_same_span.
+- A rebuild never deletes a moment the owner has ruled on, approved or declined, even when the
+  new claims no longer propose its span. Why: 2026-10-14 the Bee claims were rebuilt from
+  corrected speakers and 44 approved moments would have gone. Enforced by:
+  tests/test_moments.py::test_a_rebuild_keeps_every_ruled_moment.
 
 Terms:
 - **moment**: one span of one source with a one-line insight, a row of `moments`.
