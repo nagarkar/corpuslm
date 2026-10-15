@@ -651,6 +651,11 @@ class Client:
             params["temperature"] = temperature
         if profile.json_mode:
             params["response_format"] = {"type": "json_object"}
+        timeout = (self.config.get(prompt.config_section) or {}).get("timeout_seconds")
+        if timeout and self.transport.name == "litellm":
+            # a stage whose replies are long (a whole conversation's line speakers) waits longer;
+            # not part of the payload hash, so the cache is unaffected
+            params["timeout"] = float(timeout)
         raw: RawReply | None = None
         attempts = 0
         last_error = ""

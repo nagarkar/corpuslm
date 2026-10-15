@@ -327,6 +327,7 @@ def _sheet(raw: object, where: str) -> SheetSettings:
 
 LINE_SPEAKERS_KEYS = (
     "model", "owner", "unidentified_label", "household", "window_lines", "context_lines",
+    "timeout_seconds",
 )  # fmt: skip
 HOUSEHOLD_KEYS = ("name", "role", "aliases", "note", "evidence")
 
