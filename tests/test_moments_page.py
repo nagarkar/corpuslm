@@ -34,7 +34,7 @@ def test_the_page_shows_insights_spans_and_concepts_and_escapes():
     assert 'data-v="approved">Approve all<' in html and 'data-v="declined">Decline all<' in html
     assert html.count('data-v="approved"') == 2  # the proposed card and Approve all
     assert (
-        ">Delete</button>" in html and html.count('class="edit"') == 2
+        ">Delete</button>" in html and html.count('class="edit"') == 0
     )  # approved: Delete; all: Edit
     assert "line 2" not in html and "<details" not in html  # no lines unless the caller adds them
 

@@ -2,9 +2,9 @@
 
 One self-contained page at `/moments` on the review server: the counts by state, then one card
 per proposed moment, grouped by source (title and date), each with its insight, its span in
-minutes and seconds, its concepts, an Edit link that rewords the insight (`moment_edit`; a
-proposed moment the owner words is approved), and two buttons, Approve and Decline; approved
-moments follow with one button, Delete (a decline). A tap posts
+minutes and seconds, its concepts, and two buttons, Approve and Decline: a bulk, mechanical
+pass, so no editing here (the monologue page rewords and deletes moments in context). A tap
+posts
 `{"method": "moment_verdict", "params": {"id", "verdict"}}` to the server's one API route under
 the same write check as the review page. Under each card, folded, the moment's lines: time, who
 spoke and the words, with a picker on each line; a pick posts `{"method": "line_speaker",
@@ -170,7 +170,6 @@ def _card(moment: dict, choices: list[tuple[str, str]] | None = None) -> str:
     return (
         f'<div class="{classes}" data-id="{html.escape(moment["id"])}">'
         f'<div class="insight">{html.escape(moment["insight"])}</div>'
-        '<button class="edit" type="button">Edit</button>'
         f'<div class="meta">{_clock(moment.get("start_seconds"))} to '
         f"{_clock(moment.get('end_seconds'))} · {html.escape(moment['origin'])}{edited}{badge}</div>"
         + (f'<div class="chips">{chips}</div>' if chips else "")

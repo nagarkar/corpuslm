@@ -4,7 +4,8 @@
 Two self-contained pages on the review server. `/monologues` lists the monologues with a form to
 start one (a name, an optional brief). `/monologues/<name>` is the choosing page: the brief (saved
 on tap), the moments and bodies attached so far (tap to take off), the candidate moments ranked by
-the concepts they share with the attached ones and by the brief's words, the bodies of work from
+the concepts they share with the attached ones and by the brief's words (every moment with Edit,
+which rewords its insight, and Delete, which declines it), the bodies of work from
 history, and the YouTube sources that share those concepts or match the brief (tap to attach as an
 occasional body). Estimate shows what a run would cost from the cache alone; Run appears after an
 estimate and is the second tap, the owner's yes. Every tap posts to the server's one API route
@@ -35,6 +36,9 @@ background:transparent;color:var(--ink);min-height:44px}button.act.primary{backg
 button.act.warn{border-color:var(--warn);color:var(--warn)}
 .big{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
 .result{font-size:14px;margin-top:8px}.result a{color:inherit}
+.tools{display:flex;gap:14px;margin-top:2px}button.link{font:inherit;font-size:13px;background:transparent;border:0;padding:0;
+color:var(--muted);text-decoration:underline;min-height:32px}button.link.danger{color:var(--warn)}
+.editbox{display:grid;gap:6px;margin-top:4px}.editbox textarea{min-height:5em}.editbox div{display:flex;gap:8px}
 textarea{resize:vertical;line-height:1.45}
 #brief{min-height:40vh}#newbrief{min-height:20vh}
 @media (min-width:900px){header .row,main{max-width:min(1400px,96vw)}#brief{min-height:55vh}}
@@ -54,6 +58,21 @@ _SCRIPT = """
     box.addEventListener('input',fit);fit()});
   document.querySelectorAll('[data-act]').forEach(function(b){b.addEventListener('click',function(){
     var act=b.getAttribute('data-act');var params={name:name};
+    if(act==='edit'){var card=b.closest('.card');var shown=card.querySelector('.insight');if(card.querySelector('.editbox'))return;
+      var box=document.createElement('div');box.className='editbox';var area=document.createElement('textarea');area.value=shown.textContent;
+      var row=document.createElement('div');var save=document.createElement('button');save.className='act primary';save.textContent='Save';
+      var cancel=document.createElement('button');cancel.className='act';cancel.textContent='Cancel';row.appendChild(save);row.appendChild(cancel);
+      box.appendChild(area);box.appendChild(row);shown.after(box);shown.hidden=true;area.focus();
+      cancel.addEventListener('click',function(){box.remove();shown.hidden=false});
+      save.addEventListener('click',function(){call('moment_edit',{id:card.getAttribute('data-moment'),insight:area.value}).then(function(o){
+        if(!o.ok){flash('Not saved: '+(o.body.error||''),true);return}shown.textContent=o.body.result.insight;box.remove();shown.hidden=false;flash('Saved')})});
+      return}
+    if(act==='delete'){var dcard=b.closest('.card');if(!confirm('Delete this moment? It leaves every monologue and is not proposed again.'))return;
+      var id=dcard.getAttribute('data-moment');
+      var off=dcard.getAttribute('data-attached')?call('monologue_detach',{name:name,moment:id}):Promise.resolve({ok:true});
+      off.then(function(o){if(!o.ok){flash('Not taken off: '+(o.body.error||''),true);return null}
+        return call('moment_verdict',{id:id,verdict:'declined'})}).then(function(o){if(!o)return;
+        if(o.ok){flash('Deleted');reload()}else{flash('Not deleted: '+(o.body.error||''),true)}});return}
     if(act==='save'){params.brief=document.getElementById('brief').value;params.title=document.getElementById('title').value;
       call('monologue_brief',params).then(function(o){flash(o.ok?'Saved':'Not saved: '+(o.body.error||''),!o.ok)});return}
     if(act==='new'){call('monologue_new',{name:document.getElementById('newname').value,brief:document.getElementById('newbrief').value})
@@ -86,6 +105,20 @@ def _card(text: str, meta: str, button: str) -> str:
     return (
         f'<div class="card"><div><div class="text">{text}</div>'
         f'<div class="meta">{meta}</div></div>{button}</div>'
+    )
+
+
+def _moment_card(moment: dict, meta: str, button: str, *, attached: bool) -> str:
+    """A moment with Edit (reword its insight) and Delete (decline it; an attached one is taken
+    off first) beside its Add or Off."""
+    moment_id = html.escape(moment["id"])
+    return (
+        f'<div class="card" data-moment="{moment_id}" data-attached="{"1" if attached else ""}">'
+        f'<div><div class="text insight">{html.escape(moment["insight"])}</div>'
+        f'<div class="meta">{meta}</div>'
+        '<div class="tools"><button class="link" data-act="edit" type="button">Edit</button>'
+        '<button class="link danger" data-act="delete" type="button">Delete</button></div></div>'
+        f"{button}</div>"
     )
 
 
@@ -127,10 +160,11 @@ def render(data: dict) -> str:
     hot = set(data["concepts"])
     attached_moments = (
         "".join(
-            _card(
-                html.escape(m["insight"]),
+            _moment_card(
+                m,
                 f'{html.escape(m["source_id"])} <span class="chips">{_chips(m["concepts"], hot)}</span>',
                 f'<button class="act warn" data-act="detach" data-kind="moment" data-id="{html.escape(m["id"])}">Off</button>',
+                attached=True,
             )
             for m in data["attached_moments"]
         )
@@ -149,8 +183,8 @@ def render(data: dict) -> str:
     )
     moments = (
         "".join(
-            _card(
-                html.escape(m["insight"]),
+            _moment_card(
+                m,
                 f"{html.escape(m['title'] or m['source_id'])} · {html.escape(m['date'])}"
                 f' <span class="chips">{_chips(m["concepts"], set(m["shared_concepts"]))}</span>'
                 + (
@@ -159,6 +193,7 @@ def render(data: dict) -> str:
                     else ""
                 ),
                 f'<button class="act" data-act="attach" data-kind="moment" data-id="{html.escape(m["id"])}">Add</button>',
+                attached=False,
             )
             for m in data["moments"]
         )
