@@ -35,7 +35,26 @@ def test_the_page_shows_insights_spans_and_concepts_and_escapes():
     assert (
         html.count('data-v="approved"') == 3 and 'data-v="approved" aria-pressed="true"' in html
     )  # two cards and Approve all
-    assert "line 2" not in html  # never a segment's text
+    assert "line 2" not in html and "<details" not in html  # no lines unless the caller adds them
+
+
+def test_a_moment_folds_its_lines_with_a_speaker_picker_on_each():
+    rows = [dict(ROWS[0]) | {"lines": [
+        {"idx": 4, "t0": 25.0, "speaker": "Teo", "text": "a <b> line", "unidentified": False,
+         "pick": ""},
+        {"idx": 5, "t0": 30.0, "speaker": "Unknown", "text": "who said it", "unidentified": True,
+         "pick": ""},
+        {"idx": 6, "t0": 35.0, "speaker": "Ana", "text": "picked", "unidentified": True,
+         "pick": "Ana"},
+    ]}]  # fmt: skip
+    choices = [("Ana", "Ana"), ("Teo", "Teo"), ("media", "Media")]
+    html = moments_page.render(SUMMARY, rows, choices)
+    assert "<summary>Lines (3, 2 Unknown) · who spoke</summary>" in html
+    assert "a &lt;b&gt; line" in html
+    assert html.count('class="line unknown"') == 1  # the unidentified line not yet picked
+    assert 'data-source="bee:1" data-position="5"' in html
+    assert '<option value="Ana" selected>Ana</option>' in html
+    assert '<option value="media">Media</option>' in html
 
 
 def test_an_empty_list_says_so():

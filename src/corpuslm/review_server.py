@@ -212,6 +212,30 @@ class Answers:
             finally:
                 db.close()
 
+    def line_speaker(self, params: dict) -> dict:
+        """The owner's pick for who spoke one line, from the moments page
+        (corpuslm.line_speakers)."""
+        from . import line_speakers
+
+        source, position, name = params.get("source"), params.get("position"), params.get("name")
+        if not isinstance(source, str) or not source:
+            raise ValueError("source is the source's id")
+        if isinstance(position, bool) or not isinstance(position, int) or position < 0:
+            raise ValueError("position is the line's position")
+        if not isinstance(name, str) or not name:
+            raise ValueError("name is who spoke the line")
+        if self.settings is None or self.settings.line_speakers is None:
+            raise ValueError("[line_speakers] is not in the settings; the page cannot name lines")
+        found = line_speakers.settings(self.settings.client_config())
+        with self._lock:
+            db, store = self._store()
+            try:
+                return line_speakers.pick_line(
+                    store, found, source, position, name, created_by=CREATED_BY
+                )
+            finally:
+                db.close()
+
     # -- the monologue pages' calls (corpuslm.monologue_page) --
 
     def _monologue_name(self, params: dict) -> str:
@@ -339,6 +363,8 @@ class Answers:
             return self.moment_verdict(params.get("id"), params.get("verdict"))
         if method == "moment_verdicts":
             return self.moment_verdicts(params.get("ids"), params.get("verdict"))
+        if method == "line_speaker":
+            return self.line_speaker(params)
         if method == "monologue_new":
             return self.monologue_new(params)
         if method == "monologue_brief":
@@ -365,8 +391,8 @@ class Answers:
             return self.list(params.get("collection"))
         raise ValueError(
             "method must be one of: health, get, set, delete, list, concept_verdict, "
-            "moment_verdict, moment_verdicts, monologue_new, monologue_brief, monologue_attach, "
-            "monologue_detach, monologue_estimate, monologue_run"
+            "moment_verdict, moment_verdicts, line_speaker, monologue_new, monologue_brief, "
+            "monologue_attach, monologue_detach, monologue_estimate, monologue_run"
         )
 
 

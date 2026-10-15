@@ -816,7 +816,16 @@ def review_serve_board(settings: ReviewSettings, port: int | None, dry_run: bool
         try:
             store = Store(fresh)
             rows = moments.listing(store, state="proposed")
-            return moments_page.render(moments.summary(store), rows)
+            choices = None
+            if settings.line_speakers is not None:
+                found = line_speakers.settings(settings.client_config())
+                choices = line_speakers.choices(found)
+                for row in rows:
+                    row["lines"] = line_speakers.span_lines(
+                        store, found, row["source_id"], row["first_position"],
+                        row["last_position"],
+                    )  # fmt: skip
+            return moments_page.render(moments.summary(store), rows, choices)
         finally:
             fresh.close()
 

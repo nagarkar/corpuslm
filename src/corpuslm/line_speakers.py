@@ -64,7 +64,7 @@ from dataclasses import dataclass
 
 from . import llm, prompts
 from .identity import canonical_sha256
-from .speaker_map import NON_PERSONS, UNCLEAR, confident_line_pick
+from .speaker_map import NON_PERSONS, UNCLEAR, confident_line_pick, line_display
 from .store import Store
 
 STAGE = "line_speakers"
@@ -159,6 +159,52 @@ def lines_of(store: Store, source_id: str) -> list[dict]:
         }
         for segment in store.segments(source_id)
     ]
+
+
+def choices(found: dict) -> list[tuple[str, str]]:
+    """The (value, label) speakers a page offers for one line: the household, then the others."""
+    names = [
+        found["owner"],
+        *(p["name"] for p in found["household"] if p["name"] != found["owner"]),
+    ]
+    return [(name, name) for name in names] + [(key, label) for key, label in NON_PERSONS.items()]
+
+
+def span_lines(store: Store, found: dict, source_id: str, first: int, last: int) -> list[dict]:
+    """The lines of one span as a page shows them: time, the name the index holds, the words,
+    whether the recorder left the line unidentified, and the owner's pick if any."""
+    labels = {line["idx"]: line["label"] for line in lines_of(store, source_id)}
+    verdicts = store.current_line_speaker_verdicts(source_id)
+    return [
+        {
+            "idx": segment["idx"],
+            "t0": segment["t0"],
+            "speaker": segment["speaker"],
+            "text": segment["text"],
+            "unidentified": labels.get(segment["idx"]) == found["unidentified_label"],
+            "pick": verdicts.get(segment["idx"], ""),
+        }
+        for segment in store.best_segments(source_id)
+        if first <= segment["idx"] <= last
+    ]
+
+
+def pick_line(
+    store: Store, found: dict, source_id: str, position: int, name: str, *, created_by: str
+) -> dict:
+    """The owner's pick for one line: appended as a verdict, and the search index names the line
+    at once. A name outside the choices is declined."""
+    allowed = {value for value, _ in choices(found)}
+    if name not in allowed:
+        raise ValueError(f"name must be one of: {', '.join(sorted(allowed))}")
+    if not store.has_source(source_id):
+        raise KeyError(f"unknown source {source_id!r}")
+    with store.transaction():
+        store.append_line_speaker_verdict(
+            source_id, position, name, answered_through="phone page", created_by=created_by
+        )
+        changed = store.set_cleaned_speaker(source_id, position, line_display(name))
+    return {"source": source_id, "position": position, "name": name, "indexed": changed}
 
 
 def windows(lines: list[dict], size: int, context: int) -> list[tuple[list[dict], list[dict]]]:
@@ -427,6 +473,9 @@ def record_failed(store: Store, source_id: str, reason: str, *, created_by: str)
 __all__ = [
     "Estimate",
     "SourceStatus",
+    "choices",
+    "pick_line",
+    "span_lines",
     "build",
     "estimate",
     "inputs",

@@ -1182,6 +1182,15 @@ class Store:
             },
         )
 
+    def set_cleaned_speaker(self, source_id: str, position: int, speaker: str) -> int:
+        """Name one line of a source's search index at once, after the owner picked its speaker
+        on a page; the next index rebuild applies the same pick from the verdicts. Returns the
+        rows changed."""
+        return self.db.execute(
+            "UPDATE cleaned_segments SET speaker = ? WHERE source_id = ? AND position = ?",
+            (speaker, source_id, int(position)),
+        ).rowcount
+
     def current_line_speaker_verdicts(self, source_id: str) -> dict[int, str]:
         """Position -> the owner's pick in force for one source."""
         return {

@@ -4,14 +4,17 @@ One self-contained page at `/moments` on the review server: the counts by state,
 per proposed moment, grouped by source (title and date), each with its insight, its span in
 minutes and seconds, its concepts, and two buttons, Approve and Decline. A tap posts
 `{"method": "moment_verdict", "params": {"id", "verdict"}}` to the server's one API route under
-the same write check as the review page. The page carries insights, labels, times and counts:
-no transcript text.
+the same write check as the review page. Under each card, folded, the moment's lines: time, who
+spoke and the words, with a picker on each line; a pick posts `{"method": "line_speaker",
+"params": {"source", "position", "name"}}` and lands as the owner's pick for that line
+(corpuslm.line_speakers), so speakers are fixed where a moment is used (owner, 2026-10-14).
 
 Never imports: cli, clikit, db, store, any model transport.
 
 Decisions:
-- The page shows insights, concept labels, times and counts only; no transcript text. Enforced
-  by: tests/test_moments_page.py::test_the_page_shows_insights_spans_and_concepts_and_escapes.
+- The page shows a moment's lines, folded, so the owner can fix who spoke them; it is served only
+  on the owner's tailnet, and no line ever goes to a chat window or a log. Enforced by:
+  tests/test_moments_page.py::test_the_page_shows_insights_spans_and_concepts_and_escapes.
 """
 
 from __future__ import annotations
@@ -30,7 +33,11 @@ border-radius:999px;padding:2px 8px;font-size:12px;margin:2px 4px 0 0}
 padding:11px 10px;border-radius:9px;border:1.5px solid var(--line);background:transparent;color:var(--ink);min-height:44px}
 .buttons button[aria-pressed="true"]{background:var(--good);border-color:var(--good);color:#fff}
 .buttons button.decline[aria-pressed="true"]{background:var(--muted);border-color:var(--muted)}
-.card.done{opacity:.55}
+.card.done{opacity:.55}.card.done details{opacity:1}
+details.lines summary{font-size:13px;color:var(--muted);cursor:pointer;min-height:32px}
+.line{display:grid;grid-template-columns:44px 118px 1fr;gap:6px;font-size:14px;padding:4px 0;border-top:1px solid var(--line)}
+.line .t{color:var(--muted);font-size:12px}.line select{font:inherit;font-size:13px;max-width:116px}
+.line.unknown select{border:1.5px solid var(--good)}
 .all{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:0 0 8px}.all button{font:inherit;font-weight:600;font-size:14px;
 padding:9px 10px;border-radius:9px;border:1.5px solid var(--line);background:transparent;color:var(--ink);min-height:44px}
 """
@@ -57,6 +64,13 @@ _SCRIPT = """
     .then(function(out){if(!out.ok){flash('Not saved: '+(out.body.error||'error'),true);return}
       cards.forEach(function(c){mark(c,verdict)});count();flash('Saved: '+cards.length+' '+verdict)})
     .catch(function(){flash('Not saved: no server',true)})}
+  document.querySelectorAll('.line select').forEach(function(s){
+    s.addEventListener('change',function(){var row=s.closest('.line');
+      post({method:'line_speaker',params:{source:row.getAttribute('data-source'),
+        position:Number(row.getAttribute('data-position')),name:s.value}})
+      .then(function(out){if(!out.ok){flash('Not saved: '+(out.body.error||'error'),true);return}
+        row.classList.remove('unknown');flash('Saved: '+s.options[s.selectedIndex].text)})
+      .catch(function(){flash('Not saved: no server',true)})})});
   document.querySelectorAll('.card .buttons button').forEach(function(b){
     b.addEventListener('click',function(){rule(b.closest('.card'),b.getAttribute('data-v'))})});
   document.querySelectorAll('.all button').forEach(function(b){
@@ -73,7 +87,39 @@ def _clock(seconds: float | None) -> str:
     return f"{whole // 60}:{whole % 60:02d}"
 
 
-def _card(moment: dict) -> str:
+def _lines(moment: dict, choices: list[tuple[str, str]]) -> str:
+    rows = moment.get("lines") or []
+    if not rows or not choices:
+        return ""
+    unknown = sum(1 for line in rows if line.get("unidentified"))
+    out = []
+    for line in rows:
+        current = line.get("pick") or ""
+        options = "".join(
+            f'<option value="{html.escape(value)}"{" selected" if value == current else ""}>'
+            f"{html.escape(label)}</option>"
+            for value, label in choices
+        )
+        if not current:
+            options = (
+                f'<option value="" selected>{html.escape(line.get("speaker") or "?")}</option>'
+                + options
+            )
+        out.append(
+            f'<div class="line{" unknown" if line.get("unidentified") and not current else ""}"'
+            f' data-source="{html.escape(moment["source_id"])}" data-position="{int(line["idx"])}">'
+            f'<span class="t">{_clock(line.get("t0"))}</span><select>{options}</select>'
+            f"<span>{html.escape(line.get('text') or '')}</span></div>"
+        )
+    return (
+        f'<details class="lines"><summary>Lines ({len(rows)}'
+        f"{f', {unknown} Unknown' if unknown else ''}) · who spoke</summary>"
+        + "".join(out)
+        + "</details>"
+    )
+
+
+def _card(moment: dict, choices: list[tuple[str, str]] | None = None) -> str:
     state = moment["state"]
     done = " done" if state != "proposed" else ""
     chips = "".join(f"<span>{html.escape(key)}</span>" for key in moment.get("concepts") or [])
@@ -87,13 +133,16 @@ def _card(moment: dict) -> str:
         + (f'<div class="chips">{chips}</div>' if chips else "")
         + f'<div class="buttons"><button data-v="approved" aria-pressed="{pressed_yes}">Approve</button>'
         f'<button class="decline" data-v="declined" aria-pressed="{pressed_no}">Decline</button></div>'
-        "</div>"
+        + _lines(moment, choices or [])
+        + "</div>"
     )
 
 
-def render(summary: dict, moments: list[dict]) -> str:
+def render(summary: dict, moments: list[dict], choices: list[tuple[str, str]] | None = None) -> str:
     """`summary` is `corpuslm.moments.summary`; `moments` the rows of `corpuslm.moments.listing`
-    to show (the proposed ones first, then recently ruled ones, as the caller chooses)."""
+    to show (the proposed ones first, then recently ruled ones, as the caller chooses), each
+    with its `lines` when the caller adds them; `choices` the (value, label) speakers a line may
+    be given (no picker without them)."""
     states = summary["states"]
     groups: dict[str, list[dict]] = {}
     for moment in moments:
@@ -106,7 +155,7 @@ def render(summary: dict, moments: list[dict]) -> str:
             f"<section><h2>{head}{(' · ' + date) if date else ''}</h2>"
             '<div class="all"><button data-v="approved">Approve all</button>'
             '<button data-v="declined">Decline all</button></div>'
-            + "".join(_card(moment) for moment in rows)
+            + "".join(_card(moment, choices) for moment in rows)
             + "</section>"
         )
     body = "".join(sections) or '<section><p class="empty">Nothing proposed.</p></section>'
