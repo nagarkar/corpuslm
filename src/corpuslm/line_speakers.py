@@ -172,7 +172,7 @@ def choices(found: dict) -> list[tuple[str, str]]:
 
 def span_lines(store: Store, found: dict, source_id: str, first: int, last: int) -> list[dict]:
     """The lines of one span as a page shows them: time, the name the index holds, the words,
-    whether the recorder left the line unidentified, and the owner's pick if any."""
+    the recorder's label, whether it left the line unidentified, and the owner's pick if any."""
     labels = {line["idx"]: line["label"] for line in lines_of(store, source_id)}
     verdicts = store.current_line_speaker_verdicts(source_id)
     return [
@@ -181,6 +181,7 @@ def span_lines(store: Store, found: dict, source_id: str, first: int, last: int)
             "t0": segment["t0"],
             "speaker": segment["speaker"],
             "text": segment["text"],
+            "label": labels.get(segment["idx"], ""),
             "unidentified": labels.get(segment["idx"]) == found["unidentified_label"],
             "pick": verdicts.get(segment["idx"], ""),
         }
