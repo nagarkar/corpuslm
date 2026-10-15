@@ -32,7 +32,9 @@ def test_the_page_shows_insights_spans_and_concepts_and_escapes():
     assert 'data-id="mom-1"' in html and 'class="card done" data-id="mom-2"' in html
     assert html.count('<div class="all">') == 1  # one pair of Approve all / Decline all per source
     assert 'data-v="approved">Approve all<' in html and 'data-v="declined">Decline all<' in html
-    assert html.count('data-v="approved"') == 3 and 'data-v="approved" aria-pressed="true"' in html  # two cards and Approve all
+    assert (
+        html.count('data-v="approved"') == 3 and 'data-v="approved" aria-pressed="true"' in html
+    )  # two cards and Approve all
     assert "line 2" not in html  # never a segment's text
 
 

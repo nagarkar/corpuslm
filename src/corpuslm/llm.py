@@ -374,6 +374,11 @@ _PRICES_PER_M = {
     "gemini/gemini-2.5-flash-lite": (0.10, 0.40),  # retired for new users 2026-09
     "gemini/gemini-2.5-flash": (0.30, 2.50),
     "gemini/gemini-3.1-flash-lite": (0.25, 1.50),
+    # The per-line speaker pass (corpuslm.line_speakers). From litellm's own model map,
+    # 2026-10-14; the reply's own price wins when the transport has one.
+    "anthropic/claude-opus-5-5": (4.0, 20.0),
+    "anthropic/claude-sonnet-5-5": (2.0, 10.0),
+    "anthropic/claude-haiku-5-5": (0.10, 0.50),
     # The arbiter (ytlm's TypeSafe adapter). TypeSafe bills input tokens only; verified
     # 2026-09-29 at docs.typesafe.ai/models. Keyed on the alias the owner
     # chose to follow.

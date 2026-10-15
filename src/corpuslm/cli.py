@@ -27,6 +27,7 @@ import sys
 import threading
 import urllib.error
 import urllib.request
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
@@ -38,6 +39,7 @@ from . import (
     concepts_page,
     db,
     document,
+    line_speakers,
     llm,
     moments,
     moments_page,
@@ -136,6 +138,22 @@ DESCRIPTIONS = {
     ),
 }
 DESCRIPTIONS |= {
+    "speakers attribute": (
+        "Ask a model who spoke each line the recorder left unidentified (Bee's Unknown), from "
+        "the source's summary, the household in `[line_speakers]` and the lines around it "
+        "(billed; `[line_speakers]` and `[llm]` in the settings file). Confident picks name the "
+        "line in the transcript; unsure ones wait for the owner; the owner's picks always win. "
+        "A source whose picks are current is left alone. `--dry-run` counts the calls and "
+        "estimates the cost; nothing is sent.",
+        "corpuslm speakers attribute --config /path/to/review.toml "
+        "--corpus 'Bee/Life and philosophy' --dry-run",
+    ),
+    "speakers status": (
+        "Per source: unidentified lines, how many are named (by the owner or a confident pick), "
+        "how many are unsure, the owner's picks, and whether the picks are current or stale. "
+        "Read-only.",
+        "corpuslm speakers status --config /path/to/review.toml --corpus 'Bee/Life and philosophy'",
+    ),
     "claims build": (
         "List what the chosen sources claim, one short sentence per claim tied to its segments, "
         "by a cheap model call per section (billed; `[claims]` and `[llm]` in the settings "
@@ -422,6 +440,30 @@ def build_parser() -> argparse.ArgumentParser:
     record_parser.add_argument(
         "--dry-run", action="store_true", help="count and print; write nothing"
     )
+    speakers_group = verbs.add_parser(
+        "speakers", help="who spoke each unidentified line: attribute, status"
+    )
+    speakers_verbs = speakers_group.add_subparsers(dest="speakers_verb", metavar="<subverb>")
+    for name, help_text in (
+        ("attribute", "pick who spoke each unidentified line by a model call per window (billed)"),
+        ("status", "named, unsure and owner-picked lines per source; read-only"),
+    ):
+        sub = leaf(speakers_verbs, name, help_text, f"speakers {name}")
+        sub.add_argument("--config", required=True, metavar="FILE", help="the review settings file")
+        sub.add_argument(
+            "--corpus", default=None, metavar="NAME", help="only the sources of this corpus"
+        )
+        sub.add_argument(
+            "--source",
+            action="append",
+            default=None,
+            metavar="SOURCE_ID",
+            help="one source (repeatable); without it, the corpus, or every Bee source",
+        )
+        if name == "attribute":
+            sub.add_argument(
+                "--dry-run", action="store_true", help="count and estimate; send and write nothing"
+            )
     claims_group = verbs.add_parser(
         "claims", help="what the sources claim: build, status, import-digests"
     )
@@ -1020,6 +1062,124 @@ def _claims_client(settings: ReviewSettings, verb: str) -> llm.Client:
             "scripts/review.example.toml)"
         )
     return llm.Client(settings.claims.workspace, settings.client_config(), verb=verb)
+
+
+def _speaker_sources(store: Store, corpus: str | None, chosen: list[str] | None) -> list[str]:
+    if chosen:
+        return _claims_sources(store, None, chosen)
+    if corpus:
+        row = store.corpus_by_name(corpus, exact=True)
+        if row is None:
+            raise ValueError(f"unknown corpus {corpus!r}")
+        return [member["source_id"] for member in store.member_rows(row["id"])]
+    return store.source_ids("bee", include_ignored=False)
+
+
+def _speakers_client(settings: ReviewSettings, verb: str) -> llm.Client:
+    if settings.line_speakers is None:
+        raise SettingsError(
+            f"{settings.path}: [line_speakers] is missing; add model, owner and the household "
+            "(see scripts/review.example.toml)"
+        )
+    return _claims_client(settings, verb)
+
+
+SPEAKERS_NEXT = (
+    "rebuild the Bee search index so claims and the review page read the new names: "
+    "./beelm.sh corpus index"
+)
+
+
+def speakers_attribute_board(
+    settings: ReviewSettings, corpus: str | None, chosen: list[str] | None, dry_run: bool
+) -> dict:
+    database = _open_existing(settings)
+    try:
+        store = Store(database)
+        client = _speakers_client(settings, "speakers attribute")
+        source_ids = _speaker_sources(store, corpus, chosen)
+        estimate = line_speakers.estimate(store, client, source_ids)
+        board = {
+            "verb": "speakers attribute",
+            "ok": True,
+            "sources_chosen": len(source_ids),
+            "sources_to_ask": estimate.sources,
+            "from_cache": estimate.from_cache,
+            "calls_billed": estimate.calls,
+            "lines_billed": estimate.lines,
+            "tokens_in": estimate.tokens_in,
+            "tokens_out_assumed": estimate.tokens_out,
+            "estimated_usd": estimate.usd,
+            "model": estimate.model,
+            "caps": settings.llm,
+        }
+        if dry_run:
+            return board | {"status": "dry-run", "note": "dry run: nothing was sent or written"}
+        standing = {
+            entry.source_id: entry
+            for entry in line_speakers.status(store, client.config, source_ids)
+        }
+        asked, picks, confident, unsure, cost = 0, 0, 0, 0, 0.0
+        failed: dict[str, str] = {}
+        stopped = ""
+        for source_id in source_ids:
+            entry = standing[source_id]
+            if entry.state == "current" or not entry.unidentified:
+                continue
+            try:
+                out = line_speakers.build(store, client, source_id, created_by="corpuslm")
+            except llm.SpendCapReached as error:
+                stopped = str(error)
+                break
+            except (llm.BadReply, llm.VendorError, llm.TruncatedReply) as error:
+                failed[source_id] = f"{type(error).__name__}: {str(error)[:200]}"
+                line_speakers.record_failed(
+                    store, source_id, failed[source_id], created_by="corpuslm"
+                )
+                continue
+            asked += 1
+            picks += out["picks"]
+            confident += out["confident"]
+            unsure += out["unsure"]
+            cost += out["cost_usd"]
+        return board | {
+            "asked": asked,
+            "picks": picks,
+            "confident": confident,
+            "unsure": unsure,
+            "failed": len(failed),
+            "failed_sources": failed,
+            "cost_usd": round(cost, 6),
+            "stopped_by": stopped,
+            "next": SPEAKERS_NEXT,
+        }
+    finally:
+        database.close()
+
+
+def speakers_status_board(
+    settings: ReviewSettings, corpus: str | None, chosen: list[str] | None
+) -> dict:
+    database = _open_existing(settings)
+    try:
+        store = Store(database)
+        if settings.line_speakers is None:
+            raise SettingsError(f"{settings.path}: [line_speakers] is missing")
+        source_ids = _speaker_sources(store, corpus, chosen)
+        entries = line_speakers.status(store, settings.client_config(), source_ids)
+        return {
+            "verb": "speakers status",
+            "ok": True,
+            "sources": len(entries),
+            "unidentified": sum(entry.unidentified for entry in entries),
+            "named": sum(entry.named for entry in entries),
+            "unsure": sum(entry.unsure for entry in entries),
+            "owner_picks": sum(entry.owner for entry in entries),
+            "states": dict(Counter(entry.state for entry in entries)),
+            "stale": {entry.source_id: entry.reason for entry in entries if entry.state == "stale"},
+        }
+    finally:
+        database.close()
 
 
 def claims_build_board(
@@ -1793,6 +1953,15 @@ def main(argv: list[str] | None = None) -> int:
                     board = concepts_edges_board(settings, namespace.concept)
                 case _:
                     board = concepts_verdict_board(settings, namespace.concept, namespace.ruling)
+            _print(board, as_json)
+            return 0 if board["ok"] else 1
+        if namespace.verb == "speakers":
+            if namespace.speakers_verb == "attribute":
+                board = speakers_attribute_board(
+                    settings, namespace.corpus, namespace.source, namespace.dry_run
+                )
+            else:
+                board = speakers_status_board(settings, namespace.corpus, namespace.source)
             _print(board, as_json)
             return 0 if board["ok"] else 1
         if namespace.verb == "claims":

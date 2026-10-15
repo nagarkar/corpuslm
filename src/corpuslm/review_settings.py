@@ -51,6 +51,18 @@ the `[claims]` workspace: the model.
     [sheet]
     model = "gemini/gemini-2.5-flash-lite"
 
+An optional `[line_speakers]` table turns on the per-line speaker pass (`corpuslm speakers
+attribute`), sharing the `[claims]` workspace: the model, the owner's name as the recorder labels
+it, and the household, one `[[line_speakers.household]]` table per person (name, role, the names
+the recognizer writes for them, a note):
+
+    [line_speakers]
+    model = "anthropic/claude-opus-5-5"
+    owner = "Chinmay"
+    [[line_speakers.household]]
+    name = "Chinmay"
+    role = "the owner, a father"
+
 An optional `[monologue]` table turns on the monologue recipe (`corpuslm monologue run`), sharing
 the `[claims]` workspace: the model and the target length in minutes of speech.
 
@@ -177,6 +189,7 @@ class ReviewSettings:
     moments: MomentsSettings | None = None
     sheet: SheetSettings | None = None
     monologue: MonologueSettings | None = None
+    line_speakers: dict | None = None
 
     def client_config(self) -> dict:
         """What `corpuslm.llm.Client` reads: the `[claims]` stage section and the `[llm]` caps."""
@@ -198,6 +211,8 @@ class ReviewSettings:
                 "model": self.moments.model,
                 "max_moments": self.moments.max_moments,
             }
+        if self.line_speakers is not None:
+            config["line_speakers"] = dict(self.line_speakers)
         if self.concepts is not None:
             config["concepts"] = {
                 "model": self.concepts.model,
@@ -310,6 +325,33 @@ def _sheet(raw: object, where: str) -> SheetSettings:
     return SheetSettings(_text(raw, "model", where))
 
 
+LINE_SPEAKERS_KEYS = (
+    "model", "owner", "unidentified_label", "household", "window_lines", "context_lines",
+)  # fmt: skip
+HOUSEHOLD_KEYS = ("name", "role", "aliases", "note")
+
+
+def _line_speakers(raw: object, where: str) -> dict:
+    if not isinstance(raw, dict):
+        raise SettingsError(f"{where}: must be a table")
+    _strict(raw, LINE_SPEAKERS_KEYS, where)
+    _text(raw, "model", where)
+    _text(raw, "owner", where)
+    for name in ("window_lines", "context_lines"):
+        value = raw.get(name, 1)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise SettingsError(f"{where}: {name} must be a whole number")
+    household = raw.get("household", [])
+    if not isinstance(household, list):
+        raise SettingsError(f"{where}: household must be a list of tables")
+    for person in household:
+        if not isinstance(person, dict):
+            raise SettingsError(f"{where}: each household entry must be a table")
+        _strict(person, HOUSEHOLD_KEYS, f"{where} household")
+        _text(person, "name", f"{where} household")
+    return dict(raw)
+
+
 def _llm(raw: object, where: str) -> dict[str, float]:
     if not isinstance(raw, dict):
         raise SettingsError(f"{where}: must be a table")
@@ -346,6 +388,7 @@ def load(path: Path) -> ReviewSettings:
             "moments",
             "sheet",
             "monologue",
+            "line_speakers",
         ),
         str(path),
     )
@@ -374,6 +417,11 @@ def load(path: Path) -> ReviewSettings:
     moments = _moments(raw["moments"], f"{path} [moments]") if "moments" in raw else None
     sheet = _sheet(raw["sheet"], f"{path} [sheet]") if "sheet" in raw else None
     monologue = _monologue(raw["monologue"], f"{path} [monologue]") if "monologue" in raw else None
+    line_speakers = (
+        _line_speakers(raw["line_speakers"], f"{path} [line_speakers]")
+        if "line_speakers" in raw
+        else None
+    )
     return ReviewSettings(
         Path(_text(raw, "database", str(path))).expanduser(),
         port,
@@ -386,6 +434,7 @@ def load(path: Path) -> ReviewSettings:
         moments,
         sheet,
         monologue,
+        line_speakers,
     )
 
 
