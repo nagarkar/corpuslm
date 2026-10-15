@@ -38,7 +38,8 @@ Terms:
   whose runs are scripts.
 - **recipe**: the versioned prompt that turns ingredients into a script (here `monologue`).
 - **ingredients**: what a run's output reflects, hashed: recipe, model, moments with their
-  claims, bodies with their sheet version or claims key.
+  claims, what was said over the moments' stretches, bodies with their sheet version and
+  vocabulary or claims key.
 - **prior**: the latest script tab's settled text, the style guide for the next run; not
   hashed.
 - **run**: one execution of the recipe, a row of `monologue_runs` holding the prior it was given
@@ -63,7 +64,8 @@ ABOUT = "about.md"
 SCRIPT = "script.md"
 DEFAULT_MINUTES = 4
 WORDS_PER_MINUTE = 150
-EXCERPT_CHARS = 2500  # of a moment's span shown to the model
+EXCERPT_CHARS = 9000  # of one stretch of what was said, shown to the model
+GAP_SECONDS = 120  # moments of one source this close are shown as one stretch
 REFERENCE_CLAIMS = 40  # per occasional body
 OMIT_OPEN, OMIT_CLOSE = bodies_module.OMIT_OPEN, bodies_module.OMIT_CLOSE
 
@@ -166,7 +168,7 @@ def _sheet_text(doc: document.DocumentStore, body: dict) -> str:
         return ""
     blocks = [
         block
-        for block in document.paragraphs(tab["settled"])
+        for block in bodies_module.without_vocabulary(document.paragraphs(tab["settled"]))
         if block not in (OMIT_OPEN, OMIT_CLOSE) and not block.startswith("# ")
     ]
     return "\n\n".join(blocks)
@@ -194,7 +196,16 @@ def ingredients(store: Store, doc: document.DocumentStore, name: str, config: di
                 if body["manuscript"]
                 else ""
             )
-            bodies.append({"name": body["name"], "kind": "standing", "sheet": version})
+            bodies.append(
+                {
+                    "name": body["name"],
+                    "kind": "standing",
+                    "sheet": version,
+                    "vocabulary": canonical_sha256(
+                        bodies_module.vocabulary_lines(store, config, body)
+                    ),
+                }
+            )
         else:
             source_ids = bodies_module.source_ids_of(store, body)
             keys = [
@@ -202,8 +213,13 @@ def ingredients(store: Store, doc: document.DocumentStore, name: str, config: di
                 for source_id in source_ids
             ]
             bodies.append({"name": body["name"], "kind": "occasional", "claims": keys})
+    said = [
+        canonical_sha256([source_id, first, last, _excerpt(store, source_id, first, last)])
+        for source_id, first, last in stretches(store, store.monologue_moments(row["id"]))
+    ]
     return {
         "recipe": {"id": prompt().id, "version": prompt().version, "sha256": prompt().sha256},
+        "said": said,
         "model": found["model"],
         "minutes": found["minutes"],
         "brief": row["brief"],
@@ -276,15 +292,31 @@ def status(store: Store, doc: document.DocumentStore, name: str, config: dict) -
 # ---- the materials and the run -------------------------------------------------------------
 
 
-def _excerpt(store: Store, moment: dict) -> str:
-    segments = store.best_segments(moment["source_id"])
+def _excerpt(store: Store, source_id: str, first: int, last: int) -> str:
+    segments = store.best_segments(source_id)
     lines = [
         (f"{s['speaker']}: " if s.get("speaker") else "") + s["text"]
         for s in segments
-        if moment["first_position"] <= s["idx"] <= moment["last_position"]
+        if first <= s["idx"] <= last
     ]
     text = "\n".join(lines)
     return text if len(text) <= EXCERPT_CHARS else text[:EXCERPT_CHARS] + " ..."
+
+
+def stretches(store: Store, moments: list[dict]) -> list[tuple[str, int, int]]:
+    """(source, first, last) of what was said, one per run of attached moments of one source
+    whose gaps are at most GAP_SECONDS: a story the moment pass cut in two is shown whole, with
+    the part between the moments."""
+    out: list[list] = []
+    for moment in sorted(moments, key=lambda m: (m["source_id"], m["first_position"])):
+        times = {s["idx"]: s["t0"] for s in store.best_segments(moment["source_id"])}
+        if out and out[-1][0] == moment["source_id"]:
+            gap = (times.get(moment["first_position"]) or 0) - (times.get(out[-1][2]) or 0)
+            if gap <= GAP_SECONDS:
+                out[-1][2] = max(out[-1][2], moment["last_position"])
+                continue
+        out.append([moment["source_id"], moment["first_position"], moment["last_position"]])
+    return [(source, first, last) for source, first, last in out]
 
 
 def _variables(
@@ -294,26 +326,39 @@ def _variables(
     record: dict,
     prior: str,
     changes: list[str],
+    config: dict,
 ) -> dict:
     sheets = []
     for body in store.monologue_bodies(row["id"]):
         if body["kind"] != "standing":
             continue
         text = _sheet_text(doc, body)
+        vocabulary = bodies_module.vocabulary_lines(store, config, body)
         sheets.append(
             f"PERSPECTIVE SHEET OF {body['name'].upper()}"
             + (f" (the owner's note: {body['note']})" if body["note"] else "")
             + ":\n"
             + (text or "(no sheet yet)")
+            + (
+                "\nITS VOCABULARY (use a term only where it fits what was said):\n"
+                + "\n".join(vocabulary)
+                if vocabulary
+                else ""
+            )
         )
     moments = []
     for number, moment in enumerate(store.monologue_moments(row["id"]), 1):
         concepts = ", ".join(store.moment_concept_keys(moment)) or "none tagged"
         claims = "\n".join(f"  - {text}" for text in _moment_claims(store, moment)) or "  (none)"
         moments.append(
-            f"MOMENT {number}: {moment['insight']}\n  concepts: {concepts}\n  claims:\n{claims}\n"
-            f"  what was said:\n{_excerpt(store, moment)}"
+            f"MOMENT {number}: {moment['insight']}\n  concepts: {concepts}\n  claims:\n{claims}"
         )
+    said = [
+        f"WHAT WAS SAID ({source_id}, lines {first} to {last}; speaker names come from a "
+        "recorder and a model and may be wrong; 'Unknown' is often the owner):\n"
+        + _excerpt(store, source_id, first, last)
+        for source_id, first, last in stretches(store, store.monologue_moments(row["id"]))
+    ]
     references = []
     for body in store.monologue_bodies(row["id"]):
         if body["kind"] != "occasional":
@@ -341,7 +386,7 @@ def _variables(
         "words": str(record["minutes"] * WORDS_PER_MINUTE),
         "sheets": "\n\n".join(sheets) or "PERSPECTIVE SHEET: none attached.",
         "brief": row["brief"] or "(none)",
-        "moments": "\n\n".join(moments) or "(none attached)",
+        "moments": "\n\n".join(moments + said) or "(none attached)",
         "references": "\n\n".join(references) or "(none)",
         "prior": prior_block,
     }
@@ -395,7 +440,7 @@ def estimate(
     _, settled = _latest_script(doc, row)
     prior = "" if fresh else _prior_text(settled)
     changes = changes_between(json.loads(runs[-1]["ingredients"]), record) if runs else []
-    variables = _variables(store, doc, row, record, prior, changes)
+    variables = _variables(store, doc, row, record, prior, changes, client.config)
     tokens_in = max(1, len(prompt().render(variables)) // 4 + 1)
     tokens_out = record["minutes"] * WORDS_PER_MINUTE * 2
     return Estimate(
@@ -443,7 +488,7 @@ def run(
     reply = client.complete(
         STAGE,
         prompt(),
-        _variables(store, doc, row, record, prior, changes),
+        _variables(store, doc, row, record, prior, changes, client.config),
         tag=f"{row['name']}-{key[:12]}",
     )
     paragraphs = [" ".join(text.split()) for text in reply.parsed["paragraphs"] if text.strip()]

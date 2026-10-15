@@ -141,15 +141,21 @@ def skeleton() -> str:
     return f"# {SHEET_TITLE}\n\n{OMIT_OPEN}\n\n{body}\n\n{OMIT_CLOSE}\n"
 
 
-def vocabulary_lines(store: Store, config: dict) -> list[str]:
-    """One line per concept in force: `- label: definition` (the definition when there is one)."""
+def vocabulary_lines(store: Store, config: dict, body: dict | None = None) -> list[str]:
+    """One line per concept in force: `- label: definition` (the definition when there is one).
+    With a body, only the concepts tagged on its own sources' claims: the lexicon is shared by
+    every corpus, and a sheet that lists all of it pulls physics and investing terms into a
+    philosophy monologue (seen 2026-10-14)."""
     try:
         states = concepts_module.states(store, config)
     except llm.NotConfigured:
         return []
+    own = store.concept_keys_of_sources(source_ids_of(store, body)) if body else None
     lines = []
     for concept in store.concepts():
         if states.get(concept["key"]) != "in":
+            continue
+        if own is not None and concept["key"] not in own:
             continue
         definition = concept["definition"].strip()
         lines.append(f"- {concept['label']}" + (f": {definition}" if definition else ""))
@@ -158,22 +164,31 @@ def vocabulary_lines(store: Store, config: dict) -> list[str]:
 
 def with_vocabulary(settled: str, lines: list[str]) -> str:
     """The sheet text with its vocabulary section replaced by `lines`; the rest untouched."""
-    blocks = document.paragraphs(settled)
-    try:
-        start = blocks.index(f"## {VOCABULARY}")
-    except ValueError:
-        start = len(blocks)
-        blocks.append(f"## {VOCABULARY}")
-    end = next(
-        (
-            index
-            for index in range(start + 1, len(blocks))
-            if blocks[index] == OMIT_CLOSE or blocks[index].startswith("## ")
-        ),
-        len(blocks),
-    )
-    body = ["\n".join(lines)] if lines else []
-    return "\n\n".join(blocks[: start + 1] + body + blocks[end:]) + "\n"
+    blocks = without_vocabulary(document.paragraphs(settled))
+    close = blocks.index(OMIT_CLOSE) if OMIT_CLOSE in blocks else len(blocks)
+    section = [f"## {VOCABULARY}", *(["\n".join(lines)] if lines else [])]
+    return "\n\n".join(blocks[:close] + section + blocks[close:]) + "\n"
+
+
+def heading_text(block: str) -> str:
+    """A heading's words without its markers: `## **Vocabulary**` reads `Vocabulary` (the Doc
+    round trip bolds headings)."""
+    return block.lstrip("#").strip().strip("*").strip()
+
+
+def without_vocabulary(blocks: list[str]) -> list[str]:
+    """The blocks with every vocabulary section removed, however many the tab has."""
+    out, skipping = [], False
+    for block in blocks:
+        if block.startswith("#"):
+            skipping = heading_text(block) == VOCABULARY
+            if skipping:
+                continue
+        elif block == OMIT_CLOSE:
+            skipping = False
+        if not skipping:
+            out.append(block)
+    return out
 
 
 def _sample_claims(store: Store, body: dict) -> list[str]:
@@ -185,7 +200,9 @@ def _sample_claims(store: Store, body: dict) -> list[str]:
 
 
 def _variables(store: Store, body: dict, config: dict) -> dict:
-    labels = [line[2:].split(":")[0] for line in vocabulary_lines(store, config)[:SAMPLE_CONCEPTS]]
+    labels = [
+        line[2:].split(":")[0] for line in vocabulary_lines(store, config, body)[:SAMPLE_CONCEPTS]
+    ]
     return {
         "body": body["name"],
         "note": body["note"] or "(none)",
@@ -214,7 +231,7 @@ def estimate(store: Store, client: llm.Client, name: str) -> Estimate:
     tokens_out = 0 if cached else ASSUMED_OUTPUT_TOKENS
     return Estimate(
         len(_sample_claims(store, body)),
-        len(vocabulary_lines(store, client.config)),
+        len(vocabulary_lines(store, client.config, body)),
         tokens_in,
         tokens_out,
         llm.price_usd(found["model"], tokens_in, tokens_out),
@@ -251,7 +268,7 @@ def draft(
     reply = client.complete(
         STAGE, prompt(), _variables(store, body, client.config), tag=f"sheet-{body['id']}"
     )
-    settled = with_vocabulary(tab["settled"], vocabulary_lines(store, client.config))
+    settled = with_vocabulary(tab["settled"], vocabulary_lines(store, client.config, body))
     doc.write_tab(body["manuscript"], SHEET_FILE, settled)
     blocks = document.paragraphs(settled)
     revisions = []
@@ -280,7 +297,7 @@ def draft(
         "tab": SHEET_FILE,
         "staged": staged["written"],
         "failed": len(staged["failed"]),
-        "vocabulary": len(vocabulary_lines(store, client.config)),
+        "vocabulary": len(vocabulary_lines(store, client.config, body)),
         "url": staged.get("url", ""),
         "cached": reply.cached,
         "cost_usd": round(reply.cost_usd or 0.0, 6),
@@ -296,7 +313,7 @@ def refresh_vocabulary(store: Store, doc: document.DocumentStore, name: str, con
         raise ValueError(
             f"the sheet of {name!r} has {len(tab['open'])} open revisions; resolve them first"
         )
-    lines = vocabulary_lines(store, config)
+    lines = vocabulary_lines(store, config, body)
     text = with_vocabulary(tab["settled"], lines)
     changed = text != tab["settled"]
     if changed:

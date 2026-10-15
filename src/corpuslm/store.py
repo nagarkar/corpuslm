@@ -1083,6 +1083,20 @@ class Store:
             and moment["first_position"] <= min(claim["segments"]) <= moment["last_position"]
         ]
 
+    def concept_keys_of_sources(self, source_ids: Sequence[str]) -> set[str]:
+        """The keys of every concept tagged on a claim of these sources."""
+        if not source_ids:
+            return set()
+        marks = ", ".join("?" for _ in source_ids)
+        return {
+            row["key"]
+            for row in self.db.all(
+                "SELECT DISTINCT p.key FROM claim_concepts t JOIN claims c ON c.id = t.claim_id "
+                f"JOIN concepts p ON p.id = t.concept_id WHERE c.source_id IN ({marks})",
+                tuple(source_ids),
+            )
+        }
+
     def moment_concept_keys(self, moment: dict) -> list[str]:
         """The concepts the moment's claims use, most frequent first."""
         counts: dict[str, int] = {}
