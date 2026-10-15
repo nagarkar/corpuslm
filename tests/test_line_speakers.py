@@ -276,3 +276,20 @@ def test_a_corpus_chooses_its_members_unless_sources_are_named(world):
     assert sorted(cli._chosen_sources(world.store, "bee", None, None)) == [SOURCE, "bee:2"]
     with pytest.raises(ValueError):
         cli._chosen_sources(world.store, None, None, "Nope")
+
+
+def test_a_page_pick_lands_as_a_verdict_and_names_the_indexed_line(world):
+    world.store.replace_cleaned_segments(SOURCE, SEGMENTS)
+    found = line_speakers.settings(CONFIG)
+    out = line_speakers.pick_line(world.store, found, SOURCE, 2, "media", created_by="t")
+    assert out["indexed"] == 1
+    assert world.store.current_line_speaker_verdicts(SOURCE) == {2: "media"}
+    shown = {s["idx"]: s["speaker"] for s in world.store.best_segments(SOURCE)}
+    assert shown[2] == "Media"
+    lines = line_speakers.span_lines(world.store, found, SOURCE, 1, 3)
+    assert [(line["idx"], line["unidentified"], line["pick"]) for line in lines] == [
+        (1, True, ""), (2, True, "media"), (3, False, "")
+    ]  # fmt: skip
+    with pytest.raises(ValueError):
+        line_speakers.pick_line(world.store, found, SOURCE, 2, "Mallory", created_by="t")
+    assert line_speakers.choices(found)[:2] == [("Ana", "Ana"), ("Teo", "Teo")]
