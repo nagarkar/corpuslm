@@ -53,9 +53,8 @@ from [{first}] to [{last}], and for no other line.
 
 First decide who was present: read the summary and the lines for who is
 named, addressed or described ("my son", "Mom", "Baba", a school, a job).
-A role word is evidence for the household member in that role: "son", "his
-boy", "the kids" or a child's voice points to the son; "daughter" to the
-daughter; "wife", "spouse" or "Mom" to the wife. List only people with evidence; a household
+A role word is evidence for the household member it points to:
+{evidence} List only people with evidence; a household
 member with no evidence was not there. Use "other" only for someone who is
 clearly not in the household. Then, for each of those lines, decide who spoke it, choosing
 only among {owner} and the people you listed:

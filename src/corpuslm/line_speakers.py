@@ -35,6 +35,9 @@ Decisions:
   label and goes to the owner. Why: on the owner's marked lines (2026-10-14) picks at 0.6 or
   above were right about nine times in ten and those below it about seven in ten. Enforced by:
   tests/test_line_speakers.py::test_an_unsure_pick_keeps_the_recorder_label.
+- The model reads the recorder's own words, not the AI cleanup's. Why: on the owner's marked
+  lines (2026-10-14) the same prompt was right on 50 of 60 over the raw words and on 45 over the
+  cleaned ones; the cleanup smooths the phrasing that tells speakers apart.
 - The model is Claude Opus (owner, 2026-10-14): on 60 lines the owner marked it was right on
   52, Sonnet 50, the best Gemini 31, Jev 26; a cheap-first cascade cost more than Opus alone,
   since an escalated window must be read again whole. (owner)
@@ -43,7 +46,8 @@ Terms:
 - **line speaker**: who spoke one line, as the model picked it (a row of `line_speakers`) or
   the owner did (a row of `line_speaker_verdicts`).
 - **household**: the people who usually speak in a kind's sources, from the settings: name,
-  role, the names the recognizer writes for them, a note.
+  role, the names the recognizer writes for them, a note, and the role words that point to them
+  ("son", "Mom").
 - **unidentified line**: a line whose recorder label is `[line_speakers].unidentified_label`
   (Bee: `Unknown`).
 """
@@ -85,6 +89,7 @@ def settings(config: dict) -> dict:
             "role": str(person.get("role", "")),
             "aliases": [str(alias) for alias in person.get("aliases", [])],
             "note": str(person.get("note", "")),
+            "evidence": [str(word) for word in person.get("evidence", [])],
         }
         for person in section.get("household", [])
     ]
@@ -113,6 +118,16 @@ def household_text(found: dict) -> str:
     return "\n".join(out)
 
 
+def evidence_text(found: dict) -> str:
+    """One line per household member with role words: what points to them."""
+    lines = [
+        f"- {', '.join(repr(word) for word in person['evidence'])} point to {person['name']}"
+        for person in found["household"]
+        if person["evidence"]
+    ]
+    return "\n".join(lines) or "- (no role words given)"
+
+
 def allowed_names(found: dict) -> set[str]:
     return {found["owner"], *(person["name"] for person in found["household"])}
 
@@ -129,15 +144,14 @@ def summary_of(source_row: dict) -> str:
 
 
 def lines_of(store: Store, source_id: str) -> list[dict]:
-    """Each line with its recorder label (the raw segment's speaker) and its best text."""
-    best = {segment["idx"]: segment["text"] for segment in store.best_segments(source_id)}
+    """Each line with its recorder label and its words as the recorder heard them."""
     return [
         {
             "idx": segment["idx"],
             "t0": segment["t0"],
             "t1": segment["t1"],
             "label": segment["speaker"],
-            "text": best.get(segment["idx"], segment["text"]),
+            "text": segment["text"],
         }
         for segment in store.segments(source_id)
     ]
@@ -163,6 +177,7 @@ def _variables(found: dict, summary: str, context: list[dict], window: list[dict
     return {
         "owner": found["owner"],
         "household": household_text(found),
+        "evidence": evidence_text(found),
         "summary": summary,
         "transcript": "\n".join(_line(line) for line in [*context, *window]),
         "first": str(window[0]["idx"]),
