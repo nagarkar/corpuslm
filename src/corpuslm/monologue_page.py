@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 
 from .concepts_page import _CSS as _BASE_CSS
 
@@ -153,11 +154,16 @@ def offered_moment_card(m: dict) -> str:
     )
 
 
+_SPEAKER_LABEL = re.compile(r"^(HOST|GUEST_\d+|UNKNOWN)$")  # a diarization label, not a name
+
+
 def video_card(s: dict, hot: set[str] | None = None) -> str:
     """A YouTube source that could be added: its title linked to the video, then channel, date,
     the people in it and the concepts it shares."""
     link = f"https://www.youtube.com/watch?v={html.escape(s['source_id'])}"
-    people = ", ".join(name for name in s.get("people") or [] if name)
+    people = ", ".join(
+        name for name in s.get("people") or [] if name and not _SPEAKER_LABEL.match(name)
+    )
     meta = " · ".join(
         part
         for part in (

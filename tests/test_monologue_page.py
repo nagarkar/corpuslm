@@ -209,6 +209,8 @@ def test_search_finds_every_moment_and_every_video_not_only_the_shortlist(world)
     assert 'data-act="approve-attach"' in html and "Approve &amp; add" in html
     cards = monologue_page.render_results("videos", videos["items"], videos["found"])
     assert "Essentia Foundation" in cards and "https://www.youtube.com/watch?v=vid2" in cards
+    labelled = monologue_page.video_card(videos["items"][0] | {"people": ["HOST", "Swami"]})
+    assert "Swami" in labelled and "HOST" not in labelled
     assert monologue_page.render_results("videos", [], 0) == '<p class="empty">Nothing matches.</p>'
     with pytest.raises(ValueError):
         monologues.search(store, "karma", "bodies", "x")
