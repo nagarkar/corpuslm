@@ -204,6 +204,22 @@ def test_a_rebuild_keeps_the_ruling_on_the_same_span(world):
         world.database.execute("DELETE FROM moment_verdicts")
 
 
+def test_a_rebuild_keeps_every_ruled_moment(world):
+    moments.build(world.store, world.client(), SOURCE, created_by="test")
+    proposed = moments.listing(world.store, state="proposed")
+    moments.verdict(
+        world.store, proposed[0]["id"], "approved", answered_through="phone page", created_by="t"
+    )
+    # new claims propose a different span; the approved one is no longer proposed
+    world.store.replace_model_moments(
+        SOURCE, [{"first": 3, "last": 4, "insight": "New."}], build_key="k2", created_by="t"
+    )
+    spans = {
+        (m["first_position"], m["last_position"]): m["state"] for m in moments.listing(world.store)
+    }
+    assert spans == {(2, 5): "approved", (3, 4): "proposed"}
+
+
 def test_rebuilt_claims_make_the_proposals_stale_and_the_estimate_calls_no_model(tmp_path):
     world = World(tmp_path)  # no scripted reply
     try:
