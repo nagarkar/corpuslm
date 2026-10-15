@@ -124,6 +124,9 @@ def test_the_pages_render_the_choices_escaped_and_without_transcript_text(world)
     assert 'data-act="attach" data-kind="source" data-id="vid1"' in html
     assert '<span class="hot">beat</span>' in html and "line 0 about karma" not in html
     assert 'data-act="estimate"' in html and 'id="run" data-act="run" hidden' in html
+    # the brief is a tall box the owner can resize, and a laptop gets the full width
+    assert '<textarea id="brief" rows="12"' in html and "resize:vertical" in html
+    assert "#brief{min-height:40vh}" in html and "@media (min-width:900px)" in html
     listed = monologue_page.render_list(monologues.listing(store, None, None))
     assert '<a href="/monologues/karma">Karma &lt;b&gt;</a>' in listed and "1 moments" in listed
     assert "No monologues yet." in monologue_page.render_list([])
