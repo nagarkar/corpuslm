@@ -602,6 +602,79 @@ def brief_words(brief: str) -> list[str]:
     return list(dict.fromkeys(word for word in words if word not in _STOP))
 
 
+SEARCH_RESULTS = 40
+
+
+def _matches(words: list[str], fields: list[str]) -> bool:
+    text = " ".join(field.lower() for field in fields if field)
+    return all(word in text for word in words)
+
+
+def search(store: Store, name: str, kind: str, query: str) -> dict:
+    """Search everything, not just the shortlist, for the monologue page: `moments` (every moment
+    not declined and not attached, by its insight, its source's title and its concepts) or
+    `videos` (every YouTube source not attached, by title, channel, the people in it and its
+    description). Every word of the query must appear. Reads only."""
+    row = _monologue(store, name)
+    words = [word for word in query.lower().split() if word]
+    if not words:
+        return {"kind": kind, "items": []}
+    items: list[dict] = []
+    if kind == "moments":
+        attached = {
+            (m["source_id"], m["subject_sha256"]) for m in store.monologue_moments(row["id"])
+        }
+        verdicts = store.current_moment_verdicts()
+        titles: dict[str, dict] = {}
+        for moment in store.moments():
+            if (moment["source_id"], moment["subject_sha256"]) in attached:
+                continue
+            state = moments_module.state_of(verdicts.get(moment["subject_sha256"]))
+            if state == "declined":
+                continue
+            source = titles.setdefault(moment["source_id"], store.source(moment["source_id"]) or {})
+            keys = store.moment_concept_keys(moment)
+            if not _matches(words, [moment["insight"], source.get("title") or "", *keys]):
+                continue
+            items.append(
+                {
+                    "id": moment["id"], "source_id": moment["source_id"],
+                    "title": source.get("title") or "",
+                    "date": (source.get("published_at") or "")[:10],
+                    "insight": moment["insight"], "concepts": keys, "shared_concepts": [],
+                    "brief_words": [], "state": state,
+                }
+            )  # fmt: skip
+        items.sort(key=lambda m: (m["state"] != "approved", m["date"]), reverse=False)
+    elif kind == "videos":
+        attached_sources = {
+            body["source_id"] for body in store.monologue_bodies(row["id"]) if body["source_id"]
+        }
+        for source_id in store.source_ids("youtube", include_ignored=False):
+            if source_id in attached_sources:
+                continue
+            source = store.source(source_id) or {}
+            people = [person.get("name", "") for person in source.get("people") or []]
+            fields = [
+                source.get("title") or "", source.get("channel_title") or "",
+                *people, source.get("description") or "",
+            ]  # fmt: skip
+            if not _matches(words, fields):
+                continue
+            items.append(
+                {
+                    "source_id": source_id, "title": source.get("title") or "",
+                    "date": (source.get("published_at") or "")[:10],
+                    "channel": source.get("channel_title") or "", "people": people,
+                    "shared_concepts": [], "full_text": False,
+                }
+            )  # fmt: skip
+        items.sort(key=lambda s: s["date"], reverse=True)
+    else:
+        raise ValueError("kind is moments or videos")
+    return {"kind": kind, "items": items[:SEARCH_RESULTS], "found": len(items)}
+
+
 def candidates(store: Store, name: str, config: dict | None = None) -> dict:
     """What a monologue could draw on next: approved moments not yet attached, ranked by the
     concepts they share with the attached ones and by the brief's words; bodies of work from
@@ -698,7 +771,11 @@ def candidates(store: Store, name: str, config: dict | None = None) -> dict:
             if not entry["full_text"]:
                 entry["full_text"] = True
                 entry["score"] += 1
-    ranked = sorted(sources.values(), key=lambda s: (-s["score"], s["title"]))
+    ranked = sorted(sources.values(), key=lambda s: (-s["score"], s["title"]))[:CANDIDATE_SOURCES]
+    for entry in ranked:
+        source = store.source(entry["source_id"]) or {}
+        entry["channel"] = source.get("channel_title") or ""
+        entry["people"] = [person.get("name", "") for person in source.get("people") or []]
     return {
         "name": row["name"],
         "title": row["title"],
@@ -717,7 +794,7 @@ def candidates(store: Store, name: str, config: dict | None = None) -> dict:
         ],
         "moments": moments[:CANDIDATE_MOMENTS],
         "bodies": bodies,
-        "sources": ranked[:CANDIDATE_SOURCES],
+        "sources": ranked,
         "concepts": sorted(attached_concepts, key=lambda k: -attached_concepts[k]),
     }
 
@@ -795,6 +872,7 @@ __all__ = [
     "attach_source",
     "brief_words",
     "candidates",
+    "search",
     "changes_between",
     "create",
     "detach",
