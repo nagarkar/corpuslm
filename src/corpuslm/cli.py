@@ -479,6 +479,9 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument(
                 "--kind", default=None, metavar="SOURCE_KIND", help="only sources of this kind"
             )
+            sub.add_argument(
+                "--corpus", default=None, metavar="NAME", help="only the sources of this corpus"
+            )
         if name == "build":
             sub.add_argument(
                 "--source",
@@ -509,6 +512,9 @@ def build_parser() -> argparse.ArgumentParser:
         if name in ("build", "status"):
             sub.add_argument(
                 "--kind", default=None, metavar="SOURCE_KIND", help="only sources of this kind"
+            )
+            sub.add_argument(
+                "--corpus", default=None, metavar="NAME", help="only the sources of this corpus"
             )
         if name == "build":
             sub.add_argument(
@@ -549,6 +555,9 @@ def build_parser() -> argparse.ArgumentParser:
         if name in ("propose", "status"):
             sub.add_argument(
                 "--kind", default=None, metavar="SOURCE_KIND", help="only sources of this kind"
+            )
+            sub.add_argument(
+                "--corpus", default=None, metavar="NAME", help="only the sources of this corpus"
             )
         if name == "propose":
             sub.add_argument(
@@ -1064,14 +1073,27 @@ def _claims_client(settings: ReviewSettings, verb: str) -> llm.Client:
     return llm.Client(settings.claims.workspace, settings.client_config(), verb=verb)
 
 
+def _corpus_members(store: Store, corpus: str) -> list[str]:
+    row = store.corpus_by_name(corpus, exact=True)
+    if row is None:
+        raise ValueError(f"unknown corpus {corpus!r}")
+    return [member["source_id"] for member in store.member_rows(row["id"])]
+
+
+def _chosen_sources(
+    store: Store, kind: str | None, chosen: list[str] | None, corpus: str | None
+) -> list[str]:
+    """`--source` ids if given, else the members of `--corpus`, else every source of `--kind`."""
+    if corpus and not chosen:
+        return _corpus_members(store, corpus)
+    return _claims_sources(store, kind, chosen)
+
+
 def _speaker_sources(store: Store, corpus: str | None, chosen: list[str] | None) -> list[str]:
     if chosen:
         return _claims_sources(store, None, chosen)
     if corpus:
-        row = store.corpus_by_name(corpus, exact=True)
-        if row is None:
-            raise ValueError(f"unknown corpus {corpus!r}")
-        return [member["source_id"] for member in store.member_rows(row["id"])]
+        return _corpus_members(store, corpus)
     return store.source_ids("bee", include_ignored=False)
 
 
@@ -1183,13 +1205,17 @@ def speakers_status_board(
 
 
 def claims_build_board(
-    settings: ReviewSettings, kind: str | None, chosen: list[str] | None, dry_run: bool
+    settings: ReviewSettings,
+    kind: str | None,
+    chosen: list[str] | None,
+    dry_run: bool,
+    corpus: str | None = None,
 ) -> dict:
     database = _open_existing(settings)
     try:
         store = Store(database)
         client = _claims_client(settings, "claims build")
-        source_ids = _claims_sources(store, kind, chosen)
+        source_ids = _chosen_sources(store, kind, chosen, corpus)
         estimate = claims.estimate(store, client, source_ids)
         board = {
             "verb": "claims build",
@@ -1245,11 +1271,13 @@ def claims_build_board(
         database.close()
 
 
-def claims_status_board(settings: ReviewSettings, kind: str | None) -> dict:
+def claims_status_board(
+    settings: ReviewSettings, kind: str | None, corpus: str | None = None
+) -> dict:
     database = _open_existing(settings)
     try:
         store = Store(database)
-        source_ids = store.source_ids(kind, include_ignored=False)
+        source_ids = _chosen_sources(store, kind, None, corpus)
         config = settings.client_config() if settings.claims is not None else None
         entries = claims.status(store, config, source_ids)
         states = {state: 0 for state in ("current", "stale", "imported", "none")}
@@ -1313,13 +1341,17 @@ def _concepts_config(settings: ReviewSettings) -> dict:
 
 
 def concepts_build_board(
-    settings: ReviewSettings, kind: str | None, chosen: list[str] | None, dry_run: bool
+    settings: ReviewSettings,
+    kind: str | None,
+    chosen: list[str] | None,
+    dry_run: bool,
+    corpus: str | None = None,
 ) -> dict:
     database = _open_existing(settings)
     try:
         store = Store(database)
         client = _concepts_client(settings, "concepts build")
-        source_ids = _claims_sources(store, kind, chosen)
+        source_ids = _chosen_sources(store, kind, chosen, corpus)
         estimate = concepts.estimate(store, client, source_ids)
         board = {
             "verb": "concepts build",
@@ -1368,12 +1400,14 @@ def concepts_build_board(
         database.close()
 
 
-def concepts_status_board(settings: ReviewSettings, kind: str | None) -> dict:
+def concepts_status_board(
+    settings: ReviewSettings, kind: str | None, corpus: str | None = None
+) -> dict:
     database = _open_existing(settings)
     try:
         store = Store(database)
         config = _concepts_config(settings)
-        source_ids = store.source_ids(kind, include_ignored=False)
+        source_ids = _chosen_sources(store, kind, None, corpus)
         states = {state: 0 for state in ("current", "stale", "none", "no_claims")}
         for entry in concepts.status(store, config, source_ids):
             states[entry.state] += 1
@@ -1660,13 +1694,17 @@ def moments_import_board(settings: ReviewSettings, folder: Path, dry_run: bool) 
 
 
 def moments_propose_board(
-    settings: ReviewSettings, kind: str | None, chosen: list[str] | None, dry_run: bool
+    settings: ReviewSettings,
+    kind: str | None,
+    chosen: list[str] | None,
+    dry_run: bool,
+    corpus: str | None = None,
 ) -> dict:
     database = _open_existing(settings)
     try:
         store = Store(database)
         client = _moments_client(settings, "moments propose")
-        source_ids = _claims_sources(store, kind, chosen)
+        source_ids = _chosen_sources(store, kind, chosen, corpus)
         estimate = moments.estimate(store, client, source_ids)
         board = {
             "verb": "moments propose",
@@ -1723,7 +1761,9 @@ def moments_propose_board(
         database.close()
 
 
-def moments_status_board(settings: ReviewSettings, kind: str | None) -> dict:
+def moments_status_board(
+    settings: ReviewSettings, kind: str | None, corpus: str | None = None
+) -> dict:
     database = _open_existing(settings)
     try:
         store = Store(database)
@@ -1731,9 +1771,7 @@ def moments_status_board(settings: ReviewSettings, kind: str | None) -> dict:
         if settings.moments is not None:
             states = {state: 0 for state in ("current", "stale", "none", "no_claims")}
             config = settings.client_config()
-            for entry in moments.status(
-                store, config, store.source_ids(kind, include_ignored=False)
-            ):
+            for entry in moments.status(store, config, _chosen_sources(store, kind, None, corpus)):
                 states[entry.state] += 1
             board["sources"] = states
         return board
@@ -1919,10 +1957,14 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 case "propose":
                     board = moments_propose_board(
-                        settings, namespace.kind, namespace.source, namespace.dry_run
+                        settings,
+                        namespace.kind,
+                        namespace.source,
+                        namespace.dry_run,
+                        namespace.corpus,
                     )
                 case "status":
-                    board = moments_status_board(settings, namespace.kind)
+                    board = moments_status_board(settings, namespace.kind, namespace.corpus)
                 case "list":
                     board = moments_list_board(settings, namespace.state, namespace.source)
                 case _:
@@ -1943,10 +1985,14 @@ def main(argv: list[str] | None = None) -> int:
             match namespace.concepts_verb:
                 case "build":
                     board = concepts_build_board(
-                        settings, namespace.kind, namespace.source, namespace.dry_run
+                        settings,
+                        namespace.kind,
+                        namespace.source,
+                        namespace.dry_run,
+                        namespace.corpus,
                     )
                 case "status":
-                    board = concepts_status_board(settings, namespace.kind)
+                    board = concepts_status_board(settings, namespace.kind, namespace.corpus)
                 case "list":
                     board = concepts_list_board(settings, namespace.state)
                 case "edges":
@@ -1968,10 +2014,14 @@ def main(argv: list[str] | None = None) -> int:
             match namespace.claims_verb:
                 case "build":
                     board = claims_build_board(
-                        settings, namespace.kind, namespace.source, namespace.dry_run
+                        settings,
+                        namespace.kind,
+                        namespace.source,
+                        namespace.dry_run,
+                        namespace.corpus,
                     )
                 case "status":
-                    board = claims_status_board(settings, namespace.kind)
+                    board = claims_status_board(settings, namespace.kind, namespace.corpus)
                 case _:
                     board = claims_import_board(settings, namespace.dry_run)
             _print(board, as_json)

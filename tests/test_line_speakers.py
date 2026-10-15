@@ -263,3 +263,16 @@ def test_a_stage_timeout_reaches_the_vendor_request(tmp_path, monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "test")
     client.complete(line_speakers.STAGE, line_speakers.prompt(), variables, tag="t")
     assert seen == [900.0]
+
+
+def test_a_corpus_chooses_its_members_unless_sources_are_named(world):
+    from corpuslm import cli
+
+    corpus_id = world.store.add_corpus({"name": "Focus"}, created_by="t")
+    world.store.add_member(corpus_id, SOURCE, "author", created_by="t")
+    world.store.add_source("bee:2", "l", created_by="t", kind="bee")
+    assert cli._chosen_sources(world.store, None, None, "Focus") == [SOURCE]
+    assert cli._chosen_sources(world.store, None, ["bee:2"], "Focus") == ["bee:2"]
+    assert sorted(cli._chosen_sources(world.store, "bee", None, None)) == [SOURCE, "bee:2"]
+    with pytest.raises(ValueError):
+        cli._chosen_sources(world.store, None, None, "Nope")
