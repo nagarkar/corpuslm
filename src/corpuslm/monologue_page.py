@@ -36,6 +36,8 @@ background:transparent;color:var(--ink);min-height:44px}button.act.primary{backg
 button.act.warn{border-color:var(--warn);color:var(--warn)}
 .big{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
 .result{font-size:14px;margin-top:8px}.result a{color:inherit}
+input.search{width:100%;font:inherit;font-size:15px;padding:9px 10px;border-radius:8px;border:1.5px solid var(--line);
+background:var(--ground);color:var(--ink);min-height:44px;margin:0 0 6px}
 .tools{display:flex;gap:14px;margin-top:2px}button.link{font:inherit;font-size:13px;background:transparent;border:0;padding:0;
 color:var(--muted);text-decoration:underline;min-height:32px}button.link.danger{color:var(--warn)}
 .editbox{display:grid;gap:6px;margin-top:4px}.editbox textarea{min-height:5em}.editbox div{display:flex;gap:8px}
@@ -56,8 +58,17 @@ _SCRIPT = """
   document.querySelectorAll('textarea').forEach(function(box){
     function fit(){box.style.height='auto';box.style.height=Math.max(box.scrollHeight+4,box.offsetHeight)+'px'}
     box.addEventListener('input',fit);fit()});
-  document.querySelectorAll('[data-act]').forEach(function(b){b.addEventListener('click',function(){
+  var shortlists={};document.querySelectorAll('[data-list]').forEach(function(l){shortlists[l.getAttribute('data-list')]=l.innerHTML});
+  document.querySelectorAll('input.search').forEach(function(box){var timer=null;box.addEventListener('input',function(){
+    clearTimeout(timer);timer=setTimeout(function(){var kind=box.getAttribute('data-search');var list=document.querySelector('[data-list="'+kind+'"]');
+      var q=box.value.trim();if(q.length<2){list.innerHTML=shortlists[kind];return}
+      call('monologue_search',{name:name,kind:kind,query:q}).then(function(o){
+        if(!o.ok){flash('Search failed: '+(o.body.error||''),true);return}if(box.value.trim()===q)list.innerHTML=o.body.result.html})},250)})});
+  document.addEventListener('click',function(ev){var b=ev.target.closest('[data-act]');if(!b)return;
     var act=b.getAttribute('data-act');var params={name:name};
+    if(act==='approve-attach'){var mid=b.getAttribute('data-id');call('moment_verdict',{id:mid,verdict:'approved'}).then(function(o){
+      if(!o.ok){flash('Not approved: '+(o.body.error||''),true);return null}return call('monologue_attach',{name:name,moment:mid})})
+      .then(function(o){if(!o)return;if(o.ok){flash('Approved and attached');reload()}else{flash('Not attached: '+(o.body.error||''),true)}});return}
     if(act==='edit'){var card=b.closest('.card');var shown=card.querySelector('.insight');if(card.querySelector('.editbox'))return;
       var box=document.createElement('div');box.className='editbox';var area=document.createElement('textarea');area.value=shown.textContent;
       var row=document.createElement('div');var save=document.createElement('button');save.className='act primary';save.textContent='Save';
@@ -89,7 +100,7 @@ _SCRIPT = """
       if(!o.ok){out.textContent='Run failed: '+(o.body.error||'');return}var r=o.body.result;
       out.innerHTML=r.unchanged?'Unchanged ingredients: the stored run v'+r.run+' stands; nothing was sent.':
         'Run v'+r.run+': '+r.paragraphs+' paragraphs, '+r.words+' words, $'+r.cost_usd.toFixed(3)+'. <a href="/teleprompter/'+name+'">Teleprompter</a>'+(r.url?' · <a href="'+r.url+'">Doc</a>':'')});return}
-  })});
+  });
 })();
 """
 
@@ -119,6 +130,72 @@ def _moment_card(moment: dict, meta: str, button: str, *, attached: bool) -> str
         '<div class="tools"><button class="link" data-act="edit" type="button">Edit</button>'
         '<button class="link danger" data-act="delete" type="button">Delete</button></div></div>'
         f"{button}</div>"
+    )
+
+
+def offered_moment_card(m: dict) -> str:
+    """A moment that could be added: Add, or Approve & add for one still proposed."""
+    proposed = m.get("state", "approved") == "proposed"
+    meta = (
+        f"{html.escape(m['title'] or m['source_id'])} · {html.escape(m['date'])}"
+        f' <span class="chips">{_chips(m["concepts"], set(m.get("shared_concepts") or []))}</span>'
+        + (f" · brief: {html.escape(', '.join(m['brief_words']))}" if m.get("brief_words") else "")
+        + (" · proposed" if proposed else "")
+    )
+    act = "approve-attach" if proposed else "attach"
+    label = "Approve &amp; add" if proposed else "Add"
+    return _moment_card(
+        m,
+        meta,
+        f'<button class="act" data-act="{act}" data-kind="moment" '
+        f'data-id="{html.escape(m["id"])}">{label}</button>',
+        attached=False,
+    )
+
+
+def video_card(s: dict, hot: set[str] | None = None) -> str:
+    """A YouTube source that could be added: its title linked to the video, then channel, date,
+    the people in it and the concepts it shares."""
+    link = f"https://www.youtube.com/watch?v={html.escape(s['source_id'])}"
+    people = ", ".join(name for name in s.get("people") or [] if name)
+    meta = " · ".join(
+        part
+        for part in (
+            html.escape(s.get("channel") or ""),
+            html.escape(s.get("date") or ""),
+            html.escape(people),
+        )
+        if part
+    )
+    chips = _chips(s.get("shared_concepts") or [], hot)
+    return _card(
+        f'<a href="{link}" target="_blank" rel="noopener" style="color:inherit">'
+        f"{html.escape(s['title'] or s['source_id'])}</a>",
+        meta
+        + (f' <span class="chips">{chips}</span>' if chips else "")
+        + (" · matches the brief" if s.get("full_text") else ""),
+        f'<button class="act" data-act="attach" data-kind="source" '
+        f'data-id="{html.escape(s["source_id"])}">Add</button>',
+    )
+
+
+def render_results(kind: str, items: list[dict], found: int) -> str:
+    """The cards a search returns, for the page to put in place of its shortlist."""
+    cards = "".join(
+        offered_moment_card(item) if kind == "moments" else video_card(item) for item in items
+    )
+    more = (
+        f'<p class="empty">{found - len(items)} more: narrow the search.</p>'
+        if found > len(items)
+        else ""
+    )
+    return (cards or '<p class="empty">Nothing matches.</p>') + more
+
+
+def _search_box(kind: str, placeholder: str) -> str:
+    return (
+        f'<input type="search" class="search" data-search="{kind}" placeholder="{placeholder}" '
+        f'aria-label="{placeholder}">'
     )
 
 
@@ -182,21 +259,7 @@ def render(data: dict) -> str:
         or '<p class="empty">No bodies of work yet.</p>'
     )
     moments = (
-        "".join(
-            _moment_card(
-                m,
-                f"{html.escape(m['title'] or m['source_id'])} · {html.escape(m['date'])}"
-                f' <span class="chips">{_chips(m["concepts"], set(m["shared_concepts"]))}</span>'
-                + (
-                    f" · brief: {html.escape(', '.join(m['brief_words']))}"
-                    if m["brief_words"]
-                    else ""
-                ),
-                f'<button class="act" data-act="attach" data-kind="moment" data-id="{html.escape(m["id"])}">Add</button>',
-                attached=False,
-            )
-            for m in data["moments"]
-        )
+        "".join(offered_moment_card(m) for m in data["moments"])
         or '<p class="empty">Nothing to offer: approve some moments first.</p>'
     )
     bodies = (
@@ -212,15 +275,7 @@ def render(data: dict) -> str:
         or '<p class="empty">No bodies of work yet.</p>'
     )
     sources = (
-        "".join(
-            _card(
-                html.escape(s["title"] or s["source_id"]),
-                f'{html.escape(s["date"])} <span class="chips">{_chips(s["shared_concepts"], hot)}</span>'
-                + (" · matches the brief" if s["full_text"] else ""),
-                f'<button class="act" data-act="attach" data-kind="source" data-id="{html.escape(s["source_id"])}">Add</button>',
-            )
-            for s in data["sources"]
-        )
+        "".join(video_card(s, hot) for s in data["sources"])
         or '<p class="empty">No matching videos yet.</p>'
     )
     return (
@@ -236,10 +291,14 @@ def render(data: dict) -> str:
         '<button class="act" data-act="save">Save</button></div></section>'
         f"<section><h2>Moments attached</h2>{attached_moments}</section>"
         f"<section><h2>Bodies of work attached</h2>{attached_bodies}</section>"
-        f"<section><h2>Moments to add</h2>{moments}</section>"
-        f"<section><h2>Bodies of work used before</h2>{bodies}</section>"
-        f"<section><h2>Videos that fit</h2>{sources}</section>"
-        '<section><h2>Run</h2><div class="big">'
+        "<section><h2>Moments to add</h2>"
+        + _search_box("moments", "Search all moments")
+        + f'<div data-list="moments">{moments}</div></section>'
+        + f"<section><h2>Bodies of work used before</h2>{bodies}</section>"
+        "<section><h2>Videos that fit</h2>"
+        + _search_box("videos", "Search all videos: title, channel, speakers, description")
+        + f'<div data-list="videos">{sources}</div></section>'
+        + '<section><h2>Run</h2><div class="big">'
         '<button class="act" data-act="estimate">Estimate</button>'
         '<button class="act primary" id="run" data-act="run" hidden>Run</button></div>'
         '<label class="note"><input type="checkbox" id="fresh"> Fresh: drop the prior script</label>'
@@ -251,4 +310,4 @@ def render(data: dict) -> str:
     )
 
 
-__all__ = ["render", "render_list"]
+__all__ = ["offered_moment_card", "render", "render_list", "render_results", "video_card"]

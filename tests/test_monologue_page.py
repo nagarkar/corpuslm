@@ -187,3 +187,28 @@ def test_the_server_calls_make_attach_and_decline_what_needs_settings(world):
         assert len(Store(database).monologue_moments(row["id"])) == 1
     finally:
         database.close()
+
+
+def test_search_finds_every_moment_and_every_video_not_only_the_shortlist(world):
+    tmp_path, store, ids, unruled = world
+    monologues.attach(store, "karma", moment_id=ids["bee:1"])
+    store.update_source(
+        "vid2",
+        {
+            "channel_title": "Essentia Foundation",
+            "description": "A talk on the screen and the film",
+        },
+    )
+    found = monologues.search(store, "karma", "moments", "unruled")
+    assert [(m["id"], m["state"]) for m in found["items"]] == [(unruled, "proposed")]
+    assert monologues.search(store, "karma", "moments", "karma count")["items"] == []  # attached
+    videos = monologues.search(store, "karma", "videos", "essentia screen")
+    assert [v["source_id"] for v in videos["items"]] == ["vid2"]
+    assert videos["items"][0]["channel"] == "Essentia Foundation"
+    html = monologue_page.render_results("moments", found["items"], found["found"])
+    assert 'data-act="approve-attach"' in html and "Approve &amp; add" in html
+    cards = monologue_page.render_results("videos", videos["items"], videos["found"])
+    assert "Essentia Foundation" in cards and "https://www.youtube.com/watch?v=vid2" in cards
+    assert monologue_page.render_results("videos", [], 0) == '<p class="empty">Nothing matches.</p>'
+    with pytest.raises(ValueError):
+        monologues.search(store, "karma", "bodies", "x")

@@ -255,6 +255,27 @@ class Answers:
 
     # -- the monologue pages' calls (corpuslm.monologue_page) --
 
+    def monologue_search(self, params: dict) -> dict:
+        """Search all moments or all videos for the monologue page; returns the cards' HTML."""
+        from . import monologue_page, monologues
+
+        kind, query = params.get("kind"), params.get("query")
+        if kind not in ("moments", "videos"):
+            raise ValueError("kind is moments or videos")
+        if not isinstance(query, str) or len(query) > 200:
+            raise ValueError("query is text")
+        name = self._monologue_name(params)
+        with self._lock:
+            db, store = self._store()
+            try:
+                found = monologues.search(store, name, kind, query)
+            finally:
+                db.close()
+        return {
+            "found": found.get("found", 0),
+            "html": monologue_page.render_results(kind, found["items"], found.get("found", 0)),
+        }
+
     def _monologue_name(self, params: dict) -> str:
         name = params.get("name")
         if not isinstance(name, str) or not name.strip():
@@ -384,6 +405,8 @@ class Answers:
             return self.moment_verdicts(params.get("ids"), params.get("verdict"))
         if method == "line_speaker":
             return self.line_speaker(params)
+        if method == "monologue_search":
+            return self.monologue_search(params)
         if method == "monologue_new":
             return self.monologue_new(params)
         if method == "monologue_brief":
@@ -410,8 +433,9 @@ class Answers:
             return self.list(params.get("collection"))
         raise ValueError(
             "method must be one of: health, get, set, delete, list, concept_verdict, "
-            "moment_verdict, moment_verdicts, moment_edit, line_speaker, monologue_new, "
-            "monologue_brief, monologue_attach, monologue_detach, monologue_estimate, monologue_run"
+            "moment_verdict, moment_verdicts, moment_edit, line_speaker, monologue_search, "
+            "monologue_new, monologue_brief, monologue_attach, monologue_detach, "
+            "monologue_estimate, monologue_run"
         )
 
 
