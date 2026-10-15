@@ -815,7 +815,9 @@ def review_serve_board(settings: ReviewSettings, port: int | None, dry_run: bool
         fresh = db.Database(settings.database)
         try:
             store = Store(fresh)
-            rows = moments.listing(store, state="proposed")
+            rows = moments.listing(store, state="proposed") + moments.listing(
+                store, state="approved"
+            )
             choices = None
             if settings.line_speakers is not None:
                 found = line_speakers.settings(settings.client_config())

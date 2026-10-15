@@ -220,6 +220,34 @@ def test_a_rebuild_keeps_every_ruled_moment(world):
     assert spans == {(2, 5): "approved", (3, 4): "proposed"}
 
 
+def test_the_owner_rewords_an_insight_and_it_survives_a_rebuild(world):
+    moments.build(world.store, world.client(), SOURCE, created_by="test")
+    first = moments.listing(world.store, state="proposed")[0]
+    out = moments.edit(
+        world.store,
+        first["id"],
+        "  My own   words. ",
+        answered_through="phone page",
+        created_by="t",
+    )
+    assert out == {"id": first["id"], "insight": "My own words.", "state": "approved"}
+    world.store.replace_model_moments(
+        SOURCE, [{"first": 3, "last": 4, "insight": "New."}], build_key="k2", created_by="t"
+    )
+    kept = {m["id"]: m for m in moments.listing(world.store)}[first["id"]]
+    assert (kept["insight"], kept["state"], kept["edited"]) == ("My own words.", "approved", True)
+    assert (
+        json.loads(world.store.moment(first["id"])["metadata"])["model_insight"]
+        == (first["insight"])
+    )
+    with pytest.raises(ValueError):
+        moments.edit(world.store, first["id"], "  ", answered_through="phone page", created_by="t")
+    moments.verdict(
+        world.store, first["id"], "declined", answered_through="phone page", created_by="t"
+    )
+    assert {m["id"]: m for m in moments.listing(world.store)}[first["id"]]["state"] == "declined"
+
+
 def test_rebuilt_claims_make_the_proposals_stale_and_the_estimate_calls_no_model(tmp_path):
     world = World(tmp_path)  # no scripted reply
     try:
