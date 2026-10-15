@@ -35,6 +35,9 @@ background:transparent;color:var(--ink);min-height:44px}button.act.primary{backg
 button.act.warn{border-color:var(--warn);color:var(--warn)}
 .big{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
 .result{font-size:14px;margin-top:8px}.result a{color:inherit}
+textarea{resize:vertical;line-height:1.45}
+#brief{min-height:40vh}#newbrief{min-height:20vh}
+@media (min-width:900px){header .row,main{max-width:min(1400px,96vw)}#brief{min-height:55vh}}
 """
 )
 
@@ -46,6 +49,9 @@ _SCRIPT = """
   function call(method,params){return fetch('/api/review',{method:'POST',headers:{'Content-Type':'application/json','X-Review':'1'},
     body:JSON.stringify({method:method,params:params})}).then(function(r){return r.json().then(function(j){return {ok:r.ok,body:j}})})}
   function reload(){setTimeout(function(){location.reload()},500)}
+  document.querySelectorAll('textarea').forEach(function(box){
+    function fit(){box.style.height='auto';box.style.height=Math.max(box.scrollHeight+4,box.offsetHeight)+'px'}
+    box.addEventListener('input',fit);fit()});
   document.querySelectorAll('[data-act]').forEach(function(b){b.addEventListener('click',function(){
     var act=b.getAttribute('data-act');var params={name:name};
     if(act==='save'){params.brief=document.getElementById('brief').value;params.title=document.getElementById('title').value;
@@ -107,7 +113,7 @@ def render_list(monologues: list[dict]) -> str:
         '<header><div class="row"><h1>Monologues</h1></div></header><main>'
         f'<section><h2>Start one</h2><div class="row2">'
         '<input type="text" id="newname" placeholder="A short name" aria-label="Name">'
-        '<textarea id="newbrief" rows="2" placeholder="What it is about (optional)" aria-label="Brief"></textarea>'
+        '<textarea id="newbrief" rows="6" placeholder="What it is about (optional)" aria-label="Brief"></textarea>'
         '<button class="act primary" data-act="new">Start</button></div></section>'
         f"<section><h2>Monologues</h2>{rows}</section></main>"
         '<div class="saved" id="saved">Saved</div>'
@@ -191,7 +197,7 @@ def render(data: dict) -> str:
         f"{html.escape(data['title'] or data['name'])}</h1></div></header><main>"
         '<section><h2>Brief</h2><div class="row2">'
         f'<input type="text" id="title" value="{html.escape(data["title"])}" placeholder="Working title" aria-label="Title">'
-        f'<textarea id="brief" rows="3" aria-label="Brief" placeholder="What it is about">{html.escape(data["brief"])}</textarea>'
+        f'<textarea id="brief" rows="12" aria-label="Brief" placeholder="What it is about">{html.escape(data["brief"])}</textarea>'
         '<button class="act" data-act="save">Save</button></div></section>'
         f"<section><h2>Moments attached</h2>{attached_moments}</section>"
         f"<section><h2>Bodies of work attached</h2>{attached_bodies}</section>"
