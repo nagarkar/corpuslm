@@ -123,19 +123,6 @@ def test_a_rerun_changes_nothing():
     ]
 
 
-def test_correction_memory_substitutes_verdicts_after_a_model_step_and_protects_them():
-    vocab = basic_cleanup.Vocabulary(
-        terms=["Quillfeather"], substitutions={"quill fether": "Quillfeather"}, sources={}
-    )
-    document, report = basic_cleanup.apply_correction_memory(
-        _texts_document("so quill fether said", "no match"), vocab
-    )
-    assert document["segments"][0]["text"] == "so Quillfeather said"
-    assert document["segments"][0]["protected"] == ["Quillfeather"]
-    assert report == {"applied": 1, "segments_changed": 1}
-    assert document["passes"]["memory"]["rules"] == 1
-
-
 def test_is_dictionary_word_and_the_fingerprint():
     assert basic_cleanup.is_dictionary_word("elephants") and not basic_cleanup.is_dictionary_word(
         "elephnts"

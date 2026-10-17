@@ -7,8 +7,8 @@ Protected vocabulary (`protect_vocabulary`): names and terms are restored to the
 spelling wherever the text carries them case-insensitively or split across tokens, known
 mis-hearings are substituted, and every protected span is marked so no later step touches it.
 `vocabulary_from_texts` builds the vocabulary from a source's own words (title, summary
-headings, a channel name, tags). `apply_correction_memory` substitutes the owner's term
-verdicts after any model step, deterministically.
+headings, a channel name, tags). The correction memory is never substituted here: see the
+decision below.
 
 Spell fix (`spell_fix`): SymSpell over the remaining tokens, English only; a token is
 corrected only when it is not a dictionary word and exactly one dictionary word sits at edit
@@ -33,6 +33,12 @@ Decisions:
   tests/test_basic_cleanup.py::test_spell_fix_is_skipped_for_a_non_english_source_with_provenance.
 - Rerunning a step on the document it produced changes nothing. Enforced by:
   tests/test_basic_cleanup.py::test_a_rerun_changes_nothing.
+- The correction memory is never substituted into a transcript as find-and-replace. An owner's
+  answer fixes its own spot, and the memory answers the same span only where a model step flags
+  it again (corpuslm.review.reconcile). Why: the blind substitution of term rules turned "a" into
+  "AI" and "children" into the owner's name in 202 of 205 YouTube transcripts, and carried Bee
+  answers into YouTube (nagarkar/ytlm#120; removed 2026-10-17). (owner) Enforced by:
+  tests/test_ai_cleanup_chain.py::test_a_term_rule_never_rewrites_a_segment_the_model_did_not_flag.
 
 Terms:
 - **basic cleanup**: the cleanup that uses no model: protected vocabulary, then spell fix (the
@@ -333,41 +339,3 @@ def spell_fix(document: dict, *, language: str) -> tuple[dict, dict]:
 
 def vocabulary_fingerprint(vocab: Vocabulary) -> str:
     return json.dumps(vocab.fingerprint(), sort_keys=True)
-
-
-def apply_correction_memory(document: dict, vocab: Vocabulary) -> tuple[dict, dict]:
-    """The correction memory as a patch-through: term verdicts are substituted into the
-    transcript AFTER any model step, deterministically, so a new verdict never changes the
-    text the model was shown and never invalidates its cache. Substitutions apply
-    case-insensitively, split-token tolerant, and every substituted term is marked protected."""
-    terms = sorted(dict.fromkeys(vocab.terms), key=len, reverse=True)
-    applied = 0
-    segments_changed = 0
-    for segment in document["segments"]:
-        original = segment["text"]
-        text = original
-        for heard, protected in vocab.substitutions.items():
-            if not heard:
-                continue
-            pattern = re.compile(
-                r"(?<!\w)" + r"[\s\-]*".join(map(re.escape, heard.split())) + r"(?!\w)",
-                re.IGNORECASE,
-            )
-            new = pattern.sub(protected, text)
-            if new != text:
-                applied += 1
-                text = new
-        present = [term for term in terms if term in text]
-        if text != original:
-            segments_changed += 1
-            segment.setdefault("raw", original)
-            segment["text"] = text
-        if present:
-            segment["protected"] = list(dict.fromkeys((segment.get("protected") or []) + present))
-    document.setdefault("passes", {})["memory"] = {
-        "status": "ran",
-        "rules": len(vocab.substitutions),
-        "applied": applied,
-        "segments_changed": segments_changed,
-    }
-    return document, {"applied": applied, "segments_changed": segments_changed}

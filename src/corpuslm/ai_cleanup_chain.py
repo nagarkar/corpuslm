@@ -4,11 +4,11 @@ The AI cleanup (`build_ai_cleanup`) is the step after spell fix that asks a mode
 batch, for the edits, label-to-name bindings and ambiguities of one source
 (corpuslm.ai_cleanup holds the batching and the bounds; this module holds the bookkeeping
 around the calls). It reads the spell-fix document, calls a model through `corpuslm.llm.Client`
-(or serves the recorded replies from the cache), applies the correction memory and the owner's
-verdicts, optionally asks the arbiter about what is still pending, and records the artifact with
-the hashes of its inputs. A tool describes its source with a `SourceKind` (corpuslm.chain) and a
-`SpeakerScheme` (corpuslm.speaker_map) and hands the builder an `AiCleanupSetup`: the collaborators
-the step needs and nothing else.
+(or serves the recorded replies from the cache), applies the owner's verdicts and the correction
+memory's answers for spans it flags again, optionally asks the arbiter about what is still
+pending, and records the artifact with the hashes of its inputs. A tool describes its source
+with a `SourceKind` (corpuslm.chain) and a `SpeakerScheme` (corpuslm.speaker_map) and hands the
+builder an `AiCleanupSetup`: the collaborators the step needs and nothing else.
 
 What a tool keeps: its review layer (`ReviewHooks`, the owner's verdicts and the correction
 memory), its arbiter (corpuslm.arbiter, built with the tool's transport), the word that turns
@@ -37,7 +37,7 @@ Decisions:
   tests/test_ai_cleanup_chain.py::test_the_shape_names_the_node_the_stage_and_the_inputs.
 - The owner's verdicts and the correction memory are read from the shared database
   (`DatabaseReview`, corpuslm.review) for every source kind. Enforced by:
-  tests/test_ai_cleanup_chain.py::test_a_recorded_verdict_changes_the_inputs_and_a_term_rule_is_applied.
+  tests/test_ai_cleanup_chain.py::test_a_landed_verdict_is_rebuilt_from_the_cache_and_the_estimate_says_so.
 - With fixed labels the transcript's speaker source stays what the source said (a diarization
   is not "inferred"). Enforced by:
   tests/test_ai_cleanup_chain.py::test_fixed_labels_keep_the_sources_speaker_source.
@@ -69,7 +69,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
-from . import ai_cleanup, basic_cleanup, llm, model_suggestions, review
+from . import ai_cleanup, llm, model_suggestions, review
 from . import clock as clock_module
 from . import prompts as prompts_module
 from .chain import Chain, Report, canonical_sha256, is_current, record, write_if_changed
@@ -93,7 +93,10 @@ __all__ = [
 # applied after the model's replies and never needs the model again; anything else (the spell-fix
 # document itself) is a real rebuild.
 CONFIG_INPUTS = frozenset({"prompt", "model", "batch_tokens", "overlap_segments"})
-PATCH_INPUTS = frozenset({"verdicts", "memory", "arbiter"})
+PATCH_INPUTS = frozenset({"verdicts", "memory", "memory_substitution", "arbiter"})
+# The correction memory's blind substitution was removed on 2026-10-17 (nagarkar/ytlm#120). The
+# input names its absence, so every build made with it is replayed once from the cache without it.
+MEMORY_SUBSTITUTION = "none"
 
 # What `estimate` assumes about the reply: tokens out per token in. A batch reply is edits only.
 ASSUMED_OUTPUT_PER_INPUT = 0.25
@@ -108,10 +111,6 @@ class ReviewHooks(Protocol):
 
     def corrections(self) -> dict[str, dict]:
         """The correction memory: ordinary-correction rules by normalized span."""
-        ...
-
-    def memory_vocabulary(self) -> basic_cleanup.Vocabulary:
-        """The memory's term verdicts as a vocabulary for `cleanup.apply_correction_memory`."""
         ...
 
     def reconcile(
@@ -130,9 +129,6 @@ class NoReview:
 
     def corrections(self) -> dict[str, dict]:
         return {}
-
-    def memory_vocabulary(self) -> basic_cleanup.Vocabulary:
-        return basic_cleanup.Vocabulary(terms=[], substitutions={}, sources={})
 
     def reconcile(
         self, document: dict, verdicts: dict[str, dict], memory: dict[str, dict], *, now: datetime
@@ -158,14 +154,6 @@ class DatabaseReview:
 
     def corrections(self) -> dict[str, dict]:
         return review.corrections(self.store.db)
-
-    def memory_vocabulary(self) -> basic_cleanup.Vocabulary:
-        terms = review.term_vocabulary(self.store.db)
-        return basic_cleanup.Vocabulary(
-            terms=list(dict.fromkeys(terms.values())),
-            substitutions=dict(terms),
-            sources={corrected_term: "correction memory" for corrected_term in terms.values()},
-        )
 
     def reconcile(
         self, document: dict, verdicts: dict[str, dict], memory: dict[str, dict], *, now: datetime
@@ -276,6 +264,7 @@ class AiCleanupSetup:
             "memory": canonical_sha256(
                 {key: memory_record["verdict"] for key, memory_record in memory.items()}
             ),
+            "memory_substitution": MEMORY_SUBSTITUTION,
             **({"arbiter": canonical_sha256(arbiter.fingerprint())} if arbiter else {}),
         }
 
@@ -420,10 +409,8 @@ def build_ai_cleanup(
     document = chain.load(source_id, shape.spell_fix)
     if ai_cleanup_setup.scheme.fixed_labels:
         ai_cleanup.adopt_fixed_labels(document)
-    # Source names only in the prompt: the correction memory's terms are already applied by
-    # protected vocabulary and marked protected in the segments, so apply() keeps them; leaving
-    # them out of the prompt keeps every batch payload stable and the cache warm (a new verdict
-    # must not re-bill the corpus).
+    # Source names only in the prompt: leaving the correction memory out keeps every batch payload
+    # stable and the cache warm (a new verdict must not re-bill the corpus).
     terms = sorted(chain.kind.vocabulary(source_id).terms)
     protected = ", ".join(terms) or "(none)"
     scheme = ai_cleanup_setup.scheme
@@ -565,12 +552,9 @@ def build_ai_cleanup(
             totals["cost_usd"] = round(
                 totals["cost_usd"] + (provenance_record["cost_usd"] or 0.0), 6
             )
-    # The correction memory's term verdicts, as a deterministic patch on the model's output; then
-    # the owner's verdicts and the memory's ordinary-correction rules, before the spend cap and
-    # before anything reaches the queue.
-    document, memory_stats = basic_cleanup.apply_correction_memory(
-        document, ai_cleanup_setup.review.memory_vocabulary()
-    )
+    # The owner's verdicts, then the memory's answers for spans the model flagged again, before the
+    # spend cap and before anything reaches the queue. The memory is never substituted blindly
+    # (corpuslm.basic_cleanup decisions).
     carried = ai_cleanup_setup.review.reconcile(
         document, verdicts, memory, now=ai_cleanup_setup.clock()
     )
@@ -627,7 +611,6 @@ def build_ai_cleanup(
                 "verdicts_carried": carried["carried"],
                 "verdicts_unplaced": carried["unplaced"],
                 "verdicts_already_applied": carried["already_applied"],
-                "memory_substitutions": memory_stats["applied"],
                 "dropped_after_memory": dropped_after_memory,
                 **({"arbiter": arbiter_stats} if arbiter_stats else {}),
                 "unplaced": carried["unplaced_items"],

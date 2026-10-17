@@ -370,9 +370,9 @@ def remember(
 def verdict_kind(verdict: str) -> str:
     """`term` when the corrected words carry a name or a word the English dictionary
     does not know (a Sanskrit term, a proper noun); `reading` (the stored name of the
-    ordinary-correction kind) for ordinary words. Terms feed the basic cleanup as substitutions
-    (corpuslm.basic_cleanup); ordinary corrections are applied only where the AI cleanup flags the
-    same span again."""
+    ordinary-correction kind) for ordinary words. Both kinds are applied only where the AI
+    cleanup flags the same span again (`reconcile`); neither is substituted blindly
+    (corpuslm.basic_cleanup decisions)."""
     from .basic_cleanup import is_dictionary_word
 
     words = [word.strip(".,;:!?\"'()") for word in verdict.split()]
@@ -412,15 +412,6 @@ def corrections(db) -> dict[str, dict]:
 
 def verdicts_for(db, source_id: str) -> dict[str, dict]:
     return Store(db).current_review_verdicts(source_id)
-
-
-def term_vocabulary(db) -> dict[str, str]:
-    """Correction memory verdicts of kind `term`: mis-hearing → protected form,
-    for the basic cleanup (corpuslm.basic_cleanup)."""
-    return {
-        norm: correction["verdict"]
-        for norm, correction in Store(db).current_corrections(kind="term").items()
-    }
 
 
 # ---- reconcile after a rebuild ----------------------------------------------------
