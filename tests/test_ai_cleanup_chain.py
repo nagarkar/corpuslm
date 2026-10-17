@@ -182,6 +182,7 @@ def test_the_shape_names_the_node_the_stage_and_the_inputs(world):
     assert {"prompt", "model", "batch_tokens", "overlap_segments", "verdicts", "memory"} <= set(
         inputs
     )
+    assert inputs["memory_substitution"] == "none"
     assert world.report.counts == {"model_cleanup": 1}
     lines = (world.root / "logs" / "usage.jsonl").read_text().splitlines()
     assert [json.loads(line)["stage"] for line in lines] == ["model_cleanup"] * len(world.batches())
@@ -337,6 +338,46 @@ def test_a_batch_the_cache_lacks_is_billed_with_every_batch_after_it(world):
     (cache / f"{calls[0]['payload_sha256']}.json").unlink()
     result = ai_cleanup_chain.estimate(world.context(review=reviewing), {SOURCE: world.spell_fix})
     assert (result.sources, result.from_cache, result.batches) == (1, 0, 2)
+
+
+def test_a_term_rule_never_rewrites_a_segment_the_model_did_not_flag(world):
+    """nagarkar/ytlm#120: the memory's term rules were substituted into every segment of every
+    source ("a" -> "AI" in 202 of 205 YouTube transcripts). An answer fixes its own spot; the
+    memory answers a span only where the model flags it again."""
+    world.store.add_source("other", "locator", created_by="test", kind="youtube")
+    world.store.append_correction(
+        span_norm="here",
+        verdict="Hereford",
+        kind="term",
+        origin_source="other",
+        origin_key="amb-0001",
+        created_by="test",
+    )
+    script_all(world)
+    world.build(review=ai_cleanup_chain.DatabaseReview(world.store))
+    document = world.chain.load(SOURCE, "model_cleanup")
+    assert [segment["text"] for segment in document["segments"]] == [
+        segment["text"] for segment in SEGMENTS
+    ]
+    assert "memory" not in document.get("passes", {})
+
+
+def test_a_build_made_with_the_memory_substitution_is_replayed_from_the_cache(world):
+    """A build recorded before the substitution was removed has no `memory_substitution`
+    input: the next run rebuilds it once, from the reply cache, with no model call."""
+    script_all(world)
+    reviewing = ai_cleanup_chain.DatabaseReview(world.store)
+    world.build(review=reviewing)
+    row = world.row()
+    old_inputs = json.loads(row["inputs"])
+    del old_inputs["memory_substitution"]
+    world.database.update("artifacts", row["id"], {"inputs": json.dumps(old_inputs)})
+    estimate = ai_cleanup_chain.estimate(world.context(review=reviewing), {SOURCE: world.spell_fix})
+    assert (estimate.sources, estimate.from_cache, estimate.usd) == (1, 1, 0.0)
+    clients = len(world.clients)
+    world.build(review=reviewing)
+    assert sum(client.calls for client in world.clients[clients:]) == 0
+    assert json.loads(world.row()["inputs"])["memory_substitution"] == "none"
 
 
 def ambiguous_reply(index):
