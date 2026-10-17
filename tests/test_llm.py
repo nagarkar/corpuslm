@@ -26,6 +26,12 @@ def validate(schema_name, reply):
         raise ValueError("greeting must be a string")
 
 
+def greeting_schema(schema_name):
+    """Stands in for a consumer's schema loader (sent as json_schema to a model that honours it)."""
+    assert schema_name == "greeting_reply"
+    return {"type": "object", "required": ["greeting"]}
+
+
 @pytest.fixture
 def prompt(tmp_path):
     directory = tmp_path / "prompts"
@@ -49,7 +55,14 @@ def script(tmp_path, tag, reply, *, tokens=(100, 20), stage="greet"):
 def client(tmp_path, scripts=None, config=CONFIG, **kwargs):
     root = tmp_path / "root"
     transport = llm.ScriptedTransport(scripts or tmp_path / "scripts")
-    return Client(root, config, transport=transport, validator=validate, **kwargs)
+    return Client(
+        root,
+        config,
+        transport=transport,
+        validator=validate,
+        schema_loader=greeting_schema,
+        **kwargs,
+    )
 
 
 def usage_lines(tmp_path):
@@ -112,6 +125,7 @@ def test_a_cache_entry_stored_before_the_move_is_served_without_a_call(prompt, t
         config,
         transport=Forbidden(),
         validator=validate,
+        schema_loader=greeting_schema,
         cache_dir=FIXTURES / "llm_cache",
     )
     reply = caller.complete("greet", prompt, {"word": "hello"}, tag="old-cache")
@@ -267,6 +281,7 @@ def test_a_real_transport_with_no_vendor_key_declines_before_any_call(
             completion=lambda **keyword_arguments: pytest.fail("called the vendor")
         ),
         validator=validate,
+        schema_loader=greeting_schema,
     )
     with pytest.raises(llm.NotConfigured, match="GEMINI_API_KEY is not set"):
         caller.complete("greet", prompt, {"word": "x"}, tag="t")

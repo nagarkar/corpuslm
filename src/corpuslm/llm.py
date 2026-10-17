@@ -20,12 +20,14 @@ caller also passes the `validator` for its prompts' output schemas (default:
 `corpuslm.schemas.validate`, which knows only corpuslm's own schemas).
 
 `MODEL_PROFILES` records, per verified model, what a request may carry; the request is shaped
-from it BEFORE sending and never changed after. A model with no row gets the plain request (no
-temperature, no JSON mode) and `unprofiled_models` names it. A `temperature` configured for a
-model that takes none is a config error (`check_temperatures`). A vendor that rejects a
-parameter anyway fails the call with a VendorError naming the row to add. Only a 429 or 529 is
-retried, at most MAX_ATTEMPTS times with a growing pause, and every retry says so on stderr; any
-other failure fails the step. An unknown model's cost is null, never an estimate.
+from it BEFORE sending and never changed after. A model whose row says `json_schema` gets the
+prompt's declared reply schema as `response_format` (the vendor constrains the reply to it);
+otherwise a `json_mode` row gets `json_object` (any JSON object). A model with no row gets the
+plain request (no temperature, no JSON mode) and `unprofiled_models` names it. A `temperature`
+configured for a model that takes none is a config error (`check_temperatures`). A vendor that
+rejects a parameter anyway fails the call with a VendorError naming the row to add. Only a 429
+or 529 is retried, at most MAX_ATTEMPTS times with a growing pause, and every retry says so on
+stderr; any other failure fails the step. An unknown model's cost is null, never an estimate.
 
 Every payload and reply is written, tagged with its stage, into the one log file of the
 invocation: the file `log_path` names, else this client's own
@@ -127,6 +129,9 @@ class ModelProfile:
     name: str
     temperature: str  # ANY | VENDOR_DEFAULT_ONLY
     json_mode: bool  # vendor honours response_format json_object
+    # vendor honours response_format json_schema: the reply is constrained to the prompt's
+    # declared schema at the vendor, not only checked after (verified live per model)
+    json_schema: bool = False
 
 
 # Rows only for contracts verified live or by litellm's own model map.
@@ -138,9 +143,12 @@ MODEL_PROFILES: tuple[tuple[str, ModelProfile], ...] = (
     # Verified live 2026-09-21: Gemini 3 warns that temperature is slated for
     # removal; the request omits it (config cannot force a parameter
     # the vendor is retiring).
+    # Verified live 2026-10-17 (nagarkar/ytlm#123): every reply schema the tools declare is
+    # accepted as json_schema, and a prompt that asks for the wrong shape still gets the
+    # declared one (with json_object it got the wrong shape).
     (
         "gemini/gemini-3.1-flash-lite",
-        ModelProfile("gemini-3.1-flash-lite", VENDOR_DEFAULT_ONLY, True),
+        ModelProfile("gemini-3.1-flash-lite", VENDOR_DEFAULT_ONLY, True, json_schema=True),
     ),
 )
 # A model with no row gets the plain request (metalm coding.md, "LLM
@@ -209,6 +217,13 @@ def profile_row(model: str, params: dict, rejected: list[str]) -> str:
         if "temperature" in params and "temperature" not in rejected
         else "VENDOR_DEFAULT_ONLY"
     )
+    response_format = params.get("response_format") or {}
+    if response_format.get("type") == "json_schema":
+        # json_schema rejected: try json_object on the next row; kept, it stays on
+        if "response_format" in rejected:
+            return f'("{model}", ModelProfile("{model.split("/", 1)[-1]}", {temperature}, True))'
+        name = model.split("/", 1)[-1]
+        return f'("{model}", ModelProfile("{name}", {temperature}, True, json_schema=True))'
     json_mode = "response_format" in params and "response_format" not in rejected
     name = model.split("/", 1)[-1]
     return f'("{model}", ModelProfile("{name}", {temperature}, {json_mode}))'
@@ -463,6 +478,7 @@ class Client:
         *,
         transport: Transport | None = None,
         validator=None,
+        schema_loader=None,
         cache_dir: Path | None = None,
         clock: clock_mod.Clock = clock_mod.utc_now,
         verb: str = "call",
@@ -478,6 +494,9 @@ class Client:
         self.transport = transport or default_transport()
         # callable(schema_name, obj) → raises ValueError on mismatch (the strict parse)
         self.validator = validator if validator is not None else schemas.validate
+        # callable(schema_name) → the schema dict sent as json_schema, for a model whose row
+        # says the vendor honours it (default: corpuslm's own schemas)
+        self.schema_loader = schema_loader if schema_loader is not None else schemas.schema
         self.ledger = Ledger(self.root / LOGS_DIR, config.get("logs") or {}, clock=clock)
         self.max_usd = (config.get("llm") or {}).get("max_usd_per_run")
         self.max_usd_day = (config.get("llm") or {}).get("max_usd_per_day")
@@ -649,7 +668,18 @@ class Client:
         params: dict = {"_stage": stage}
         if temperature is not None:
             params["temperature"] = temperature
-        if profile.json_mode:
+        if profile.json_schema and prompt.output_schema:
+            # The vendor constrains the reply to the declared schema; the strict parse below still
+            # checks it. Not part of the payload hash, so the cache is unaffected.
+            params["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": prompt.output_schema,
+                    "schema": self.schema_loader(prompt.output_schema),
+                    "strict": True,
+                },
+            }
+        elif profile.json_mode:
             params["response_format"] = {"type": "json_object"}
         timeout = (self.config.get(prompt.config_section) or {}).get("timeout_seconds")
         if timeout and self.transport.name == "litellm":
