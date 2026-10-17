@@ -39,6 +39,10 @@ Decisions:
   tests/test_ai_cleanup.py::test_fixed_labels_reject_a_reply_that_relabels_a_speaker.
 - New ambiguities are capped per source; past the cap the model's pick stands. Enforced by:
   tests/test_ai_cleanup.py::test_cap_ambiguities_keeps_the_least_confident_pending.
+- A binding names a speaker only on a self-introduction, an introduction by someone else or
+  being addressed by name; a quoted, read-aloud, cited or mentioned name is dropped (a narrator
+  reading Jung's letter is not Jung; nagarkar/ytlm#121, owner 2026-10-17). Enforced by:
+  tests/test_ai_cleanup.py::test_a_quoted_or_mentioned_name_never_names_the_speaker.
 
 Terms:
 - **AI cleanup**: the step after the basic cleanup that asks a model, batch by batch, for edits,
@@ -78,6 +82,12 @@ class Batch:
     @property
     def tag_suffix(self) -> str:
         return f"b{self.number}"
+
+
+# The kinds of evidence that name a speaker. A prompt that asks for `evidence` (YouTube cleanup v3)
+# also gets quoted_or_read_aloud and cited_or_mentioned, which are dropped; a reply with no
+# `evidence` (older prompts) keeps every anchored binding.
+SPEAKER_EVIDENCE = frozenset({"self_introduction", "introduced_by_other", "addressed_by_name"})
 
 
 def adopt_fixed_labels(document: dict) -> None:
@@ -325,16 +335,20 @@ def apply(
         )
         if scheme.fixed_labels and binding["role"] not in known:
             stats["dropped_bindings"] += 1  # a name for a label no segment carries
+        elif binding.get("evidence") and binding["evidence"] not in SPEAKER_EVIDENCE:
+            # a quoted, read-aloud, cited or mentioned name is not the speaker (nagarkar/ytlm#121)
+            stats["dropped_bindings"] += 1
         elif binding["anchor"] and binding["anchor"] in segments[segment_index]["text"]:
-            stats["bindings"].append(
-                {
-                    "role": binding["role"],
-                    "name": binding["name"],
-                    "idx": segment_index,
-                    "anchor": binding["anchor"],
-                    "confidence": round(float(binding.get("confidence", 0.8)), 3),
-                }
-            )
+            kept = {
+                "role": binding["role"],
+                "name": binding["name"],
+                "idx": segment_index,
+                "anchor": binding["anchor"],
+                "confidence": round(float(binding.get("confidence", 0.8)), 3),
+            }
+            if binding.get("evidence"):
+                kept["evidence"] = binding["evidence"]
+            stats["bindings"].append(kept)
         else:
             stats["dropped_bindings"] += 1
     stats["next_key"] = next_key

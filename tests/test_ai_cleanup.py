@@ -329,6 +329,36 @@ def test_a_fixed_label_binding_for_a_label_no_segment_carries_is_dropped():
     assert stats["bindings"] == [] and stats["dropped_bindings"] == 1
 
 
+def test_a_quoted_or_mentioned_name_never_names_the_speaker(kind, scheme):
+    """nagarkar/ytlm#121: a narrator reading Jung's letter was named Carl Jung, and one citing a
+    scholar was named after him. A binding whose evidence is a quote, a reading or a mention is
+    dropped; a self-introduction, an introduction or an address is kept with its evidence; a
+    reply with no evidence (older prompts) keeps its anchored bindings."""
+    document = _segments_document(10, kind, labelled=True)
+    batch = _first(document, scheme)
+    role = document["segments"][1].get("role", LABELS[kind][1])
+    base = {"role": role, "name": "Ann", "idx": 1, "anchor": "w1x1"}
+    for evidence in ("quoted_or_read_aloud", "cited_or_mentioned"):
+        _, stats = ai_cleanup.apply(
+            document,
+            batch,
+            _reply(bindings=[base | {"evidence": evidence}]),
+            next_key=1,
+            scheme=scheme,
+        )
+        assert stats["bindings"] == [] and stats["dropped_bindings"] == 1, evidence
+    _, stats = ai_cleanup.apply(
+        document,
+        batch,
+        _reply(bindings=[base | {"evidence": "self_introduction"}]),
+        next_key=1,
+        scheme=scheme,
+    )
+    assert [binding["evidence"] for binding in stats["bindings"]] == ["self_introduction"]
+    _, stats = ai_cleanup.apply(document, batch, _reply(bindings=[base]), next_key=1, scheme=scheme)
+    assert len(stats["bindings"]) == 1 and "evidence" not in stats["bindings"][0]
+
+
 def test_a_binding_without_its_anchor_is_dropped_and_counted(kind, scheme):
     document = _segments_document(10, kind, labelled=True)
     batch = _first(document, scheme)
