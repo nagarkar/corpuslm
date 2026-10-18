@@ -70,6 +70,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import brand
 from .files import write_atomic
 from .identity import normalize_span
 from .review import ReviewKind, candidates_offered, speaker_names
@@ -572,9 +573,9 @@ def render(data: dict, *, links_note: str = "", part: int = 1, parts: int = 1) -
         for corpus_index, corpus_entry in enumerate(data["corpora"])
     )
     return (
-        f"<title>{html.escape(title)}</title>\n<style>{_CSS}</style>\n"
-        f'<header><div class="row"><select id="corpus" aria-label="Corpus">'
-        f"{options}</select>"
+        f"{brand.HEAD}\n<title>{html.escape(title)}</title>\n<style>{_CSS}</style>\n"
+        f'<header><div class="row"><span>{brand.ICON}<select id="corpus" aria-label="Corpus">'
+        f"{options}</select></span>"
         f'<span class="count" id="count"></span></div>'
         f'<div class="chips" id="chips" role="group" aria-label="Show">'
         f'<button data-f="todo" aria-pressed="true">To do</button>'

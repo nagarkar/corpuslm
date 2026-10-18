@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import html
 
+from . import brand
+
 _CSS = """
 :root{--ground:#000;--ink:#f3efe6;--muted:#9a948a;--accent:#5ad38b}
 *{box-sizing:border-box}html,body{margin:0;background:var(--ground);color:var(--ink);
@@ -60,7 +62,7 @@ def render(name: str, title: str, text: str) -> str:
     )
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
-        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        f"<meta name='viewport' content='width=device-width,initial-scale=1'>{brand.HEAD}"
         f"<title>{html.escape(title or name)}</title><style>{_CSS}</style></head><body>"
         f'<header><span id="rate"></span><span>'
         f'<button id="slower" aria-label="Slower">−</button> '

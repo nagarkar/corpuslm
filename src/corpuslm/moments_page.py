@@ -24,6 +24,7 @@ from __future__ import annotations
 import html
 import json
 
+from . import brand
 from .concepts_page import _CSS as _BASE_CSS
 
 _CSS = (
@@ -206,9 +207,9 @@ def render(summary: dict, moments: list[dict], choices: list[tuple[str, str]] | 
     body = "".join(sections) or '<section><p class="empty">Nothing proposed.</p></section>'
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
-        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        f"<meta name='viewport' content='width=device-width,initial-scale=1'>{brand.HEAD}"
         f"<title>Moments</title><style>{_CSS}</style></head><body>"
-        f'<header><div class="row"><h1>Moments</h1><span class="count" id="status"></span></div>'
+        f'<header><div class="row"><h1>{brand.ICON}Moments</h1><span class="count" id="status"></span></div>'
         f'<p class="note" style="color:inherit;opacity:.9;margin:6px auto 0;max-width:640px">'
         f"{summary['moments']} moments: {states['approved']} approved, "
         f"{states['proposed']} proposed, {states['declined']} declined</p></header>"

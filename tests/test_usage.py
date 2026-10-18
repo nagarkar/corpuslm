@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 import pytest
 from review_kinds import YOUTUBE_SOURCE, add_youtube_source
 
-from corpuslm import clock, db, ledger, review_settings, usage, usage_page
+from corpuslm import brand, clock, db, ledger, review_settings, usage, usage_page
 from corpuslm.store import Store
 
 NOW = datetime(2026, 10, 10, 12, 0, tzinfo=UTC)
@@ -136,6 +136,7 @@ def test_the_page_shows_spend_caps_fetches_and_the_note(settings):
     page = usage_page.render(usage.board(settings, now=NOW))
     assert 'http-equiv="refresh" content="60"' in page
     assert "prefers-color-scheme:dark" in page and 'name="viewport"' in page
+    assert brand.HEAD in page.split("<h1>", 1)[0] and brand.ICON in page
     assert "Per-run cap $2.00" in page and "Per-run cap $0.50" in page
     assert "meter is the authority" in page and "ledger figures" in page
     assert "Supadata calls answered" in page and "HTTP 429" in page

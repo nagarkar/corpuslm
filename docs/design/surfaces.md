@@ -58,7 +58,7 @@ flowchart LR
 
 ## One usage dashboard for the whole system (2026-10-10)
 
-- `corpuslm usage show --config FILE` (terminal board, `--json`, `--month`) and `corpuslm usage serve --config FILE` (one page on the loopback address, `GET /` and `GET /health`, refreshed every 60 seconds, port from `[usage]`, default 8779) show model spend by tool, stage and day, with each tool's per-run cap beside the month, and caption fetches per fetcher, outcome and day. Both are read-only.
+- `corpuslm usage show --config FILE` (terminal board, `--json`, `--month`) and `corpuslm usage serve --config FILE` (one page on the loopback address, `GET /`, `GET /health` and the brand images `/favicon.ico` and `/brand/<file>`, refreshed every 60 seconds, port from `[usage]`, default 8779) show model spend by tool, stage and day, with each tool's per-run cap beside the month, and caption fetches per fetcher, outcome and day. Both are read-only.
 - Where the ledgers are: `[usage.ledgers]` (tool = ledger folder) and `[usage.tool_settings]` (tool = its own settings file, read only for `[llm].max_usd_per_run` and `max_usd_per_day`) in the same `review.toml`. Fetch counts come from the shared database through `Store.fetch_attempt_counts`, opened read-only.
 - The page says its dollar figures are the tools' own ledger figures and the vendor's meter is the authority. Counts and money only, never content.
 - `scripts/com.nagarkar.corpuslm.usage.plist` keeps it running; the owner installs it.
@@ -66,6 +66,14 @@ flowchart LR
 **Why:** the owner wants one usage dashboard, not one per tool; ytlm's own fetch-usage page moved here and is gone.
 
 **Rules out:** a usage page in a tool; a usage write path; content on the page.
+
+## Every served page wears the CorpusLM brand (2026-10-18)
+
+- The icon, favicons and wordmarks live in `src/corpuslm/brand/`, copied unchanged from metalm `brand/corpuslm/` (metalm `guidelines/ui.md#brand`). [`src/corpuslm/brand.py`](../../src/corpuslm/brand.py) holds the head links every page puts in its `<head>` (`/favicon.ico`, `/brand/favicon-32.png`, `/brand/apple-touch-icon.png`) and the small header icon.
+- Both servers answer `GET /favicon.ico` and `GET /brand/<file>` with the image; any other name under `/brand/` is 404.
+- The review, concepts, moments, monologue and usage pages show the icon beside their title; the teleprompter links the favicons but keeps its header to the reading controls.
+
+**Rules out:** redrawing or restyling the brand files in this repo.
 
 ## Changes
 
@@ -75,3 +83,4 @@ flowchart LR
 - 2026-10-08 Review machinery moved here with per-kind hooks (nagarkar/ytlm#50 step 6).
 - 2026-10-10 Model suggestions recorded (schema 6); `suggestions record` and `review accept-suggestions`.
 - 2026-10-10 One usage dashboard (`usage show|serve`); ytlm's own dashboard retired.
+- 2026-10-18 Every served page wears the CorpusLM brand; both servers serve `/favicon.ico` and `/brand/<file>`.

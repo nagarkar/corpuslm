@@ -21,6 +21,7 @@ import html
 import json
 import re
 
+from . import brand
 from .concepts_page import _CSS as _BASE_CSS
 
 _CSS = (
@@ -224,9 +225,9 @@ def render_list(monologues: list[dict]) -> str:
     )
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
-        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        f"<meta name='viewport' content='width=device-width,initial-scale=1'>{brand.HEAD}"
         f"<title>Monologues</title><style>{_CSS}</style></head><body data-name=''>"
-        '<header><div class="row"><h1>Monologues</h1></div></header><main>'
+        f'<header><div class="row"><h1>{brand.ICON}Monologues</h1></div></header><main>'
         f'<section><h2>Start one</h2><div class="row2">'
         '<input type="text" id="newname" placeholder="A short name" aria-label="Name">'
         '<textarea id="newbrief" rows="6" placeholder="What it is about (optional)" aria-label="Brief"></textarea>'
@@ -286,10 +287,10 @@ def render(data: dict) -> str:
     )
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
-        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        f"<meta name='viewport' content='width=device-width,initial-scale=1'>{brand.HEAD}"
         f"<title>{html.escape(data['title'] or data['name'])}</title><style>{_CSS}</style></head>"
         f'<body data-name="{name}">'
-        f'<header><div class="row"><h1><a href="/monologues" style="color:inherit;text-decoration:none">‹</a> '
+        f'<header><div class="row"><h1><a href="/monologues" style="color:inherit;text-decoration:none">‹</a> {brand.ICON}'
         f"{html.escape(data['title'] or data['name'])}</h1></div></header><main>"
         '<section><h2>Brief</h2><div class="row2">'
         f'<input type="text" id="title" value="{html.escape(data["title"])}" placeholder="Working title" aria-label="Title">'

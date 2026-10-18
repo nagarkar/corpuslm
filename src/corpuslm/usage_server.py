@@ -1,9 +1,9 @@
 """Usage server: serves the usage page on this machine, read-only.
 
-A small standard-library HTTP server on the loopback address. Two routes, both GET: `/` the page,
-built per request by the function the caller passes in, and `/health` with the time the server
-started. Anything else is 404, any other method 501. It writes nothing and shows numbers and money,
-never content.
+A small standard-library HTTP server on the loopback address. GET routes only: `/` the page,
+built per request by the function the caller passes in, `/health` with the time the server
+started, and the brand images `/favicon.ico` and `/brand/<file>` (corpuslm.brand). Anything
+else is 404, any other method 501. It writes nothing and shows numbers and money, never content.
 
 Never imports: cli, clikit, db, store, any model transport.
 
@@ -12,7 +12,7 @@ Decisions:
   (loopback or `*.ts.net`), else 421. Enforced by:
   tests/test_usage_server.py::test_the_server_will_not_bind_a_public_address,
   tests/test_usage_server.py::test_a_host_that_is_not_this_machine_gets_421.
-- Only `GET /` and `GET /health` exist. Enforced by:
+- Only `GET /`, `GET /health` and the brand images exist. Enforced by:
   tests/test_usage_server.py::test_only_the_page_and_health_are_routes.
 """
 
@@ -22,7 +22,7 @@ import json
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import clock
+from . import brand, clock
 
 LOOPBACK = frozenset({"127.0.0.1", "::1", "localhost"})
 
@@ -60,6 +60,8 @@ def make_server(host: str, port: int, *, page: Callable[[], str]) -> ThreadingHT
                 self._json(421, {"error": "this server answers requests for this machine only"})
             elif self.path == "/health":
                 self._json(200, {"status": "ok", "started_at": started_at})
+            elif (image := brand.asset(self.path)) is not None:
+                self._send(200, *image)
             elif self.path.split("?")[0] == "/":
                 try:
                     body = page().encode("utf-8")

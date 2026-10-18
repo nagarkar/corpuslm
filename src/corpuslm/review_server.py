@@ -11,7 +11,8 @@ Routes: `GET /` the page (built per request by the function the caller passes in
 (with the time this server started, for `review check`), any other page the caller passes in
 `pages` (`/concepts`, corpuslm.concepts_page; `/moments`, corpuslm.moments_page; built per
 request too), any page under a prefix in `page_prefixes` (`/teleprompter/<monologue>`,
-corpuslm.teleprompter_page), and one `POST /api/review` with `{"method": ..., "params": {...}}`
+corpuslm.teleprompter_page), the brand images `/favicon.ico` and `/brand/<file>`
+(corpuslm.brand), and one `POST /api/review` with `{"method": ..., "params": {...}}`
 dispatched to `Answers`, whose `concept_verdict` and `moment_verdict` methods append a ruling.
 The pages' scripts (never a second copy of a page) are the only clients.
 
@@ -51,7 +52,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import clock
+from . import brand, clock
 from .db import Database, now_iso
 from .review_page import decisions_document
 from .store import Store
@@ -499,6 +500,8 @@ def make_server(
                 return
             if self.path == "/health":
                 self._json(200, {"status": "ok", "started_at": started_at})
+            elif (image := brand.asset(self.path)) is not None:
+                self._send(200, *image)
             elif self.path in ("/", "/index.html"):
                 html = page()
                 self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")

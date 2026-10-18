@@ -9,7 +9,7 @@ import threading
 
 import pytest
 
-from corpuslm import bodies, claims, db, monologue_page, monologues, review_server
+from corpuslm import bodies, brand, claims, db, monologue_page, monologues, review_server
 from corpuslm.store import Store
 
 
@@ -118,6 +118,7 @@ def test_the_pages_render_the_choices_escaped_and_without_transcript_text(world)
     monologues.attach(store, "karma", moment_id=ids["bee:1"])
     html = monologue_page.render(monologues.candidates(store, "karma"))
     assert "<title>Karma &lt;b&gt;</title>" in html and 'data-name="karma"' in html
+    assert brand.HEAD in html.split("<body", 1)[0] and brand.ICON in html
     assert 'data-act="detach" data-kind="moment" data-id="' + ids["bee:1"] in html
     assert 'data-act="attach" data-kind="moment" data-id="' + ids["bee:2"] in html
     assert 'data-act="attach" data-kind="body" data-id="SMSTTD"' in html

@@ -22,6 +22,8 @@ from __future__ import annotations
 import html
 import json
 
+from . import brand
+
 _CSS = """
 :root{--ground:#f6f4ef;--panel:#fff;--ink:#1c1b18;--muted:#6b675c;--line:#ddd8cc;--band:#2f4858;
 --band-ink:#fff;--good:#0a7a3c;--good-soft:#dff3e7;--chip:#ece8de;--focus:#7b4fb0;--warn:#b7410e}
@@ -118,9 +120,9 @@ def render(summary: dict, rows: list[dict] | None = None) -> str:
     counts = json.dumps(states)
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
-        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        f"<meta name='viewport' content='width=device-width,initial-scale=1'>{brand.HEAD}"
         f"<title>Concepts</title><style>{_CSS}</style></head><body>"
-        f'<header><div class="row"><h1>Concepts</h1><span class="count" id="status"></span></div>'
+        f'<header><div class="row"><h1>{brand.ICON}Concepts</h1><span class="count" id="status"></span></div>'
         f'<p class="note" style="color:inherit;opacity:.9;margin:6px auto 0;max-width:640px">'
         f"{summary['concepts']} concepts: {states['in']} in, {states['boundary']} boundary, "
         f"{states['out']} out · gate {gate['min_sections']} sections, {gate['min_claims']} claims"

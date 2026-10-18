@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from html import escape
 
+from . import brand
+
 REFRESH_SECONDS = 60
 OUTCOMES = ("ok", "none", "error", "skipped")
 
@@ -159,9 +161,10 @@ def render(board: dict) -> str:
     return (
         '<!doctype html><meta charset="utf-8"><meta name="viewport" '
         'content="width=device-width,initial-scale=1">'
+        f"{brand.HEAD}"
         f'<meta http-equiv="refresh" content="{REFRESH_SECONDS}">'
         f"<title>Usage</title><style>{STYLE}</style>"
-        f"<h1>Usage, {escape(board['month'])}</h1>"
+        f"<h1>{brand.ICON}Usage, {escape(board['month'])}</h1>"
         f'<div class="mut">{escape(board["note"])}</div>{problems}'
         f"<h2>Model spend, {money(spend['cost_usd'])} this month</h2>"
         f'<div class="cards">{cards}</div>{stages}<h3>By day</h3>{_day_table(tools)}'
