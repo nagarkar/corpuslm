@@ -390,11 +390,27 @@ def test_monologue_verbs_against_the_fake_document_store(tmp_path, capsys, monke
     database.close()
     assert (
         cli.main(
-            ["--json", "monologue", "new", "Karma Walk", "--brief", "karma", "--config", config]
+            [
+                "--json",
+                "monologue",
+                "new",
+                "Karma Walk",
+                "--series",
+                "SpiritualHindu",
+                "--brief",
+                "karma",
+                "--config",
+                config,
+            ]
         )
         == 0
     )
     board = _board(capsys)
+    assert (board["series"], board["file"], board["series_created"]) == (
+        "SpiritualHindu",
+        "karma-walk.md",
+        True,
+    )
     assert board["name"] == "karma-walk" and board["next"].startswith(
         "corpuslm monologue attach karma-walk"
     )
@@ -430,8 +446,8 @@ def test_monologue_verbs_against_the_fake_document_store(tmp_path, capsys, monke
     assert _board(capsys)["detached"] is True
     assert cli.main(["--json", "monologue", "list", "--config", config]) == 0
     board = _board(capsys)
-    assert [(m["name"], m["moments"], m["runs"]) for m in board["monologues"]] == [
-        ("karma-walk", 0, 0)
+    assert [(m["name"], m["series"], m["moments"], m["runs"]) for m in board["monologues"]] == [
+        ("karma-walk", "SpiritualHindu", 0, 0)
     ]
 
 
@@ -441,22 +457,28 @@ def test_monologue_export_and_the_teleprompter_url(tmp_path, capsys, monkeypatch
     monkeypatch.setattr("corpuslm.document.FAKE_DIR", tmp_path / "docs")
     config = _claims_world(tmp_path)
     assert (
-        cli.main(["--json", "monologue", "new", "karma", "--title", "T", "--config", config]) == 0
+        cli.main(
+            [
+                "--json",
+                "monologue",
+                "new",
+                "karma",
+                "--series",
+                "SpiritualHindu",
+                "--title",
+                "T",
+                "--config",
+                config,
+            ]
+        )
+        == 0
     )
     _board(capsys)
     assert cli.main(["--json", "monologue", "export", "karma", "--config", config]) == 1
     assert "no script yet" in _board(capsys)["error"]
-    from corpuslm.store import Store
 
     doc = document.FakeDocumentStore(tmp_path / "docs")
-    doc.ensure("monologue-karma", tmp_path / "ms", "T")
-    doc.add_tab("monologue-karma", "script.md", "Script")
-    doc.write_tab("monologue-karma", "script.md", "# Script v1: T\n\nSpoken words here.\n")
-    database = db.Database(tmp_path / "transcript.sqlite")
-    Store(database).update_monologue(
-        "karma", {"manuscript": "monologue-karma", "directory": str(tmp_path / "ms")}
-    )
-    database.close()
+    doc.write_tab("SpiritualHindu", "karma.md", "# Script v1: T\n\nSpoken words here.\n")
     out = tmp_path / "karma.txt"
     assert (
         cli.main(["--json", "monologue", "export", "karma", "--to", str(out), "--config", config])

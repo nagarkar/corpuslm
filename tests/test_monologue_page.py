@@ -9,7 +9,7 @@ import threading
 
 import pytest
 
-from corpuslm import bodies, claims, db, monologue_page, monologues, review_server
+from corpuslm import bodies, claims, db, document, monologue_page, monologues, review_server
 from corpuslm.store import Store
 
 
@@ -63,7 +63,10 @@ def world(tmp_path):
                                     answered_through="review file", created_by="t")  # fmt: skip
     unruled = store.add_moment("bee:2", 2, 3, "Unruled", origin="model", created_by="t")
     bodies.add(store, "SMSTTD", text_source_id="bee:1", created_by="t")
-    monologues.create(store, "karma", brief="karma and choosing again", created_by="t")
+    monologues.create(
+        store, document.FakeDocumentStore(tmp_path / "docs"), "karma", series="SpiritualHindu",
+        workspace=tmp_path / "ws", brief="karma and choosing again", created_by="t",
+    )  # fmt: skip
     yield tmp_path, store, ids, unruled
     database.close()
 
@@ -136,9 +139,16 @@ def test_the_pages_render_the_choices_escaped_and_without_transcript_text(world)
     assert "No monologues yet." in monologue_page.render_list([])
 
 
-def test_the_server_calls_make_attach_and_decline_what_needs_settings(world):
+def test_the_server_calls_make_attach_and_decline_what_needs_settings(world, monkeypatch):
+    from types import SimpleNamespace
+
     tmp_path, store, ids, _ = world
-    answers = review_server.Answers(tmp_path / "transcript.sqlite")
+    monkeypatch.setattr("corpuslm.document.FAKE_DIR", tmp_path / "docs")
+    # [claims] only: a new monologue's series needs the document store; a run needs [monologue]
+    settings = SimpleNamespace(
+        claims=SimpleNamespace(workspace=tmp_path / "ws"), monologue=None, client_config=dict
+    )
+    answers = review_server.Answers(tmp_path / "transcript.sqlite", settings)
     httpd = review_server.make_server(
         "127.0.0.1", 0, page=lambda: "<title>p</title>", answers=answers
     )
@@ -156,8 +166,13 @@ def test_the_server_calls_make_attach_and_decline_what_needs_settings(world):
 
     try:
         status, body = post("monologue_new", {"name": "Second Walk", "brief": "beats"})
+        assert status == 400 and "series" in body["error"]
+        status, body = post(
+            "monologue_new", {"name": "Second Walk", "series": "SpiritualHindu", "brief": "beats"}
+        )
         assert status == 200 and body["result"]["name"] == "second-walk"
-        status, body = post("monologue_new", {"name": "second walk"})
+        assert body["result"]["file"] == "second-walk.md"
+        status, body = post("monologue_new", {"name": "second walk", "series": "SpiritualHindu"})
         assert status == 400 and "exists" in body["error"]
         status, body = post(
             "monologue_brief", {"name": "second-walk", "title": "Beats", "brief": " b "}

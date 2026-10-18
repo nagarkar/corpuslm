@@ -229,6 +229,10 @@ class AuthorlmStore:
             self._api.set_caller_metadata(self._db, manuscript, self._origin, {"named": True})
 
     # -- the store --
+    def find(self, name: str) -> dict | None:
+        row = self._find(name)
+        return None if row is None else {"path": str(row["path"]), "url": self._url(row)}
+
     def ensure(self, name: str, path: Path, title: str) -> dict:
         row = self._find(name)
         created = row is None

@@ -10,15 +10,24 @@ or its claims build key (occasional). The ingredients hash keys `monologue_runs`
 ingredients return the stored run and spend nothing (nagarkar/corpuslm#50, milestone "Artifacts:
 monologues").
 
-The PRIOR is passed unhashed: the settled text of the monologue's one script tab, with the
-owner's edits, as a style and shape guide, with a note of what changed in the ingredients since
-the last run; the recipe keeps the prior's voice, structure and phrasing where the new
-ingredients do not require otherwise and makes no gratuitous change. `--fresh` drops the prior
-for one run. Each run rewrites that one tab (`Script`) whole through the document store, and the
-run row keeps both the prior it was given and its output, so the history is the runs table, not
-the Doc (owner, 2026-10-13: an earlier version's comments are irrelevant once a new one exists).
-Comments on the tab go through authorlm's comment workflow and never trigger a run. `status`
-names what changed since the latest run.
+A monologue belongs to a SERIES: an authorlm manuscript (`SpiritualHindu`) that holds its
+monologues as files, `<name>.md` each, so they share one style guide, one Doc and one concept graph
+(owner, 2026-10-17, replacing one manuscript per monologue). `new` names the series; a series
+authorlm does not have yet is registered then, its folder `<claims workspace>/monologues/<series>`.
+A series authorlm has is found through authorlm, wherever its folder is, never by listing folders.
+The series' `about.md` tab is code-owned and rebuilt whole from the database on every run, one
+section per monologue of the series: its brief, moments, bodies and runs. The database is the
+system of record; the tab is the view.
+
+The PRIOR is passed unhashed: the settled text of the monologue's file, with the owner's edits, as
+a style and shape guide, with a note of what changed in the ingredients since the last run; the
+recipe keeps the prior's voice, structure and phrasing where the new ingredients do not require
+otherwise and makes no gratuitous change. `--fresh` drops the prior for one run. Each run
+rewrites that one file whole through the document store, and the run row keeps both the prior it
+was given and its output, so the history is the runs table, not the Doc (owner, 2026-10-13: an
+earlier version's comments are irrelevant once a new one exists). Comments on the tab go through
+authorlm's comment workflow and never trigger a run. `status` names what changed since the latest
+run.
 
 Never imports: cli, clikit. Reads the database only through `Store`; reaches the Doc only
 through `corpuslm.document`.
@@ -32,18 +41,24 @@ Decisions:
 - Comments on a monologue Doc go through authorlm's comment workflow and never trigger a run.
   (owner)
 - A monologue retells generically: no family names. (owner)
+- A series manuscript holds its monologues as files; there is no manuscript per monologue and no
+  fallback to one. Enforced by:
+  tests/test_monologues.py::test_new_writes_the_monologue_as_a_file_of_its_series. (owner,
+  2026-10-17)
 
 Terms:
 - **monologue**: a named set of moments and bodies of work with a brief, a row of `monologues`,
-  whose runs are scripts.
+  whose runs are scripts; one file, `<name>.md`, of its series.
+- **series**: the authorlm manuscript a monologue lives in (stored as the monologue's
+  `manuscript`), e.g. `SpiritualHindu`; one per podcast or theme.
 - **recipe**: the versioned prompt that turns ingredients into a script (here `monologue`).
 - **ingredients**: what a run's output reflects, hashed: recipe, model, moments with their
   claims, what was said over the moments' stretches, bodies with their sheet version and
   vocabulary or claims key.
-- **prior**: the latest script tab's settled text, the style guide for the next run; not
+- **prior**: the monologue file's settled text, the style guide for the next run; not
   hashed.
 - **run**: one execution of the recipe, a row of `monologue_runs` holding the prior it was given
-  and its output; the script tab shows the latest.
+  and its output; the monologue's file shows the latest.
 """
 
 from __future__ import annotations
@@ -60,8 +75,7 @@ from .identity import canonical_sha256
 from .store import Store
 
 STAGE = "monologue"
-ABOUT = "about.md"
-SCRIPT = "script.md"
+ABOUT = "about.md"  # the series' code-owned tab
 DEFAULT_MINUTES = 4
 WORDS_PER_MINUTE = 150
 EXCERPT_CHARS = 9000  # of one stretch of what was said, shown to the model
@@ -91,12 +105,61 @@ def slug(name: str) -> str:
 # ---- the monologue -------------------------------------------------------------------------
 
 
-def create(store: Store, name: str, *, title: str = "", brief: str = "", created_by: str) -> dict:
-    name = slug(name)
+def file_of(row: dict) -> str:
+    """The monologue's file in its series."""
+    return f"{row['name']}.md"
+
+
+def series_name(series: str) -> str:
+    """The series' manuscript name as given (`SpiritualHindu`): authorlm names are not slugs."""
+    made = " ".join(series.split())
+    if not made or "/" in made or made.startswith("."):
+        raise ValueError(f"{series!r} is not a series name")
+    return made
+
+
+def create(
+    store: Store,
+    doc: document.DocumentStore,
+    name: str,
+    *,
+    series: str,
+    workspace: Path | None,
+    title: str = "",
+    brief: str = "",
+    created_by: str,
+) -> dict:
+    """Name a monologue and write it as a new file of its series, registering the series with
+    authorlm when it has none of that name (its folder under `workspace`/monologues)."""
+    name, series = slug(name), series_name(series)
+    if f"{name}.md" == ABOUT:
+        raise ValueError(f"{name!r} is the series' about tab; choose another name")
     if store.monologue(name):
         raise ValueError(f"a monologue named {name!r} exists")
-    made = store.add_monologue(name, title=title, brief=brief, created_by=created_by)
-    return {"id": made, "name": name}
+    found = doc.find(series)
+    if found is None:
+        if workspace is None:
+            raise ValueError(
+                f"authorlm has no series {series!r}, and without the [claims] workspace there "
+                "is nowhere to make it"
+            )
+        folder = Path(workspace) / "monologues" / series
+        folder.mkdir(parents=True, exist_ok=True)
+        found = doc.ensure(series, folder, series) | {"path": str(folder)}
+    file = f"{name}.md"
+    tabs = {tab["file"] for tab in doc.read(series)["tabs"]}
+    doc.add_tab(series, file, title or name, before=ABOUT if ABOUT in tabs else None)
+    made = store.add_monologue(
+        name, title=title, brief=brief, manuscript=series, created_by=created_by
+    )
+    return {
+        "id": made,
+        "name": name,
+        "series": series,
+        "file": file,
+        "path": str(Path(found["path"]) / file),
+        "series_created": "created" in found and bool(found["created"]),
+    }
 
 
 def _monologue(store: Store, name: str) -> dict:
@@ -392,21 +455,22 @@ def _variables(
     }
 
 
-def manuscript_name(row: dict) -> str:
-    return f"monologue-{row['name']}"
-
-
-def _latest_script(doc: document.DocumentStore, row: dict) -> tuple[str, str]:
-    """(file, settled text) of the script tab; ('', '') when there is none."""
-    if not row["manuscript"]:
-        return "", ""
+def _script_tab(doc: document.DocumentStore, row: dict) -> dict | None:
+    """The monologue's tab in its series as the Doc has it; None when there is none."""
     try:
         tabs = {tab["file"]: tab for tab in doc.read(row["manuscript"])["tabs"]}
     except document.DocumentUnavailable:
+        return None
+    return tabs.get(file_of(row))
+
+
+def _latest_script(doc: document.DocumentStore, row: dict) -> tuple[str, str]:
+    """(file, settled text) of the monologue's file; ('', '') when its text is only a heading
+    (as `new` leaves it) or the file is missing."""
+    tab = _script_tab(doc, row)
+    if tab is None or not _prior_text(tab["settled"]):
         return "", ""
-    if SCRIPT not in tabs:
-        return "", ""
-    return SCRIPT, tabs[SCRIPT]["settled"]
+    return file_of(row), tab["settled"]
 
 
 def _prior_text(settled: str) -> str:
@@ -460,12 +524,11 @@ def run(
     doc: document.DocumentStore,
     name: str,
     *,
-    directory: Path,
     fresh: bool = False,
     created_by: str,
 ) -> dict:
-    """Run the recipe unless a run for these ingredients exists; write the script as a new tab
-    of the monologue's Doc and the about tab. Returns counts and the Doc's URL."""
+    """Run the recipe unless a run for these ingredients exists; rewrite the monologue's file of
+    its series and the series' about tab. Returns counts and the Doc's URL."""
     row = _monologue(store, name)
     record = ingredients(store, doc, name, client.config)
     key = ingredients_sha256(record)
@@ -495,14 +558,15 @@ def run(
     output = "\n\n".join(paragraphs)
     title = " ".join(reply.parsed["title"].split())
     number = len(runs) + 1
-    tab = SCRIPT
-    manuscript = row["manuscript"] or manuscript_name(row)
-    made = doc.ensure(manuscript, Path(directory), row["title"] or title)
-    if not row["manuscript"]:
-        store.update_monologue(row["name"], {"manuscript": manuscript, "directory": str(directory)})
+    tab = file_of(row)
+    manuscript = row["manuscript"]
+    made = doc.find(manuscript)
+    if made is None:
+        raise ValueError(f"authorlm has no series {manuscript!r}, which {row['name']} names")
     if not row["title"]:
         store.update_monologue(row["name"], {"title": title})
-    doc.add_tab(manuscript, tab, "Script")
+    tabs = {tab["file"] for tab in doc.read(manuscript)["tabs"]}
+    doc.add_tab(manuscript, tab, title, before=ABOUT if ABOUT in tabs else None)
     # the one tab is rewritten whole: the owner's edits live on as the prior this run was
     # given (kept on the run row) and nowhere else
     doc.write_tab(manuscript, tab, f"# Script v{number}: {title}\n\n{output}\n")
@@ -526,10 +590,9 @@ def run(
         },
         created_by=created_by,
     )
-    tabs = {tab["file"] for tab in doc.read(manuscript)["tabs"]}
     if ABOUT not in tabs:
-        doc.add_tab(manuscript, ABOUT, "About this monologue")
-    doc.write_tab(manuscript, ABOUT, about_text(store, store.monologue(row["name"]) or row))
+        doc.add_tab(manuscript, ABOUT, "About this series")
+    doc.write_tab(manuscript, ABOUT, about_text(store, manuscript))
     for body in store.monologue_bodies(row["id"]):
         store.update_body(
             body["name"], {"last_used_at": store.monologue_runs(row["id"])[-1]["created_at"]}
@@ -552,30 +615,40 @@ def run(
 
 
 def script_text(doc: document.DocumentStore, row: dict) -> tuple[str, str, int]:
-    """(tab file, settled script text without its heading, open revisions) of the latest script
-    tab; ('', '', 0) when there is none."""
+    """(file, settled script text without its heading, open revisions) of the monologue's file;
+    ('', '', 0) before a run wrote it."""
     file, settled = _latest_script(doc, row)
     if not file:
         return "", "", 0
-    tabs = {tab["file"]: tab for tab in doc.read(row["manuscript"])["tabs"]}
-    return file, _prior_text(settled), len(tabs[file]["open"])
+    tab = _script_tab(doc, row) or {"open": []}
+    return file, _prior_text(settled), len(tab["open"])
 
 
 def export(store: Store, doc: document.DocumentStore, name: str, to: Path | None = None) -> dict:
-    """Write the latest script tab's settled text as plain text, headed by the monologue's id and
-    title so podlm can record where an episode came from (nagarkar/podlm#33). Returns the path
-    and counts; open revisions are reported, and the settled text is what is exported."""
+    """Write the monologue file's settled text as plain text, headed by the monologue's id, title
+    and series so podlm can record where an episode came from (nagarkar/podlm#33). The default
+    path is beside the file in the series' folder, as authorlm has it registered. Returns the
+    path and counts; open revisions are reported, and the settled text is what is exported."""
     row = _monologue(store, name)
     file, text, open_revisions = script_text(doc, row)
     if not file:
         raise ValueError(f"{row['name']} has no script yet; run it first")
-    path = Path(to) if to else Path(row["directory"]) / f"{row['name']}.teleprompter.txt"
-    header = f"monologue: {row['id']}\nname: {row['name']}\ntitle: {row['title']}\ntab: {file}\n\n"
+    if to is None:
+        found = doc.find(row["manuscript"])
+        if found is None:
+            raise ValueError(f"authorlm has no series {row['manuscript']!r}")
+        to = Path(found["path"]) / f"{row['name']}.teleprompter.txt"
+    path = Path(to)
+    header = (
+        f"monologue: {row['id']}\nname: {row['name']}\ntitle: {row['title']}\n"
+        f"series: {row['manuscript']}\nfile: {file}\n\n"
+    )
     from .files import write_atomic
 
     write_atomic(path, header + text + "\n")
     return {
         "monologue": row["name"],
+        "series": row["manuscript"],
         "path": str(path),
         "tab": file,
         "words": len(text.split()),
@@ -817,26 +890,33 @@ def attach_source(store: Store, name: str, source_id: str, *, created_by: str) -
     return attach(store, name, body=body_name)
 
 
-def about_text(store: Store, row: dict) -> str:
-    """The code-owned about tab: what the monologue is made of and its runs."""
-    lines = ["# About this monologue", "", OMIT_OPEN, "", f"Name: {row['name']}"]
-    if row["title"]:
-        lines.append(f"Working title: {row['title']}")
-    if row["brief"]:
-        lines.append(f"Brief: {row['brief']}")
-    lines += ["", "## Moments"]
-    for moment in store.monologue_moments(row["id"]):
-        lines.append(f"- {moment['source_id']} segments {moment['first_position']} to "
-                     f"{moment['last_position']}: {moment['insight']}")  # fmt: skip
-    lines += ["", "## Bodies of work"]
-    for body in store.monologue_bodies(row["id"]):
-        lines.append(f"- {body['name']} ({body['kind']})")
-    lines += ["", "## Runs"]
-    for run_row in store.monologue_runs(row["id"]):
-        lines.append(
-            f"- v{run_row['number']} on {run_row['created_at'][:10]}: {run_row['title']} "
-            f"({run_row['model']}, ingredients {run_row['ingredients_sha256'][:12]})"
-        )
+def about_text(store: Store, series: str) -> str:
+    """The series' code-owned about tab: for each of its monologues, in name order, what it is
+    made of and its runs."""
+    lines = ["# About this series", "", OMIT_OPEN]
+    members = sorted(
+        (row for row in store.monologues() if row["manuscript"] == series),
+        key=lambda row: row["name"],
+    )
+    for row in members:
+        lines += ["", f"## {row['name']} ({file_of(row)})"]
+        if row["title"]:
+            lines.append(f"Working title: {row['title']}")
+        if row["brief"]:
+            lines.append(f"Brief: {row['brief']}")
+        lines += ["", "### Moments"]
+        for moment in store.monologue_moments(row["id"]):
+            lines.append(f"- {moment['source_id']} segments {moment['first_position']} to "
+                         f"{moment['last_position']}: {moment['insight']}")  # fmt: skip
+        lines += ["", "### Bodies of work"]
+        for body in store.monologue_bodies(row["id"]):
+            lines.append(f"- {body['name']} ({body['kind']})")
+        lines += ["", "### Runs"]
+        for run_row in store.monologue_runs(row["id"]):
+            lines.append(
+                f"- v{run_row['number']} on {run_row['created_at'][:10]}: {run_row['title']} "
+                f"({run_row['model']}, ingredients {run_row['ingredients_sha256'][:12]})"
+            )
     lines += ["", OMIT_CLOSE, ""]
     return "\n".join(lines)
 
@@ -847,6 +927,7 @@ def listing(store: Store, doc: document.DocumentStore, config: dict | None) -> l
         runs = store.monologue_runs(row["id"])
         entry = {
             "name": row["name"],
+            "series": row["manuscript"],
             "title": row["title"],
             "state": row["state"],
             "moments": len(store.monologue_moments(row["id"])),
@@ -878,12 +959,13 @@ __all__ = [
     "detach",
     "estimate",
     "export",
+    "file_of",
     "ingredients",
     "ingredients_sha256",
     "listing",
-    "manuscript_name",
     "run",
     "script_text",
+    "series_name",
     "settings",
     "slug",
     "status",

@@ -16,18 +16,17 @@ def made(tmp_path):
     database = db.Database(tmp_path / "transcript.sqlite")
     store = Store(database)
     doc = document.FakeDocumentStore(tmp_path / "docs")
-    monologues.create(store, "karma walk", title="As of now", created_by="t")
+    doc.ensure("SpiritualHindu", tmp_path / "ms", "SpiritualHindu")
+    monologues.create(
+        store, doc, "karma walk", series="SpiritualHindu", workspace=None, title="As of now",
+        created_by="t",
+    )  # fmt: skip
     yield tmp_path, store, doc
     database.close()
 
 
 def _script(store, doc, tmp_path, text="# Script v1: As of now\n\nOne.\n\nTwo & three.\n"):
-    doc.ensure("monologue-karma-walk", tmp_path / "ms", "As of now")
-    doc.add_tab("monologue-karma-walk", "script.md", "Script")
-    doc.write_tab("monologue-karma-walk", "script.md", text)
-    store.update_monologue(
-        "karma-walk", {"manuscript": "monologue-karma-walk", "directory": str(tmp_path / "ms")}
-    )
+    doc.write_tab("SpiritualHindu", "karma-walk.md", text)
 
 
 def test_export_writes_the_settled_text_with_the_monologue_id_in_the_header(made):
@@ -37,7 +36,7 @@ def test_export_writes_the_settled_text_with_the_monologue_id_in_the_header(made
     _script(store, doc, tmp_path)
     out = monologues.export(store, doc, "karma-walk", tmp_path / "out.txt")
     assert (out["tab"], out["words"], out["open_revisions"], out["note"]) == (
-        "script.md",
+        "karma-walk.md",
         4,
         0,
         "",
@@ -45,10 +44,11 @@ def test_export_writes_the_settled_text_with_the_monologue_id_in_the_header(made
     text = (tmp_path / "out.txt").read_text()
     row = store.monologue("karma-walk")
     assert text.startswith(
-        f"monologue: {row['id']}\nname: karma-walk\ntitle: As of now\ntab: script.md\n\n"
+        f"monologue: {row['id']}\nname: karma-walk\ntitle: As of now\nseries: SpiritualHindu\n"
+        "file: karma-walk.md\n\n"
     )
     assert text.endswith("One.\n\nTwo & three.\n") and "# Script" not in text
-    doc.stage("monologue-karma-walk", "script.md", [{"old": "", "new": "Added.", "after": 2}])
+    doc.stage("SpiritualHindu", "karma-walk.md", [{"old": "", "new": "Added.", "after": 2}])
     out = monologues.export(store, doc, "karma-walk")
     assert out["open_revisions"] == 1 and "open revisions" in out["note"]
     assert out["path"].endswith("ms/karma-walk.teleprompter.txt")

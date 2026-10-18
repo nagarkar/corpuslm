@@ -2,7 +2,7 @@
 (corpuslm.monologues, nagarkar/corpuslm#51).
 
 Two self-contained pages on the review server. `/monologues` lists the monologues with a form to
-start one (a name, an optional brief). `/monologues/<name>` is the choosing page: the brief (saved
+start one (a name, its series, an optional brief). `/monologues/<name>` is the choosing page: the brief (saved
 on tap), the moments and bodies attached so far (tap to take off), the candidate moments ranked by
 the concepts they share with the attached ones and by the brief's words (every moment with Edit,
 which rewords its insight, and Delete, which declines it), the bodies of work from
@@ -87,7 +87,7 @@ _SCRIPT = """
         if(o.ok){flash('Deleted');reload()}else{flash('Not deleted: '+(o.body.error||''),true)}});return}
     if(act==='save'){params.brief=document.getElementById('brief').value;params.title=document.getElementById('title').value;
       call('monologue_brief',params).then(function(o){flash(o.ok?'Saved':'Not saved: '+(o.body.error||''),!o.ok)});return}
-    if(act==='new'){call('monologue_new',{name:document.getElementById('newname').value,brief:document.getElementById('newbrief').value})
+    if(act==='new'){call('monologue_new',{name:document.getElementById('newname').value,series:document.getElementById('newseries').value,brief:document.getElementById('newbrief').value})
       .then(function(o){if(o.ok){location.href='/monologues/'+o.body.result.name}else{flash('Not made: '+(o.body.error||''),true)}});return}
     if(act==='attach'||act==='detach'){params[b.getAttribute('data-kind')]=b.getAttribute('data-id');
       call('monologue_'+act,params).then(function(o){if(o.ok){flash(act==='attach'?'Attached':'Taken off');reload()}else{flash('Not saved: '+(o.body.error||''),true)}});return}
@@ -210,7 +210,8 @@ def render_list(monologues: list[dict]) -> str:
         "".join(
             _card(
                 f'<a href="/monologues/{html.escape(m["name"])}">{html.escape(m["title"] or m["name"])}</a>',
-                f"{m['moments']} moments · {len(m['bodies'])} bodies · {m['runs']} runs · {html.escape(m['state'])}"
+                (f"{html.escape(m['series'])} · " if m.get("series") else "")
+                + f"{m['moments']} moments · {len(m['bodies'])} bodies · {m['runs']} runs · {html.escape(m['state'])}"
                 + (
                     f" · ingredients {html.escape(m['ingredients'])}"
                     if m.get("ingredients")
@@ -229,6 +230,7 @@ def render_list(monologues: list[dict]) -> str:
         '<header><div class="row"><h1>Monologues</h1></div></header><main>'
         f'<section><h2>Start one</h2><div class="row2">'
         '<input type="text" id="newname" placeholder="A short name" aria-label="Name">'
+        '<input type="text" id="newseries" placeholder="Series, e.g. SpiritualHindu" aria-label="Series">'
         '<textarea id="newbrief" rows="6" placeholder="What it is about (optional)" aria-label="Brief"></textarea>'
         '<button class="act primary" data-act="new">Start</button></div></section>'
         f"<section><h2>Monologues</h2>{rows}</section></main>"

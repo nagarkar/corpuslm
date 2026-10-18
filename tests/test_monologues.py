@@ -23,6 +23,7 @@ CONFIG = {
     "llm": {},
 }
 BEE, TEXT = "bee:1", "text:smsttd"
+SERIES, FILE = "SpiritualHindu", "karma-walk.md"
 REPLY = {
     "title": "As of now",
     "paragraphs": ["I was walking with my son.", "A choice is right only as of now."],
@@ -74,7 +75,10 @@ class World:
             directory=str(tmp_path / "ms"), note="the standing one", created_by="t",
         )  # fmt: skip
         bodies.add(self.store, "a talk", source_id=TEXT, created_by="t")
-        monologues.create(self.store, "Karma Walk", brief="karma, from the walk", created_by="t")
+        monologues.create(
+            self.store, self.doc, "Karma Walk", series=SERIES, workspace=self.root,
+            brief="karma, from the walk", created_by="t",
+        )  # fmt: skip
 
     def script(self, tag: str, reply: dict = REPLY) -> None:
         folder = self.scripts / monologues.STAGE
@@ -97,9 +101,8 @@ class World:
     def run(self, config: dict | None = None, **kw) -> dict:
         self.script(f"karma-walk-{self.key(config)[:12]}")
         return monologues.run(
-            self.store, self.client(config), self.doc, "karma-walk",
-            directory=self.root / "monologues" / "karma-walk", created_by="t", **kw,
-        )  # fmt: skip
+            self.store, self.client(config), self.doc, "karma-walk", created_by="t", **kw
+        )
 
 
 @pytest.fixture
@@ -112,7 +115,10 @@ def world(tmp_path):
 def test_create_attach_and_detach_check_what_they_are_given(world):
     assert world.store.monologue("karma-walk")["brief"] == "karma, from the walk"
     with pytest.raises(ValueError, match="exists"):
-        monologues.create(world.store, "karma walk", created_by="t")
+        monologues.create(
+            world.store, world.doc, "karma walk", series=SERIES, workspace=world.root,
+            created_by="t",
+        )  # fmt: skip
     with pytest.raises(ValueError, match="not approved"):
         monologues.attach(world.store, "karma-walk", moment_id=world.unapproved)
     assert monologues.attach(world.store, "karma-walk", moment_id=world.moment)["attached"]
@@ -136,6 +142,60 @@ def test_create_attach_and_detach_check_what_they_are_given(world):
     )
 
 
+def test_new_writes_the_monologue_as_a_file_of_its_series(world, tmp_path):
+    # the world's `new` registered the series, its folder under the workspace, with one file
+    assert world.doc.find(SERIES)["path"] == str(world.root / "monologues" / SERIES)
+    assert [tab["file"] for tab in world.doc.read(SERIES)["tabs"]] == [FILE]
+    assert not list((tmp_path / "docs").glob("monologue-*"))  # no manuscript per monologue
+    monologues.attach(world.store, "karma-walk", moment_id=world.moment)
+    world.run()
+    # a second monologue of the series is a second file, placed before the about tab
+    made = monologues.create(
+        world.store, world.doc, "Two Returns", series=SERIES, workspace=None, created_by="t"
+    )
+    assert (made["series"], made["file"], made["series_created"]) == (
+        SERIES,
+        "two-returns.md",
+        False,
+    )
+    assert [tab["file"] for tab in world.doc.read(SERIES)["tabs"]] == [
+        FILE,
+        "two-returns.md",
+        monologues.ABOUT,
+    ]
+    monologues.attach(world.store, "two-returns", moment_id=world.moment)
+    world.script(
+        "two-returns-"
+        + monologues.ingredients_sha256(
+            monologues.ingredients(world.store, world.doc, "two-returns", CONFIG)
+        )[:12]
+    )
+    monologues.run(world.store, world.client(), world.doc, "two-returns", created_by="t")
+    about = {tab["file"]: tab for tab in world.doc.read(SERIES)["tabs"]}[monologues.ABOUT]
+    assert "## karma-walk (karma-walk.md)" in about["settled"]
+    assert "## two-returns (two-returns.md)" in about["settled"]
+    # a series authorlm already has is found through it, wherever its folder is
+    elsewhere = tmp_path / "drive" / "Nothingness"
+    world.doc.ensure("Nothingness", elsewhere, "Nothingness")
+    made = monologues.create(
+        world.store, world.doc, "void", series="Nothingness", workspace=world.root, created_by="t"
+    )
+    assert made["path"] == str(elsewhere / "void.md") and made["series_created"] is False
+    assert not (world.root / "monologues" / "Nothingness").exists()
+    with pytest.raises(ValueError, match="nowhere to make it"):
+        monologues.create(
+            world.store, world.doc, "x", series="Choice", workspace=None, created_by="t"
+        )
+    with pytest.raises(ValueError, match="about tab"):
+        monologues.create(
+            world.store, world.doc, "About", series=SERIES, workspace=None, created_by="t"
+        )
+    with pytest.raises(ValueError, match="not a series name"):
+        monologues.create(
+            world.store, world.doc, "y", series="a/b", workspace=world.root, created_by="t"
+        )
+
+
 def test_a_run_writes_a_script_tab_an_about_tab_and_the_run_row(world):
     monologues.attach(world.store, "karma-walk", moment_id=world.moment)
     monologues.attach(world.store, "karma-walk", body="SMSTTD")
@@ -146,20 +206,21 @@ def test_a_run_writes_a_script_tab_an_about_tab_and_the_run_row(world):
     assert (out["run"], out["unchanged"], out["tab"], out["paragraphs"], out["prior"]) == (
         1,
         False,
-        "script.md",
+        FILE,
         2,
         "",
     )
     assert out["cost_usd"] > 0 and out["cached"] is False
     row = world.store.monologue("karma-walk")
-    assert (row["manuscript"], row["title"]) == ("monologue-karma-walk", "As of now")
-    tabs = {tab["file"]: tab for tab in world.doc.read("monologue-karma-walk")["tabs"]}
-    assert set(tabs) == {"script.md", monologues.ABOUT}
+    assert (row["manuscript"], row["title"]) == (SERIES, "As of now")
+    tabs = {tab["file"]: tab for tab in world.doc.read(SERIES)["tabs"]}
+    assert list(tabs) == [FILE, monologues.ABOUT]
     assert (
-        tabs["script.md"]["settled"] == "# Script v1: As of now\n\nI was walking with my son.\n\n"
+        tabs[FILE]["settled"] == "# Script v1: As of now\n\nI was walking with my son.\n\n"
         "A choice is right only as of now.\n"
     )
     about = tabs[monologues.ABOUT]["settled"]
+    assert about.startswith("# About this series") and "## karma-walk (karma-walk.md)" in about
     assert (
         "- SMSTTD (standing)" in about
         and "- a talk (occasional)" in about
@@ -186,13 +247,10 @@ def test_the_same_ingredients_return_the_stored_run_and_spend_nothing(world):
     world.run()
     estimate = monologues.estimate(world.store, world.client(), world.doc, "karma-walk")
     assert estimate.stored is True and estimate.usd == 0.0
-    again = monologues.run(
-        world.store, world.client(), world.doc, "karma-walk",
-        directory=world.root / "x", created_by="t",
-    )  # fmt: skip
+    again = monologues.run(world.store, world.client(), world.doc, "karma-walk", created_by="t")
     assert again["unchanged"] is True and again["cost_usd"] == 0.0 and again["run"] == 1
     assert len(world.store.monologue_runs(world.store.monologue("karma-walk")["id"])) == 1
-    assert len(world.doc.read("monologue-karma-walk")["tabs"]) == 2
+    assert len(world.doc.read(SERIES)["tabs"]) == 2
 
 
 def test_a_changed_ingredient_runs_again_with_the_settled_prior_as_style_guide(world):
@@ -200,7 +258,7 @@ def test_a_changed_ingredient_runs_again_with_the_settled_prior_as_style_guide(w
     world.run()
     # the owner edits the script in the Doc (the fake lets a test write the settled text)
     world.doc.write_tab(
-        "monologue-karma-walk", "script.md",
+        SERIES, FILE,
         "# Script v1: As of now\n\nI was walking with my son, as I often do.\n\n"
         "A choice is right only as of now.\n",
     )  # fmt: skip
@@ -212,15 +270,12 @@ def test_a_changed_ingredient_runs_again_with_the_settled_prior_as_style_guide(w
     world.script(
         f"karma-walk-{world.key()[:12]}", REPLY | {"paragraphs": ["Revised.", "Still as of now."]}
     )
-    out = monologues.run(
-        world.store, world.client(), world.doc, "karma-walk",
-        directory=world.root / "monologues" / "karma-walk", created_by="t",
-    )  # fmt: skip
+    out = monologues.run(world.store, world.client(), world.doc, "karma-walk", created_by="t")
     assert (out["run"], out["prior"], out["changes"], out["tab"]) == (
         2,
-        "script.md",
+        FILE,
         ["brief changed"],
-        "script.md",
+        FILE,
     )
     runs = world.store.monologue_runs(world.store.monologue("karma-walk")["id"])
     assert runs[1]["prior_run_id"] == runs[0]["id"]
@@ -229,9 +284,9 @@ def test_a_changed_ingredient_runs_again_with_the_settled_prior_as_style_guide(w
     assert len(cache) == 2
     payloads = " ".join(path.read_text() for path in cache)
     assert "as I often do" in payloads
-    tabs = {tab["file"]: tab for tab in world.doc.read("monologue-karma-walk")["tabs"]}
-    assert set(tabs) == {"script.md", monologues.ABOUT}
-    assert tabs["script.md"]["settled"].startswith("# Script v2: As of now\n\nRevised.")
+    tabs = {tab["file"]: tab for tab in world.doc.read(SERIES)["tabs"]}
+    assert set(tabs) == {FILE, monologues.ABOUT}
+    assert tabs[FILE]["settled"].startswith("# Script v2: As of now\n\nRevised.")
     assert (
         "as I often do" in runs[1]["prior"] and runs[0]["prior"] == ""
     )  # the edited prior is kept
@@ -239,10 +294,9 @@ def test_a_changed_ingredient_runs_again_with_the_settled_prior_as_style_guide(w
     monologues.attach(world.store, "karma-walk", body="a talk")
     world.script(f"karma-walk-{world.key()[:12]}")
     fresh = monologues.run(
-        world.store, world.client(), world.doc, "karma-walk",
-        directory=world.root / "monologues" / "karma-walk", fresh=True, created_by="t",
-    )  # fmt: skip
-    assert (fresh["run"], fresh["fresh"], fresh["prior"]) == (3, True, "script.md")
+        world.store, world.client(), world.doc, "karma-walk", fresh=True, created_by="t"
+    )
+    assert (fresh["run"], fresh["fresh"], fresh["prior"]) == (3, True, FILE)
     assert (
         world.store.monologue_runs(world.store.monologue("karma-walk")["id"])[2]["prior_run_id"]
         == ""
@@ -280,9 +334,7 @@ def test_the_estimate_calls_no_model_and_the_cap_stops_the_run(tmp_path):
         assert not (world.root / "logs").exists()
         capped = world.client(CONFIG | {"llm": {"max_usd_per_run": 0.0}})
         with pytest.raises(llm.SpendCapReached):
-            monologues.run(
-                world.store, capped, world.doc, "karma-walk", directory=world.root, created_by="t"
-            )
+            monologues.run(world.store, capped, world.doc, "karma-walk", created_by="t")
         assert world.store.monologue_runs(world.store.monologue("karma-walk")["id"]) == []
     finally:
         world.database.close()

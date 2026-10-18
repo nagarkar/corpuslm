@@ -288,12 +288,17 @@ class Answers:
         brief = params.get("brief", "")
         if not isinstance(brief, str) or len(brief) > MAX_VERDICT_CHARS * 10:
             raise ValueError("brief is text")
+        series = params.get("series")
+        if not isinstance(series, str) or not series.strip():
+            raise ValueError("series is the series manuscript's name (e.g. SpiritualHindu)")
+        doc, workspace = self._documents()
         with self._lock:
             db, store = self._store()
             try:
                 return monologues.create(
-                    store, self._monologue_name(params), brief=brief, created_by=CREATED_BY
-                )
+                    store, doc, self._monologue_name(params), series=series,
+                    workspace=workspace, brief=brief, created_by=CREATED_BY,
+                )  # fmt: skip
             finally:
                 db.close()
 
@@ -338,6 +343,19 @@ class Answers:
             finally:
                 db.close()
 
+    def _documents(self):
+        """(document store, workspace) from the settings, for a new monologue's series file."""
+        from . import document
+
+        settings = self.settings
+        if settings is None or settings.claims is None:
+            raise ValueError("the server was started without [claims] settings")
+        config = settings.client_config()
+        return (
+            document.store(config, settings.claims.workspace, origin="corpuslm"),
+            settings.claims.workspace,
+        )
+
     def _monologue_tools(self):
         """(client, document store, workspace) from the settings, for estimate and run."""
         from . import document, llm
@@ -377,14 +395,13 @@ class Answers:
         from . import monologues
 
         name = self._monologue_name(params)
-        client, doc, workspace = self._monologue_tools()
+        client, doc, _ = self._monologue_tools()
         with self._lock:
             db, store = self._store()
             try:
                 return monologues.run(
-                    store, client, doc, name,
-                    directory=workspace / "monologues" / monologues.slug(name),
-                    fresh=bool(params.get("fresh")), created_by=CREATED_BY,
+                    store, client, doc, name, fresh=bool(params.get("fresh")),
+                    created_by=CREATED_BY,
                 )  # fmt: skip
             finally:
                 db.close()

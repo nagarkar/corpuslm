@@ -543,8 +543,11 @@ held is lost with its row.
 History: master.
 
 A monologue (corpuslm.monologues): the first artifact, made from a set of moments and the bodies
-of work it draws on by a recipe. Its moments and bodies are the two tables below; its Doc is the
-manuscript named here, one script tab per run.
+of work it draws on by a recipe. Its moments and bodies are the two tables below. It is one file,
+`<name>.md`, of its series: the authorlm manuscript named here (`SpiritualHindu`), which holds
+every monologue of the series as files and shares one Doc, style guide and concept graph. The
+series' folder is wherever authorlm has it registered; corpuslm finds it through authorlm, never
+by listing folders. The series' `about.md` tab is rebuilt from these tables on every run.
 
 | column | type | null | meaning |
 |---|---|---|---|
@@ -552,8 +555,8 @@ manuscript named here, one script tab per run.
 | name | TEXT | no | the owner's short name; unique |
 | title | TEXT | no | the working title, `''` until one is given or proposed |
 | brief | TEXT | no | what it is about, in the owner's words; may be empty |
-| manuscript | TEXT | no | the authorlm manuscript holding its script tab; `''` until the first run |
-| directory | TEXT | no | that manuscript's folder; `''` until the first run |
+| manuscript | TEXT | no | its series: the authorlm manuscript it is a file of, set by `monologue new` |
+| directory | TEXT | no | not written since 2026-10-17 (the folder is authorlm's to know); dropped at the next schema step |
 | state | TEXT | no | one of `open`, `recorded`, `archived` |
 
 ### `monologue_moments`
@@ -585,8 +588,8 @@ The bodies of work a monologue draws on; the history `body list` reads.
 History: derived.
 
 One row per recipe run, keyed by the ingredients hash: the same ingredients never run twice. Kept,
-never rewritten by code: the runs table is the history; the Doc's one script tab shows the latest
-run and is rewritten whole by the next.
+never rewritten by code: the runs table is the history; the monologue's file in its series' Doc
+shows the latest run and is rewritten whole by the next.
 
 | column | type | null | meaning |
 |---|---|---|---|
@@ -603,7 +606,7 @@ run and is rewritten whole by the next.
 | title | TEXT | no | the title the run proposed |
 | prior | TEXT | no | the settled script, with the owner's edits, the run was given as its style guide; `''` for a fresh or first run |
 | output | TEXT | no | the script as the model returned it, paragraphs separated by blank lines |
-| tab | TEXT | no | the script tab's file in the Doc (`script.md`), `''` when not written |
+| tab | TEXT | no | the monologue's file in its series (`<name>.md`; `script.md` in runs made before 2026-10-17), `''` when not written |
 | tokens_in | INTEGER | no | |
 | tokens_out | INTEGER | no | |
 | cost_usd | REAL | no | |
@@ -1065,6 +1068,8 @@ segment changed, so it carries the previous hash):
 | `run-0a1b2c3d4e5f` | `cli` | `sources:1` | `running` | `2026-10-02T09:12:40Z` | NULL | 1 | NULL | `` |
 
 ## Changes
+
+- 2026-10-17: No schema change. A monologue's `manuscript` is its series (one authorlm manuscript holding its monologues as files, `<name>.md`), set by `monologue new --series`; `directory` is no longer written. Replaces one manuscript per monologue (`monologue-<name>`), with no fallback; the live monologues moved by hand
 
 - 2026-10-14: Version 16 (nagarkar/corpuslm#66): `line_speakers` (derived) and `line_speaker_verdicts` (append-only, an owner table): who spoke each line the recorder left unidentified, the model's pick with its confidence and the owner's pick, which always wins
 
