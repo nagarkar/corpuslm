@@ -194,6 +194,17 @@ def test_ensure_registers_and_keeps_its_title_through_authorlm(real, tmp_path):
     assert again["created"] is False
 
 
+def test_find_reads_the_registered_folder_through_authorlm(real, tmp_path):
+    fake, store, _ = real
+    assert store.find("SpiritualHindu") is None
+    elsewhere = str(tmp_path / "drive" / "SpiritualHindu")
+    fake.manuscripts["SpiritualHindu"] = {"id": "x", "name": "SpiritualHindu", "path": elsewhere}
+    assert store.find("SpiritualHindu") == {
+        "path": elsewhere,
+        "url": "https://docs.google.com/document/d/MASTER/edit",
+    }
+
+
 def test_ensure_declines_a_name_authorlm_holds_elsewhere(real, tmp_path):
     fake, store, _ = real
     fake.manuscripts["dharma"] = {"id": "x", "name": "dharma", "path": str(tmp_path / "other")}

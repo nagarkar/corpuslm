@@ -4,7 +4,7 @@ A document is a manuscript authorlm keeps: markdown files locally, one Google Do
 file, revisions the owner rules on in the Doc, and margin comments. ytlm's corpus document and
 the artifact layer (monologues, perspective sheets) are documents. authorlm owns the Google calls,
 the files, the revisions, the comments and the history; this module is the only place a consumer
-touches it, through the `DocumentStore` protocol: eight operations.
+touches it, through the `DocumentStore` protocol: nine operations.
 
 `store()` returns the real store (`corpuslm.document_authorlm`), or the file-backed fake when a
 test set `FAKE_DIR` in-process. Document verbs are command-line only: a sign-in can open a
@@ -39,8 +39,8 @@ Never imports: db, store, llm, clikit.
 Terms:
 - **document**: a manuscript authorlm keeps for a consumer (a corpus document, a monologue, a
   perspective sheet), reached only through `DocumentStore`.
-- **document store**: the `DocumentStore` protocol: ensure, read, add_tab, write_tab, stage, pull,
-  withdraw, resolve. The real store is authorlm; the fake is one JSON file per manuscript.
+- **document store**: the `DocumentStore` protocol: find, ensure, read, add_tab, write_tab, stage,
+  pull, withdraw, resolve. The real store is authorlm; the fake is one JSON file per manuscript.
 - **tab**: one markdown file of a document, shown as one tab of its Google Doc.
 - **revision**: authorlm's old/new form in a tab (old struck through, new in green) that the
   owner accepts, modifies or declines in the Doc; `resolve` lands the rulings.
@@ -67,6 +67,11 @@ class DocumentUnavailable(AdapterError):
 class DocumentStore(Protocol):
     warnings: list[str]
     """Best-effort steps the store skipped, named for the verb's board."""
+
+    def find(self, name: str) -> dict | None:
+        """The manuscript as authorlm has it registered, wherever its folder is; None when there
+        is none. Never looks at folders. → {"path": str, "url": str}"""
+        ...
 
     def ensure(self, name: str, path: Path, title: str) -> dict:
         """Register the manuscript if new. → {"created": bool, "url": str}"""
@@ -157,6 +162,11 @@ class FakeDocumentStore:
             if tab["file"] == file:
                 return tab
         raise KeyError(f"no tab {file!r}")
+
+    def find(self, name: str) -> dict | None:
+        if not self._path(name).exists():
+            return None
+        return {"path": self._load(name)["path"], "url": f"fake://{name}"}
 
     def ensure(self, name: str, path: Path, title: str) -> dict:
         created = not self._path(name).exists()

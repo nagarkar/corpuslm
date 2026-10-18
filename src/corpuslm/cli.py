@@ -261,10 +261,13 @@ DESCRIPTIONS |= {
         "corpuslm sheet status SMSTTD --config /path/to/review.toml",
     ),
     "monologue new": (
-        "Name a monologue, with an optional working title and brief (what it is about, in the "
-        "owner's words). Attach moments and bodies of work next.",
-        'corpuslm monologue new karma --brief "karmic theory, from the walk with my son" '
-        "--config /path/to/review.toml",
+        "Name a monologue in its series (`--series`, an authorlm manuscript such as "
+        "SpiritualHindu), with an optional working title and brief (what it is about, in the "
+        "owner's words). The monologue becomes the file `<name>.md` of the series; a series "
+        "authorlm does not have is registered, its folder under the `[claims]` workspace. "
+        "Attach moments and bodies of work next.",
+        'corpuslm monologue new karma --series SpiritualHindu --brief "karmic theory, from the '
+        'walk with my son" --config /path/to/review.toml',
     ),
     "monologue attach": (
         "Attach one approved moment (`--moment ID`) or one body of work (`--body NAME`) to a "
@@ -284,9 +287,10 @@ DESCRIPTIONS |= {
     "monologue run": (
         "Run the recipe (billed; `[monologue]` plus the `[claims]` workspace and `[llm]` caps) "
         "unless a run for the same ingredients exists, in which case nothing is sent. The "
-        "latest script tab's settled text, with the owner's edits, is the style guide; "
-        "`--fresh` drops it for this run. The script becomes a new `Script v<n>` tab of the "
-        "monologue's Doc. `--dry-run` estimates and sends nothing.",
+        "monologue file's settled text, with the owner's edits, is the style guide; "
+        "`--fresh` drops it for this run. The script rewrites the monologue's file "
+        "(`Script v<n>`) in its series' Doc, and the series' about tab is rebuilt. "
+        "`--dry-run` estimates and sends nothing.",
         "corpuslm monologue run karma --config /path/to/review.toml --dry-run",
     ),
     "monologue list": (
@@ -295,10 +299,11 @@ DESCRIPTIONS |= {
         "corpuslm monologue list --config /path/to/review.toml",
     ),
     "monologue export": (
-        "Write the latest script tab's settled text (with the owner's edits) as plain text, "
-        "headed by the monologue's id and title, for the teleprompter and for podlm to record "
-        "which monologue an episode came from. Open revisions are reported; the settled text is "
-        "what is exported. The same text is served at /teleprompter/<name> on the review server.",
+        "Write the monologue file's settled text (with the owner's edits) as plain text, "
+        "headed by the monologue's id, title and series, for the teleprompter and for podlm to "
+        "record which monologue an episode came from; by default beside the file in the series' "
+        "folder. Open revisions are reported; the settled text is what is exported. The same "
+        "text is served at /teleprompter/<name> on the review server.",
         'corpuslm monologue export karma --to "/path/to/karma.txt" --config /path/to/review.toml',
     ),
     "text import": (
@@ -637,6 +642,12 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument("name", metavar="NAME", help="the monologue's name")
         sub.add_argument("--config", required=True, metavar="FILE", help="the review settings file")
         if name == "new":
+            sub.add_argument(
+                "--series",
+                required=True,
+                metavar="SERIES",
+                help="the series manuscript the monologue is a file of (e.g. SpiritualHindu)",
+            )
             sub.add_argument("--title", default="", metavar="TITLE", help="a working title")
             sub.add_argument("--brief", default="", metavar="TEXT", help="what it is about")
         if name in ("attach", "detach"):
@@ -852,7 +863,8 @@ def review_serve_board(settings: ReviewSettings, port: int | None, dry_run: bool
                 monologues.listing(Store(fresh), doc, config)
                 if doc is not None
                 else [
-                    {"name": r["name"], "title": r["title"], "state": r["state"], "moments": 0,
+                    {"name": r["name"], "series": r["manuscript"], "title": r["title"],
+                     "state": r["state"], "moments": 0,
                      "bodies": [], "runs": 0}
                     for r in Store(fresh).monologues()
                 ]
@@ -1579,11 +1591,22 @@ def _monologue_config(settings: ReviewSettings) -> dict:
     return settings.client_config()
 
 
-def monologue_new_board(settings: ReviewSettings, name: str, title: str, brief: str) -> dict:
+def monologue_new_board(
+    settings: ReviewSettings, name: str, series: str, title: str, brief: str
+) -> dict:
+    doc = _document_store(settings)  # needs [claims]: its workspace holds a new series
+    assert settings.claims is not None
     database = _open_existing(settings)
     try:
         out = monologues.create(
-            Store(database), name, title=title, brief=brief, created_by="corpuslm"
+            Store(database),
+            doc,
+            name,
+            series=series,
+            workspace=settings.claims.workspace,
+            title=title,
+            brief=brief,
+            created_by="corpuslm",
         )
         return (
             {"verb": "monologue new", "ok": True}
@@ -1650,12 +1673,7 @@ def monologue_run_board(settings: ReviewSettings, name: str, fresh: bool, dry_ru
         }
         if dry_run:
             return board | {"status": "dry-run", "note": "dry run: nothing was sent or written"}
-        assert settings.claims is not None
-        directory = settings.claims.workspace / "monologues" / monologues.slug(name)
-        directory.mkdir(parents=True, exist_ok=True)  # inside corpuslm's own workspace
-        out = monologues.run(
-            store, client, doc, name, directory=directory, fresh=fresh, created_by="corpuslm"
-        )
+        out = monologues.run(store, client, doc, name, fresh=fresh, created_by="corpuslm")
         return board | out
     finally:
         database.close()
@@ -1923,7 +1941,7 @@ def main(argv: list[str] | None = None) -> int:
             match namespace.monologue_verb:
                 case "new":
                     board = monologue_new_board(
-                        settings, namespace.name, namespace.title, namespace.brief
+                        settings, namespace.name, namespace.series, namespace.title, namespace.brief
                     )
                 case "attach":
                     board = monologue_attach_board(settings, namespace, detach=False)
