@@ -140,3 +140,22 @@ def test_a_source_card_links_the_title_to_the_locator_or_shows_it_alone():
     assert "youtube.com/watch" not in html
     bare = monologue_page.video_card(card | {"locator": ""})
     assert "<a href" not in bare and "A replay" in bare
+
+
+def test_every_kind_filter_takes_one_kind_or_several(tmp_path):
+    """ytlm asks for its three kinds at once; beelm keeps asking for one."""
+    database = db.Database(tmp_path / "transcript.sqlite")
+    store = Store(database)
+    for source_id, kind in (("aaaaaaaaaaa", "youtube"), ("vimeo:1", "vimeo"), ("bee:1", "bee")):
+        store.add_source(source_id, "l", created_by="t", kind=kind)
+        store.replace_segments(
+            source_id, [{"idx": 0, "t0": 0.0, "t1": 1.0, "text": f"ember {kind}"}]
+        )
+    ytlm = ("youtube", "vimeo", "file")
+    assert store.source_ids(ytlm) == ["aaaaaaaaaaa", "vimeo:1"]
+    assert store.source_ids("bee") == ["bee:1"]
+    assert store.source_counts_by("status", ytlm) == {"added": 2}
+    assert store.segment_count(kind=ytlm) == 2 and store.segment_count(kind="bee") == 1
+    hits = store.search("ember", corpus_id=None, limit=10, kind=ytlm)
+    assert sorted(hit["source_id"] for hit in hits) == ["aaaaaaaaaaa", "vimeo:1"]
+    assert store.sources_sharing_concepts(["k"], kind=ytlm) == []

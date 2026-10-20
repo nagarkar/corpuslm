@@ -41,19 +41,29 @@ _LIST_PREFIX = {
 }
 
 
-def _of_kind(kind: str | Sequence[str] | None) -> tuple[str, list]:
+Kinds = str | Sequence[str] | None  # one source kind, several (ytlm's three), or every kind
+
+
+def _kind_in(kind: Kinds, column: str = "kind") -> tuple[str, list]:
+    """`column IN (?, ...)` and its arguments for one kind or several; ("", []) for every kind."""
+    if not kind:
+        return "", []
+    kinds = [kind] if isinstance(kind, str) else list(kind)
+    return f"{column} IN ({', '.join('?' for _ in kinds)})", kinds
+
+
+def _of_kind(kind: Kinds) -> tuple[str, list]:
     """WHERE clause (corpora aliased `c`) keeping the corpora a tool of source kind `kind` (or
     of any of several kinds) reads: those with no members yet and those with at least one member
     of such a kind. A corpus made only of another kind's sources (beelm's, for ytlm) is left
     out."""
     if kind is None:
         return "", []
-    kinds = [kind] if isinstance(kind, str) else list(kind)
-    marks = ", ".join("?" for _ in kinds)
+    clause, kinds = _kind_in(kind, "v.kind")
     return (
         "WHERE NOT EXISTS (SELECT 1 FROM corpus_members m WHERE m.corpus_id = c.id) "
         "OR EXISTS (SELECT 1 FROM corpus_members m JOIN sources v ON v.id = m.source_id "
-        f"WHERE m.corpus_id = c.id AND v.kind IN ({marks})) ",
+        f"WHERE m.corpus_id = c.id AND {clause}) ",
         kinds,
     )
 
@@ -160,15 +170,15 @@ class Store:
     def has_source(self, source_id: str) -> bool:
         return self.db.one("SELECT 1 FROM sources WHERE id = ?", (source_id,)) is not None
 
-    def source_ids(self, kind: str | None = None, *, include_ignored: bool = True) -> list[str]:
+    def source_ids(self, kind: Kinds = None, *, include_ignored: bool = True) -> list[str]:
         """Every source id, oldest first; only those of `kind` (`youtube`, `bee`) when given.
         `include_ignored=False` leaves out the sources whose status is `ignored`: the answer for
         anything that builds, counts or lists work for the owner; the catalog (is it known?) keeps
         the default."""
-        clauses = (["kind = ?"] if kind else []) + (
+        kind_clause, args = _kind_in(kind)
+        clauses = ([kind_clause] if kind_clause else []) + (
             [] if include_ignored else ["status <> 'ignored'"]
         )
-        args = [kind] if kind else []
         where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
         return [
             row["id"]
@@ -201,10 +211,11 @@ class Store:
                 table, columns = SOURCE_LISTS[name]
                 self._write_list(table, "source_id", source_id, columns, values, created_by)
 
-    def source_counts_by(self, column: str, kind: str | None = None) -> dict[str, int]:
+    def source_counts_by(self, column: str, kind: Kinds = None) -> dict[str, int]:
         if column not in ("status", "fetcher"):
             raise ValueError(f"no count by {column!r}")
-        where, args = ("WHERE kind = ? ", [kind]) if kind else ("", [])
+        kind_clause, args = _kind_in(kind)
+        where = f"WHERE {kind_clause} " if kind_clause else ""
         return {
             row["k"]: row["n"]
             for row in self.db.all(
@@ -224,19 +235,19 @@ class Store:
         row = self.db.one("SELECT * FROM corpora WHERE id = ?", (corpus_id,))
         return None if row is None else self._with_lists(row, CORPUS_LISTS, "corpus_id")
 
-    def corpus_ids(self, kind: str | None = None) -> list[str]:
+    def corpus_ids(self, kind: Kinds = None) -> list[str]:
         """Every corpus id, oldest first; with `kind`, only the corpora a tool of that source
         kind reads: those with no members yet and those with a member of that kind."""
         where, args = _of_kind(kind)
         sql = f"SELECT id FROM corpora c {where}ORDER BY rowid"
         return [row["id"] for row in self.db.all(sql, args)]
 
-    def corpus_names(self, kind: str | Sequence[str] | None = None) -> list[str]:
+    def corpus_names(self, kind: Kinds = None) -> list[str]:
         where, args = _of_kind(kind)
         sql = f"SELECT name FROM corpora c {where}ORDER BY name"
         return [row["name"] for row in self.db.all(sql, args)]
 
-    def corpus_count(self, kind: str | Sequence[str] | None = None) -> int:
+    def corpus_count(self, kind: Kinds = None) -> int:
         """How many corpora; with `kind`, only those a tool of that source kind reads."""
         where, args = _of_kind(kind)
         return self._row(f"SELECT COUNT(*) AS n FROM corpora c {where}".strip(), args)["n"]
@@ -371,7 +382,7 @@ class Store:
             )
         }
 
-    def corpus_summaries(self, kind: str | None = None) -> list[dict]:
+    def corpus_summaries(self, kind: Kinds = None) -> list[dict]:
         where, args = _of_kind(kind)
         rows = self.db.all(
             "SELECT c.name, c.id, c.person, c.subject, "
@@ -1423,23 +1434,22 @@ class Store:
         )
         return None if row is None else dict(row)
 
-    def sources_sharing_concepts(
-        self, keys: Sequence[str], *, kind: str | None = None
-    ) -> list[dict]:
+    def sources_sharing_concepts(self, keys: Sequence[str], *, kind: Kinds = None) -> list[dict]:
         """Sources (of `kind` when given) whose claims carry any of the concepts `keys`, most
         shared first: source id, title, published_at, and the keys shared."""
         if not keys:
             return []
         marks = ", ".join("?" for _ in keys)
+        kind_clause, kind_args = _kind_in(kind, "o.kind")
         rows = self.db.all(
             "SELECT c.source_id AS source_id, o.title AS title, o.published_at AS published_at, "
             "json_group_array(DISTINCT p.key) AS concepts "
             "FROM claim_concepts t JOIN concepts p ON p.id = t.concept_id "
             "JOIN claims c ON c.id = t.claim_id JOIN sources o ON o.id = c.source_id "
             f"WHERE p.key IN ({marks}) AND o.status <> 'ignored' "
-            + ("AND o.kind = ? " if kind else "")
+            + (f"AND {kind_clause} " if kind_clause else "")
             + "GROUP BY c.source_id ORDER BY COUNT(DISTINCT p.key) DESC, o.published_at DESC",
-            [*keys] + ([kind] if kind else []),
+            [*keys, *kind_args],
         )
         return [dict(row) | {"concepts": loads(row["concepts"], [])} for row in rows]
 
@@ -1488,13 +1498,14 @@ class Store:
         FTS5 rows. Returns the segments removed."""
         return self.db.execute("DELETE FROM segments WHERE source_id = ?", (source_id,)).rowcount
 
-    def segment_count(self, source_id: str | None = None, kind: str | None = None) -> int:
+    def segment_count(self, source_id: str | None = None, kind: Kinds = None) -> int:
         """Segments of one source, of every source of `kind`, or of all."""
         if source_id is None and kind:
+            kind_clause, kind_args = _kind_in(kind, "o.kind")
             return self._row(
                 "SELECT COUNT(*) AS n FROM segments s JOIN sources o ON o.id = s.source_id "
-                "WHERE o.kind = ?",
-                (kind,),
+                f"WHERE {kind_clause}",
+                kind_args,
             )["n"]
         if source_id is None:
             return self._row("SELECT COUNT(*) AS n FROM segments")["n"]
@@ -1503,10 +1514,11 @@ class Store:
         ]
 
     def search(
-        self, match: str, *, corpus_id: str | None, limit: int, kind: str | None = None
+        self, match: str, *, corpus_id: str | None, limit: int, kind: Kinds = None
     ) -> list[dict]:
         """FTS5 hits, best first, through vw_search_segments; only sources of `kind` when given.
         Raises sqlite3.OperationalError when `match` is not valid FTS5 syntax."""
+        kind_clause, kind_args = _kind_in(kind, "o.kind")
         sql = (
             "SELECT h.source_id, h.position, h.start_seconds, h.end_seconds, h.title, "
             "snippet(segments_fts, 0, '[', ']', '…', 14) AS snippet, "
@@ -1520,13 +1532,13 @@ class Store:
                 else ""
             )
             + (
-                "AND EXISTS (SELECT 1 FROM sources o WHERE o.id = h.source_id AND o.kind = ?) "
-                if kind
+                f"AND EXISTS (SELECT 1 FROM sources o WHERE o.id = h.source_id AND {kind_clause}) "
+                if kind_clause
                 else ""
             )
             + "ORDER BY rank LIMIT ?"
         )
-        args = [match] + ([corpus_id] if corpus_id else []) + ([kind] if kind else []) + [limit]
+        args = [match] + ([corpus_id] if corpus_id else []) + kind_args + [limit]
         return [dict(row) for row in self.db.all(sql, args)]
 
     # ---- cleaned segments and their search (derived index of a kind whose raw lines stay) ----
