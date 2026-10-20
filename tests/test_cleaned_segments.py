@@ -107,8 +107,8 @@ def test_a_version_7_database_gains_the_cleaned_tables_after_a_verified_backup(t
     connection.close()
     opened = db.Database(path)
     try:
-        assert opened.migration["from"] == 7 and opened.migration["to"] == db.USER_VERSION == 16
-        assert opened.migration["backup"].endswith("-before-v16.sqlite")
+        assert opened.migration["from"] == 7 and opened.migration["to"] == db.USER_VERSION == 17
+        assert opened.migration["backup"].endswith("-before-v17.sqlite")
         assert opened.one("PRAGMA integrity_check")[0] == "ok"
         assert opened.one("SELECT COUNT(*) FROM cleaned_segments")[0] == 0
         assert opened.one("SELECT COUNT(*) FROM segments")[0] == len(SEGMENTS)

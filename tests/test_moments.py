@@ -292,8 +292,8 @@ def test_a_version_12_database_gains_the_moment_tables_after_a_verified_backup(t
     connection.close()
     opened = db.Database(path)
     try:
-        assert opened.migration["from"] == 12 and opened.migration["to"] == db.USER_VERSION == 16
-        assert opened.migration["backup"].endswith("-before-v16.sqlite")
+        assert opened.migration["from"] == 12 and opened.migration["to"] == db.USER_VERSION == 17
+        assert opened.migration["backup"].endswith("-before-v17.sqlite")
         assert opened.one("PRAGMA integrity_check")[0] == "ok"
         store = Store(opened)
         made = store.add_moment(SOURCE, 0, 1, "x", origin="import", created_by="t")

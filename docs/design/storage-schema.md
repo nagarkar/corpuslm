@@ -167,7 +167,7 @@ keep lineage.
 
 ## Migrations: user_version, a verified backup, one transaction (2026-10-03)
 
-The schema version is `PRAGMA user_version` (`db.USER_VERSION`, now 16; a
+The schema version is `PRAGMA user_version` (`db.USER_VERSION`, now 17; a
 database made before it was tracked reads 0 and has the v1 schema, frozen
 in `tests/fixtures/schema_v1.sql`). On open, `db.migrate`:
 
@@ -233,6 +233,15 @@ with the counts taken before, as the v8 → v9 step does: nothing but the new ta
 The v10 → v11 step rebuilds `sources` again, exactly as the v8 → v9 step does
 (`db._rebuild_sources_script`), because the `kind` check now allows `text`. Every table's row
 count is compared before and after; no row changes its kind.
+
+The v16 → v17 step rebuilds `sources` once more, exactly as the v8 → v9 and v10 → v11 steps do
+(`db._rebuild_sources_script`), because the `kind` check now allows `vimeo` and `file` and the
+`metadata_source` check allows `vimeo` and `ffprobe` (nagarkar/corpuslm#84). Every table's row count
+is compared before and after; no row changes its kind. Proof on a copy of the real database
+(2026-10-19, 315 sources: 208 YouTube, 106 Bee, 1 text): the backup was written first and verified,
+every one of the 920,018 rows in every table kept its table's count, no source changed its kind,
+`foreign_key_check` was empty, `integrity_check` read `ok`, and the 50 triggers and views were
+unchanged.
 
 The v11 → v12 step is additive: after the verified backup it creates `concepts`, `claim_concepts`
 and `concept_verdicts` (all empty) with the view `vw_current_concept_verdicts` and the append-only
@@ -372,8 +381,8 @@ History: master.
 | column | type | null | meaning |
 |---|---|---|---|
 | (base) | | | |
-| kind | TEXT | no | one of `youtube`, `bee`, `text` (a manuscript, paper or book imported from a markdown export, corpuslm.text_source) |
-| locator | TEXT | no | where the source lives: the watch URL (youtube), a workspace-relative file path (bee), or the export file's path (text) |
+| kind | TEXT | no | one of `youtube`, `bee`, `text` (a manuscript, paper or book imported from a markdown export, corpuslm.text_source), `vimeo` (a Vimeo video, id `vimeo:<numeric id>`), `file` (a media file copied into ytlm's workspace, id `file:<first 16 hex of its sha256>`) |
+| locator | TEXT | no | where the source lives: the watch URL (youtube), the Vimeo URL with its `?h=` hash when unlisted (vimeo), empty for a file (its media lives under ytlm's `videos/file-<hash>/`), a workspace-relative file path (bee), or the export file's path (text). Surfaces link a source from this column at a second (`corpuslm.review_kinds.anchor_url`); none builds a URL from the id |
 | title | TEXT | no | from the metadata provider |
 | channel_id | TEXT | no | |
 | channel_title | TEXT | no | |
@@ -384,7 +393,7 @@ History: master.
 | language | TEXT | no | Data API defaultAudioLanguage |
 | caption_language | TEXT | no | the track actually fetched |
 | caption_kind | TEXT | no | one of ``, `manual`, `generated`, `none`, `unknown` |
-| metadata_source | TEXT | no | one of ``, `dataapi`, `oembed` |
+| metadata_source | TEXT | no | one of ``, `dataapi`, `oembed`, `vimeo` (yt-dlp over Vimeo), `ffprobe` (a file's duration) |
 | has_caption_track | INTEGER | yes | 0 or 1; NULL when no provider said |
 | status | TEXT | no | one of `added`, `ingested`, `no_captions`, `unavailable`, `failed`, `ignored` (the owner set it aside: kept whole, excluded from everything the owner works from) |
 | fetcher | TEXT | no | the caption fetcher that produced the transcript |
@@ -1074,6 +1083,8 @@ segment changed, so it carries the previous hash):
 - 2026-10-14: Version 16 (nagarkar/corpuslm#66): `line_speakers` (derived) and `line_speaker_verdicts` (append-only, an owner table): who spoke each line the recorder left unidentified, the model's pick with its confidence and the owner's pick, which always wins
 
 - 2026-10-13: Version 15 (nagarkar/corpuslm#50): `monologues` (master) with `monologue_moments`, `monologue_bodies` and `monologue_runs` (derived): the first artifact, its attached moments and bodies, and every recipe run keyed by its ingredients hash
+
+- 2026-10-19: Version 17 (nagarkar/corpuslm#84): `sources.kind` allows `vimeo` and `file` and `sources.metadata_source` allows `vimeo` and `ffprobe`, for ytlm's Vimeo and file sources; the review and monologue surfaces link a source from its `locator` instead of building a watch URL
 
 - 2026-10-13: Version 14 (nagarkar/corpuslm#49): `bodies_of_work` (master): the references a monologue draws on, standing ones with a perspective sheet in their manuscript's tab, occasional ones without; the history of use
 

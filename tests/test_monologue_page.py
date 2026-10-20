@@ -26,7 +26,8 @@ def world(tmp_path):
         ("vid1", "youtube", "Karma explained", "2025-01-01"),
         ("vid2", "youtube", "Other video", "2025-02-01"),
     ):
-        store.add_source(source_id, "l", created_by="t", kind=kind)
+        locator = f"https://www.youtube.com/watch?v={source_id}" if kind == "youtube" else "l"
+        store.add_source(source_id, locator, created_by="t", kind=kind)
         store.update_source(source_id, {"title": title, "published_at": date})
         store.replace_segments(
             source_id, segs if source_id != "vid2" else [segs[0] | {"text": "nothing here"}]

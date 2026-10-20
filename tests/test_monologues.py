@@ -368,8 +368,8 @@ def test_a_version_14_database_gains_the_monologue_tables_after_a_verified_backu
     connection.close()
     opened = db.Database(path)
     try:
-        assert opened.migration["from"] == 14 and opened.migration["to"] == db.USER_VERSION == 16
-        assert opened.migration["backup"].endswith("-before-v16.sqlite")
+        assert opened.migration["from"] == 14 and opened.migration["to"] == db.USER_VERSION == 17
+        assert opened.migration["backup"].endswith("-before-v17.sqlite")
         assert opened.one("PRAGMA integrity_check")[0] == "ok"
         store = Store(opened)
         made = store.add_monologue("x", created_by="t")

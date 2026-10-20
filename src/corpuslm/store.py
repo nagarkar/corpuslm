@@ -41,17 +41,20 @@ _LIST_PREFIX = {
 }
 
 
-def _of_kind(kind: str | None) -> tuple[str, list[str]]:
-    """WHERE clause (corpora aliased `c`) keeping the corpora a tool of source kind `kind`
-    reads: those with no members yet and those with at least one member of that kind. A corpus
-    made only of another kind's sources (beelm's, for ytlm) is left out."""
+def _of_kind(kind: str | Sequence[str] | None) -> tuple[str, list]:
+    """WHERE clause (corpora aliased `c`) keeping the corpora a tool of source kind `kind` (or
+    of any of several kinds) reads: those with no members yet and those with at least one member
+    of such a kind. A corpus made only of another kind's sources (beelm's, for ytlm) is left
+    out."""
     if kind is None:
         return "", []
+    kinds = [kind] if isinstance(kind, str) else list(kind)
+    marks = ", ".join("?" for _ in kinds)
     return (
         "WHERE NOT EXISTS (SELECT 1 FROM corpus_members m WHERE m.corpus_id = c.id) "
         "OR EXISTS (SELECT 1 FROM corpus_members m JOIN sources v ON v.id = m.source_id "
-        "WHERE m.corpus_id = c.id AND v.kind = ?) ",
-        [kind],
+        f"WHERE m.corpus_id = c.id AND v.kind IN ({marks})) ",
+        kinds,
     )
 
 
@@ -228,12 +231,12 @@ class Store:
         sql = f"SELECT id FROM corpora c {where}ORDER BY rowid"
         return [row["id"] for row in self.db.all(sql, args)]
 
-    def corpus_names(self, kind: str | None = None) -> list[str]:
+    def corpus_names(self, kind: str | Sequence[str] | None = None) -> list[str]:
         where, args = _of_kind(kind)
         sql = f"SELECT name FROM corpora c {where}ORDER BY name"
         return [row["name"] for row in self.db.all(sql, args)]
 
-    def corpus_count(self, kind: str | None = None) -> int:
+    def corpus_count(self, kind: str | Sequence[str] | None = None) -> int:
         """How many corpora; with `kind`, only those a tool of that source kind reads."""
         where, args = _of_kind(kind)
         return self._row(f"SELECT COUNT(*) AS n FROM corpora c {where}".strip(), args)["n"]

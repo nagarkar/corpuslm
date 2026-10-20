@@ -737,6 +737,7 @@ def search(store: Store, name: str, kind: str, query: str) -> dict:
             items.append(
                 {
                     "source_id": source_id, "title": source.get("title") or "",
+                    "locator": source.get("locator") or "",
                     "date": (source.get("published_at") or "")[:10],
                     "channel": source.get("channel_title") or "", "people": people,
                     "shared_concepts": [], "full_text": False,
@@ -847,6 +848,7 @@ def candidates(store: Store, name: str, config: dict | None = None) -> dict:
     ranked = sorted(sources.values(), key=lambda s: (-s["score"], s["title"]))[:CANDIDATE_SOURCES]
     for entry in ranked:
         source = store.source(entry["source_id"]) or {}
+        entry["locator"] = source.get("locator") or ""
         entry["channel"] = source.get("channel_title") or ""
         entry["people"] = [person.get("name", "") for person in source.get("people") or []]
     return {
