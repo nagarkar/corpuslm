@@ -158,9 +158,11 @@ _SPEAKER_LABEL = re.compile(r"^(HOST|GUEST_\d+|UNKNOWN)$")  # a diarization labe
 
 
 def video_card(s: dict, hot: set[str] | None = None) -> str:
-    """A YouTube source that could be added: its title linked to the video, then channel, date,
-    the people in it and the concepts it shares."""
-    link = f"https://www.youtube.com/watch?v={html.escape(s['source_id'])}"
+    """A video source that could be added: its title linked to where the source lives (its
+    `locator`; a file has none, so the title stands alone), then channel, date, the people in it
+    and the concepts it shares."""
+    link = html.escape(s.get("locator") or "")
+    title = html.escape(s["title"] or s["source_id"])
     people = ", ".join(
         name for name in s.get("people") or [] if name and not _SPEAKER_LABEL.match(name)
     )
@@ -175,8 +177,9 @@ def video_card(s: dict, hot: set[str] | None = None) -> str:
     )
     chips = _chips(s.get("shared_concepts") or [], hot)
     return _card(
-        f'<a href="{link}" target="_blank" rel="noopener" style="color:inherit">'
-        f"{html.escape(s['title'] or s['source_id'])}</a>",
+        f'<a href="{link}" target="_blank" rel="noopener" style="color:inherit">{title}</a>'
+        if link
+        else title,
         meta
         + (f' <span class="chips">{chips}</span>' if chips else "")
         + (" · matches the brief" if s.get("full_text") else ""),

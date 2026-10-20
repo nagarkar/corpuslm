@@ -199,8 +199,10 @@ def _make_version_8(path):
     ).fetchall():
         connection.execute(f"DROP VIEW {name}")
     kind_line = (
-        "    kind TEXT NOT NULL DEFAULT 'youtube' CHECK (kind IN ('youtube', 'bee', 'text')),\n"
+        "    kind TEXT NOT NULL DEFAULT 'youtube'\n"
+        "        CHECK (kind IN ('youtube', 'bee', 'text', 'vimeo', 'file')),\n"
     )
+    assert kind_line in db.SOURCES_TABLE
     old = (
         db.SOURCES_TABLE.replace(
             "CREATE TABLE IF NOT EXISTS sources (", "CREATE TABLE sources_v8 ("
@@ -276,8 +278,8 @@ def test_a_version_8_database_is_rebuilt_with_every_row_and_the_author_tables_un
 
     opened = db.Database(path)
     try:
-        assert opened.migration["from"] == 8 and opened.migration["to"] == db.USER_VERSION == 16
-        assert opened.migration["backup"].endswith("-before-v16.sqlite")
+        assert opened.migration["from"] == 8 and opened.migration["to"] == db.USER_VERSION == 17
+        assert opened.migration["backup"].endswith("-before-v17.sqlite")
         assert opened.one("PRAGMA integrity_check")[0] == "ok"
         assert opened.all("PRAGMA foreign_key_check") == []
         after = _everything(path)

@@ -179,7 +179,8 @@ def _make_version_10(path):
             connection.execute(f"DROP {kind.upper()} {name}")
     old = db.SOURCES_TABLE.replace(
         "CREATE TABLE IF NOT EXISTS sources (", "CREATE TABLE sources_v10 ("
-    ).replace("'youtube', 'bee', 'text'", "'youtube', 'bee'")
+    ).replace("'youtube', 'bee', 'text', 'vimeo', 'file'", "'youtube', 'bee'")
+    assert "'youtube', 'bee')" in old
     connection.execute(old)
     columns = ", ".join(row[1] for row in connection.execute("PRAGMA table_info(sources_v10)"))
     connection.execute(f"INSERT INTO sources_v10 ({columns}) SELECT {columns} FROM sources")
@@ -214,8 +215,8 @@ def test_a_version_10_database_is_rebuilt_so_a_text_source_can_be_added(tmp_path
     old.close()
     opened = db.Database(path)
     try:
-        assert opened.migration["from"] == 10 and opened.migration["to"] == db.USER_VERSION == 16
-        assert opened.migration["backup"].endswith("-before-v16.sqlite")
+        assert opened.migration["from"] == 10 and opened.migration["to"] == db.USER_VERSION == 17
+        assert opened.migration["backup"].endswith("-before-v17.sqlite")
         assert opened.one("PRAGMA integrity_check")[0] == "ok"
         assert opened.all("PRAGMA foreign_key_check") == []
         store = Store(opened)

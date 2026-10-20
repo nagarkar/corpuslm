@@ -1,15 +1,26 @@
-"""Review kinds: what differs per source kind on a review surface, for the two kinds there are.
+"""Review kinds: what differs per source kind on a review surface, for the kinds there are.
 
 `youtube_review()` and `bee_review(owner_first_name)` build the `corpuslm.review.ReviewKind` of
 each source kind a tool files in the shared database, so one review server can serve every kind
-without importing ytlm or beelm. `kinds_for_settings` builds the kind of each source kind a
-settings file names (`corpuslm.review_settings`).
+without importing ytlm or beelm. ytlm's three source kinds (`youtube`, `vimeo`, `file`) share the
+YouTube review kind: the same speaker scheme, the same stale nodes; only the link differs, and the
+link is read from the row's `locator` (`anchor_url`), never built from the id.
+`kinds_for_settings` builds the kind of each source kind a settings file names
+(`corpuslm.review_settings`).
 
 Never imports: cli, clikit, db, any model transport.
 
 Decisions:
-- A YouTube card links to the watch URL at the second; the page footnote says how to force the
-  browser instead of the app. Enforced by:
+- A card links to the source's `locator` at the second: `&t=<s>s` on a YouTube watch URL,
+  `#t=<s>s` on a Vimeo URL; a file source has no URL and gets a time label alone. No surface
+  builds a watch URL from an id. Enforced by:
+  tests/test_source_kinds.py::test_a_card_links_to_the_source_locator_at_the_second. (owner)
+- Vimeo and file sources share the YouTube review kind (speaker scheme, stale nodes, the AI
+  cleanup node), and a corpus made only of them is listed for ytlm. Enforced by:
+  tests/test_source_kinds.py::test_vimeo_and_file_sources_share_the_youtube_review_kind,
+  tests/test_source_kinds.py::test_a_corpus_of_only_vimeo_sources_is_listed_for_the_youtube_tool.
+  (owner)
+- The page footnote says how to force the browser instead of the YouTube app. Enforced by:
   tests/test_review_kinds.py::test_a_youtube_card_links_to_the_watch_url_at_the_second.
 - A Bee card has no link (a `file://` link fails on a phone): a time label stands alone, the
   card names the recording by title and day, and the picker offers the owner's first name.
@@ -22,7 +33,7 @@ Decisions:
   its tool's verb (`rebuilt_by`), and `corpuslm review apply` leaves a Bee answer unlanded where
   beelm's rebuilder is not registered. Enforced by:
   tests/test_review_apply.py::test_a_kind_without_its_rebuilder_leaves_its_answers_unlanded.
-- A source kind outside the two has no review kind; the settings file may not name it. Enforced
+- A source kind outside these has no review kind; the settings file may not name it. Enforced
   by: tests/test_review_settings.py::test_an_unknown_source_kind_is_named_and_declined.
 
 Terms:
@@ -46,8 +57,10 @@ YOUTUBE_LINKS_NOTE = (
     "and tap again, or long-press the link and open it in a new tab (the browser "
     "player seeks every time)."
 )
+# The source kinds ytlm files, all served by the YouTube review kind.
+YTLM_KINDS = ("youtube", "vimeo", "file")
 # Source kinds a review kind exists for.
-KINDS = ("youtube", "bee")
+KINDS = (*YTLM_KINDS, "bee")
 # The verb that carries a Bee answer into the files (a speaker name rebuilds the map, the
 # transcript and the subtitles), which only beelm can do.
 BEE_REBUILT_BY = "./beelm.sh review apply"
@@ -58,18 +71,32 @@ YOUTUBE_STALE_NODES = ("pass3", "speaker_map")
 YOUTUBE_AI_CLEANUP_NODE = "pass3"
 
 
-def youtube_anchor_url(video: dict, seconds: float) -> str:
-    # A plain watch URL. On the phone the YouTube app claims it and ignores a second link to a
-    # video it already has open; the browser player cannot be used instead: the artifact's CSP
-    # allows no YouTube iframe, and a top-level embed opens without the referrer YouTube
-    # demands (error 153, 2026-09-22).
-    return f"https://www.youtube.com/watch?v={video['id']}&t={int(seconds)}s"
+def anchor_url(source: dict, seconds: float) -> str | None:
+    """The source's `locator` opened at `seconds`, or None when the source has no URL (a file,
+    a Bee recording). YouTube: a plain watch URL with `&t=<s>s`. On the phone the YouTube app
+    claims it and ignores a second link to a video it already has open; the browser player
+    cannot be used instead: the artifact's CSP allows no YouTube iframe, and a top-level embed
+    opens without the referrer YouTube demands (error 153, 2026-09-22). Vimeo: `#t=<s>s`, which
+    the Vimeo player honours on the page and in the app."""
+    locator = str(source.get("locator") or "")
+    kind = source.get("kind") or "youtube"
+    if kind == "youtube" and locator:
+        return f"{locator}{'&' if '?' in locator else '?'}t={int(seconds)}s"
+    if kind == "vimeo" and locator:
+        return f"{locator}#t={int(seconds)}s"
+    return None
+
+
+def youtube_anchor_url(video: dict, seconds: float) -> str | None:
+    """Kept under its old name for callers that import it; see `anchor_url`."""
+    return anchor_url(video, seconds)
 
 
 def youtube_review() -> ReviewKind:
     return ReviewKind(
         name="youtube",
-        anchor_url=youtube_anchor_url,
+        source_kinds=YTLM_KINDS,
+        anchor_url=anchor_url,
         source_label=lambda video: video.get("title", ""),
         scheme=YOUTUBE,
         links_note=YOUTUBE_LINKS_NOTE,
@@ -130,7 +157,7 @@ def kinds_for_settings(owner_first_names: Mapping[str, str]) -> dict[str, Review
         )
     kinds: dict[str, ReviewKind] = {}
     for name, owner in owner_first_names.items():
-        kinds[name] = youtube_review() if name == "youtube" else bee_review(owner)
+        kinds[name] = youtube_review() if name in YTLM_KINDS else bee_review(owner)
     return kinds
 
 
@@ -139,9 +166,11 @@ __all__ = [
     "BEE_REBUILT_BY",
     "BEE_SCHEMA_ID",
     "KINDS",
+    "YTLM_KINDS",
     "YOUTUBE_LINKS_NOTE",
     "YOUTUBE_AI_CLEANUP_NODE",
     "YOUTUBE_STALE_NODES",
+    "anchor_url",
     "bee_refined_schema",
     "bee_review",
     "kinds_for_settings",

@@ -127,7 +127,7 @@ def test_a_version_3_database_is_renamed_in_place_after_a_backup(tmp_path):
     try:
         assert (
             database_handle.migration["from"] == 3
-            and database_handle.migration["to"] == db.USER_VERSION == 16
+            and database_handle.migration["to"] == db.USER_VERSION == 17
         )
         assert database_handle.migration["backup"] and (tmp_path / "backups").exists()
         assert database_handle.migration["dropped_corpus_feeds"] == ["PLold"]

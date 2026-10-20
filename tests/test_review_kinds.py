@@ -13,9 +13,12 @@ from corpuslm.speaker_map import YOUTUBE
 
 def test_a_youtube_card_links_to_the_watch_url_at_the_second():
     kind = review_kinds.youtube_review()
-    assert kind.anchor_url({"id": "aaaaaaaaaaa"}, 12.7) == (
-        "https://www.youtube.com/watch?v=aaaaaaaaaaa&t=12s"
-    )
+    source = {
+        "id": "aaaaaaaaaaa",
+        "kind": "youtube",
+        "locator": "https://www.youtube.com/watch?v=aaaaaaaaaaa",
+    }
+    assert kind.anchor_url(source, 12.7) == "https://www.youtube.com/watch?v=aaaaaaaaaaa&t=12s"
     assert kind.source_label({"title": "A talk"}) == "A talk"
     assert kind.scheme is YOUTUBE and kind.links_note.startswith("Timestamps open")
     assert kind.stale_nodes == ("pass3", "speaker_map")
@@ -48,5 +51,6 @@ def test_bee_transcripts_are_read_with_free_speaker_labels():
 def test_the_kinds_for_a_settings_file_decline_a_kind_with_no_review_kind():
     kinds = review_kinds.kinds_for_settings({"youtube": "", "bee": "Quill"})
     assert set(kinds) == {"youtube", "bee"}
+    assert set(review_kinds.KINDS) == {"youtube", "vimeo", "file", "bee"}
     with pytest.raises(ValueError, match="no review kind for source kind 'podcast'"):
         review_kinds.kinds_for_settings({"podcast": ""})

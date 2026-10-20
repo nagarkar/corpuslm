@@ -79,6 +79,9 @@ class ReviewKind:
     source_label: Callable[[dict], str]  # (source) -> the text a card or note shows
     scheme: SpeakerScheme
     links_note: str = ""  # a page footnote about the links; empty when there are none
+    # Every source kind this review kind serves; empty means `name` alone. ytlm's kind serves
+    # `youtube`, `vimeo` and `file` (corpuslm.review_kinds).
+    source_kinds: tuple[str, ...] = ()
     extra_speaker_names: Callable[[dict], list[str]] = lambda source: []  # picker additions
     # How a speaker label is spelled in a note's flat frontmatter key (`speaker_<label>`).
     role_pattern: str = DEFAULT_ROLE_PATTERN

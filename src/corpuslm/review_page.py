@@ -281,7 +281,7 @@ def workspace_data(db, sources_directory: Path, *, kind: ReviewKind) -> dict:
     `sources_directory`."""
     corpora = [
         page_data(db, sources_directory, name, kind=kind)
-        for name in Store(db).corpus_names(kind.name)
+        for name in Store(db).corpus_names(kind.source_kinds or (kind.name,))
     ]
     return _workspace_document(corpora)
 

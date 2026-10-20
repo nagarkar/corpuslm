@@ -40,7 +40,7 @@ from .identity import canonical_sha256  # noqa: F401  (re-exported: db.canonical
 
 # PRAGMA user_version of the schema below. 0 is a database made before the
 # version was tracked (the v1 schema, frozen in tests/fixtures/schema_v1.sql).
-USER_VERSION = 16
+USER_VERSION = 17
 
 BACKUPS_DIRNAME = "backups"
 # How many verified backups `<workspace>/backups/` keeps (owner ruling
@@ -363,7 +363,8 @@ CREATE TABLE IF NOT EXISTS monologue_runs (
 
 SOURCES_TABLE = f"""CREATE TABLE IF NOT EXISTS sources (
     {KNOWLEDGE_OBJECT_COLUMNS},
-    kind TEXT NOT NULL DEFAULT 'youtube' CHECK (kind IN ('youtube', 'bee', 'text')),
+    kind TEXT NOT NULL DEFAULT 'youtube'
+        CHECK (kind IN ('youtube', 'bee', 'text', 'vimeo', 'file')),
     locator TEXT NOT NULL,
     title TEXT NOT NULL DEFAULT '',
     channel_id TEXT NOT NULL DEFAULT '',
@@ -377,7 +378,7 @@ SOURCES_TABLE = f"""CREATE TABLE IF NOT EXISTS sources (
     caption_kind TEXT NOT NULL DEFAULT ''
         CHECK (caption_kind IN ('', 'manual', 'generated', 'none', 'unknown')),
     metadata_source TEXT NOT NULL DEFAULT ''
-        CHECK (metadata_source IN ('', 'dataapi', 'oembed')),
+        CHECK (metadata_source IN ('', 'dataapi', 'oembed', 'vimeo', 'ffprobe')),
     has_caption_track INTEGER CHECK (has_caption_track IS NULL OR has_caption_track IN (0, 1)),
     status TEXT NOT NULL DEFAULT 'added'
         CHECK (status IN ('added', 'ingested', 'no_captions', 'unavailable', 'failed', 'ignored')),
@@ -1000,6 +1001,12 @@ def _v8_to_v9_script(connection: sqlite3.Connection) -> list[str]:
     return _rebuild_sources_script(connection, "sources_v9")
 
 
+def _v16_to_v17_script(connection: sqlite3.Connection) -> list[str]:
+    """Rebuild `sources` so its `kind` CHECK allows `vimeo` and `file` and its `metadata_source`
+    CHECK allows `vimeo` and `ffprobe` (ytlm's Vimeo and file sources, nagarkar/corpuslm#84)."""
+    return _rebuild_sources_script(connection, "sources_v17")
+
+
 def _v15_to_v16_script() -> list[str]:
     """Additive: the line-speaker tables (empty), their view and the append-only trigger of
     `line_speaker_verdicts` (`corpuslm speakers attribute` and the review page fill them)."""
@@ -1284,9 +1291,9 @@ def migrate(connection: sqlite3.Connection, db_path: Path) -> dict:
         return {"from": version, "to": USER_VERSION, "backup": None, "created": True}
     saved = backup(connection, db_path, label=f"before-v{USER_VERSION}")
     deleted = prune_backups(db_path)  # only after the new one verified
-    if version in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15):
-        # From v8 on, every step checks every table's row count (the v8 -> v9 and v10 -> v11
-        # steps rebuild `sources`; the v9 -> v10 step is additive and nothing else may change).
+    if version in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16):
+        # From v8 on, every step checks every table's row count (the v8 -> v9, v10 -> v11 and
+        # v16 -> v17 steps rebuild `sources`; the additive steps may change nothing else).
         watched = (
             sorted(table for table in _tables(connection) if not table.startswith("sqlite_"))
             if version >= 8
@@ -1307,7 +1314,8 @@ def migrate(connection: sqlite3.Connection, db_path: Path) -> dict:
                 *(_v12_to_v13_script() if version <= 12 else []),
                 *(_v13_to_v14_script() if version <= 13 else []),
                 *(_v14_to_v15_script() if version <= 14 else []),
-                *_v15_to_v16_script(),
+                *(_v15_to_v16_script() if version <= 15 else []),
+                *_v16_to_v17_script(column),
             ]
 
         if not _run_in_transaction(

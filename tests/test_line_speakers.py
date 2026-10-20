@@ -232,8 +232,8 @@ def test_a_version_15_database_gains_the_line_speaker_tables_after_a_verified_ba
     connection.close()
     opened = db.Database(path)
     try:
-        assert opened.migration["from"] == 15 and opened.migration["to"] == db.USER_VERSION == 16
-        assert opened.migration["backup"].endswith("-before-v16.sqlite")
+        assert opened.migration["from"] == 15 and opened.migration["to"] == db.USER_VERSION == 17
+        assert opened.migration["backup"].endswith("-before-v17.sqlite")
         assert opened.one("PRAGMA integrity_check")[0] == "ok"
         store = Store(opened)
         store.append_line_speaker_verdict(
