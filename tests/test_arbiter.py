@@ -6,8 +6,10 @@ import json
 from pathlib import Path
 
 import pytest
+from llm_support import client as llm_client
+from llmlm import llm
 
-from corpuslm import arbiter, llm, review
+from corpuslm import arbiter, review
 from corpuslm.prompts import Prompt
 
 JUDGE_MODEL = "jev-latest"
@@ -72,7 +74,7 @@ def validate(reply_body):
 
 
 def make(tmp_path, transport, *, min_probability=0.8, config=None):
-    client = llm.client(tmp_path, config or {"llm": {}, "logs": {}})
+    client = llm_client(tmp_path, config or {"llm": {}, "logs": {}})
     return arbiter.Arbiter(
         client,
         arbiter.Settings(True, JUDGE_MODEL, min_probability),

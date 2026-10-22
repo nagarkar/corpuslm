@@ -3,8 +3,7 @@ MODEL_PROFILES gets the plain request and a warning; a `temperature` configured 
 takes none is a config error naming `[section].temperature`. The consumer names the sections."""
 
 import pytest
-
-from corpuslm import llm
+from llmlm import llm
 
 SECTIONS = ("cleanup", "digest")
 

@@ -6,8 +6,10 @@ import json
 from datetime import UTC, datetime
 
 import pytest
+from llm_support import client as llm_client
+from llmlm import llm
 
-from corpuslm import ai_cleanup_chain, basic_cleanup, chain, db, llm, review, transcript
+from corpuslm import ai_cleanup_chain, basic_cleanup, chain, db, review, transcript
 from corpuslm.speaker_map import bee_scheme
 from corpuslm.store import Store
 
@@ -122,7 +124,7 @@ class World:
 
     def context(self, **changes):
         def client():
-            made = llm.client(
+            made = llm_client(
                 self.root,
                 self.config,
                 transport=llm.ScriptedTransport(self.scripts),

@@ -48,8 +48,10 @@ import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
+from llmlm import llm
+
 from . import concepts as concepts_module
-from . import document, llm, prompts
+from . import document, prompts
 from .store import Store
 
 STAGE = "sheet"

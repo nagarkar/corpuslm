@@ -23,9 +23,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
-from llmlm import schemas
-
-from corpuslm import ledger
+from llmlm import ledger, schemas
 
 
 def usage_event(**over):

@@ -60,7 +60,7 @@ def test_an_unknown_verb_exits_one_and_points_at_help(capsys):
 def test_usage_show_and_serve_dry_run_read_the_settings_file(tmp_path, capsys):
     from datetime import UTC, datetime
 
-    from corpuslm import ledger
+    from llmlm import ledger
 
     ledger.Ledger(tmp_path / "logs", clock=lambda: datetime(2026, 10, 5, tzinfo=UTC)).usage(
         {

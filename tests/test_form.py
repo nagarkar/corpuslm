@@ -6,9 +6,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
+from llm_support import client as llm_client
 from test_judge import RecordingTransport, choice_reply
 
-from corpuslm import db, form, judge, llm
+from corpuslm import db, form, judge
 from corpuslm.store import Store
 
 SOURCE = "bee:7"
@@ -32,7 +33,7 @@ def store(tmp_path):
 
 
 def judge_with(tmp_path, replies):
-    client = llm.client(tmp_path, {"llm": {}}, clock=lambda: datetime(2026, 1, 1, tzinfo=UTC))
+    client = llm_client(tmp_path, {"llm": {}}, clock=lambda: datetime(2026, 1, 1, tzinfo=UTC))
     made, _ = judge.make({}, client, RecordingTransport(replies))
     return made
 

@@ -57,7 +57,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from . import clock, files, llm, review
+from llmlm import llm
+
+from . import clock, files, review
 from .identity import normalize_span
 from .prompts import Prompt
 

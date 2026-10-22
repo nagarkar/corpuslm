@@ -11,8 +11,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from llm_support import client as llm_client
+from llmlm import llm
 
-from corpuslm import db, line_speakers, llm, review_settings, speaker_map
+from corpuslm import db, line_speakers, review_settings, speaker_map
 from corpuslm.store import Store
 
 MODEL = "gemini/gemini-2.5-flash-lite"
@@ -63,7 +65,7 @@ class World:
         )
 
     def client(self, config: dict | None = None) -> llm.Client:
-        return llm.client(
+        return llm_client(
             self.root,
             config or CONFIG,
             transport=llm.ScriptedTransport(self.scripts),
@@ -257,7 +259,7 @@ def test_a_stage_timeout_reaches_the_vendor_request(tmp_path, monkeypatch):
 
     config = json.loads(json.dumps(CONFIG))
     config["line_speakers"]["timeout_seconds"] = 900
-    client = llm.client(tmp_path / "ws", config, transport=Transport())
+    client = llm_client(tmp_path / "ws", config, transport=Transport())
     variables = {"owner": "Ana", "household": "", "evidence": "", "summary": "", "transcript": "",
                  "first": "1", "last": "1"}  # fmt: skip
     monkeypatch.setenv("GEMINI_API_KEY", "test")

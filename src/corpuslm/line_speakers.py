@@ -62,7 +62,9 @@ import json
 import re
 from dataclasses import dataclass
 
-from . import llm, prompts
+from llmlm import llm
+
+from . import prompts
 from .identity import canonical_sha256
 from .speaker_map import NON_PERSONS, UNCLEAR, confident_line_pick, line_display
 from .store import Store

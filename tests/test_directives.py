@@ -9,9 +9,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from llm_support import client as llm_client
+from llmlm import llm
 from test_judge import RecordingTransport, noul_reply
 
-from corpuslm import claims, concepts, db, directives, form, judge, llm, moments, prompts
+from corpuslm import claims, concepts, db, directives, form, judge, moments, prompts
 from corpuslm.store import Store
 
 MODEL = "gemini/gemini-2.5-flash-lite"
@@ -61,7 +63,7 @@ class World:
         )
 
     def client(self) -> llm.Client:
-        return llm.client(
+        return llm_client(
             self.root,
             self.config,
             transport=llm.ScriptedTransport(self.scripts),
@@ -244,7 +246,7 @@ def test_a_video_source_gets_no_directive_fields(tmp_path):
         (scripts / f"{VIDEO}-s0.json").write_text(
             json.dumps({"reply": json.dumps(REPLY), "tokens_in": 100, "tokens_out": 20})
         )
-        client = llm.client(
+        client = llm_client(
             tmp_path / "ws",
             {"claims": {"model": MODEL, "section_chars": 10_000}, "llm": {}},
             transport=llm.ScriptedTransport(tmp_path / "scripts"),
