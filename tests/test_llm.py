@@ -9,6 +9,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
+from llmlm import llm as llmlm_llm
 
 from corpuslm import clock, llm, prompts
 from corpuslm.llm import Client
@@ -288,9 +289,9 @@ def test_a_real_transport_with_no_vendor_key_declines_before_any_call(
 
 
 def test_the_default_transport_is_the_vendor_unless_scripts_are_set(tmp_path, monkeypatch):
-    assert llm.SCRIPTS is None
+    assert llmlm_llm.SCRIPTS is None
     assert llm.default_transport().name == "litellm"
-    monkeypatch.setattr(llm, "SCRIPTS", tmp_path)
+    monkeypatch.setattr(llmlm_llm, "SCRIPTS", tmp_path)
     assert llm.default_transport().name == "scripted"
 
 

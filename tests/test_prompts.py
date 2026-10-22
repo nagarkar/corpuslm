@@ -2,6 +2,7 @@
 built-in one, then those a consumer registers or passes); a change is a copy to the next version."""
 
 import pytest
+from llmlm import prompts as llmlm_prompts
 
 from corpuslm import prompts
 
@@ -61,7 +62,7 @@ def test_front_matter_must_be_complete_and_known(tmp_path):
 
 
 def test_registered_directories_are_searched_after_the_built_in_one(tmp_path, monkeypatch):
-    monkeypatch.setattr(prompts, "_registered", [])
+    monkeypatch.setattr(llmlm_prompts, "_registered", [prompts.BUILT_IN_DIRECTORY])
     write_prompt(tmp_path / "mine")
     with pytest.raises(prompts.PromptError):
         prompts.load("greeting")
