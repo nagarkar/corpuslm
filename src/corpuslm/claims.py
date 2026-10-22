@@ -66,11 +66,13 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from llmlm import llm
+
 from . import directives as directives_module
 from . import events as events_module
 from . import form as form_module
 from . import judge as judge_module
-from . import llm, prompts, speaker_map, text_source
+from . import prompts, speaker_map, text_source
 from .identity import canonical_sha256
 from .store import Store
 

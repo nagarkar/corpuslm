@@ -10,8 +10,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from llm_support import client as llm_client
+from llmlm import llm
 
-from corpuslm import claims, db, llm, schemas
+from corpuslm import claims, db, schemas
 from corpuslm.store import Store
 
 MODEL = "gemini/gemini-2.5-flash-lite"
@@ -64,7 +66,7 @@ class World:
         )
 
     def client(self, config: dict | None = None) -> llm.Client:
-        return llm.client(
+        return llm_client(
             self.root,
             config or self.config,
             transport=llm.ScriptedTransport(self.scripts),
@@ -179,7 +181,7 @@ def test_a_bad_reply_fails_one_source_and_the_run_goes_on(world, tmp_path):
         f'database = "{tmp_path / "transcript.sqlite"}"\n[kinds.bee]\ndirectory = "{tmp_path}"\n'
         f'[claims]\nmodel = "{MODEL}"\nworkspace = "{world.root}"\n'
     )
-    import corpuslm.llm as llm_module
+    import llmlm.llm as llm_module
 
     real_client = llm_module.Client
     monkey = pytest.MonkeyPatch()

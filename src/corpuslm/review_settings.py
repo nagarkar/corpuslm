@@ -213,7 +213,7 @@ class ReviewSettings:
     jev: JevSettings | None = None
 
     def client_config(self) -> dict:
-        """What `corpuslm.llm.Client` reads: the `[claims]` stage section (with the Bee owner's
+        """What `llmlm.llm.Client` reads: the `[claims]` stage section (with the Bee owner's
         first name and the directive threshold), the `[llm]` caps and the `[jev]` model."""
         config: dict = {"llm": dict(self.llm)}
         if self.claims is not None:

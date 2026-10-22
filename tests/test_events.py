@@ -7,9 +7,11 @@ import json
 from datetime import UTC, datetime
 
 from eventlm.events import Events
+from llm_support import client as llm_client
+from llmlm import llm
 from test_directives import MODEL, REPLY, SEGMENTS, SOURCE
 
-from corpuslm import claims, db, events, llm, review_apply
+from corpuslm import claims, db, events, review_apply
 from corpuslm.store import Store
 
 
@@ -23,7 +25,7 @@ def _claims_world(tmp_path):
     (folder / f"{SOURCE}-s0.json").write_text(
         json.dumps({"reply": json.dumps(REPLY), "tokens_in": 100, "tokens_out": 20})
     )
-    client = llm.client(
+    client = llm_client(
         tmp_path / "ws",
         {"claims": {"model": MODEL, "section_chars": 10_000}, "llm": {}},
         transport=llm.ScriptedTransport(tmp_path / "scripts"),

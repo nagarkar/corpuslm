@@ -9,10 +9,11 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
+from llm_support import client as Client
+from llmlm import llm
 from llmlm import llm as llmlm_llm
 
-from corpuslm import clock, llm, prompts
-from corpuslm.llm import client as Client
+from corpuslm import clock, prompts
 
 FIXTURES = Path(__file__).parent / "fixtures"
 FLASH_LITE = "gemini/gemini-2.5-flash-lite"

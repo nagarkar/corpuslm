@@ -3,7 +3,7 @@
 The AI cleanup (`build_ai_cleanup`) is the step after spell fix that asks a model, batch by
 batch, for the edits, label-to-name bindings and ambiguities of one source
 (corpuslm.ai_cleanup holds the batching and the bounds; this module holds the bookkeeping
-around the calls). It reads the spell-fix document, calls a model through `corpuslm.llm.Client`
+around the calls). It reads the spell-fix document, calls a model through `llmlm.llm.Client`
 (or serves the recorded replies from the cache), applies the owner's verdicts and the correction
 memory's answers for spans it flags again, optionally asks the arbiter about what is still
 pending, and records the artifact with the hashes of its inputs. A tool describes its source
@@ -69,7 +69,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
-from . import ai_cleanup, llm, model_suggestions, review
+from llmlm import llm
+
+from . import ai_cleanup, model_suggestions, review
 from . import clock as clock_module
 from . import events as events_module
 from . import prompts as prompts_module

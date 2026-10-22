@@ -68,8 +68,10 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from llmlm import llm
+
 from . import bodies as bodies_module
-from . import document, llm, prompts
+from . import document, prompts
 from . import moments as moments_module
 from .identity import canonical_sha256
 from .store import Store

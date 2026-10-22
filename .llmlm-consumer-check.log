@@ -1,0 +1,42 @@
+........................................................................ [ 11%]
+........................................................................ [ 22%]
+........................................................................ [ 34%]
+........................................................................ [ 45%]
+........................................................................ [ 56%]
+........................................................................ [ 68%]
+...............................................s........................ [ 79%]
+........................................................................ [ 90%]
+..................................F......................                [100%]
+=================================== FAILURES ===================================
+_____________ test_the_transport_never_resends_without_a_parameter _____________
+
+    def test_the_transport_never_resends_without_a_parameter():
+>       source = Path(llm.__file__).read_text()
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_transports.py:123: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+../../../miniconda3/lib/python3.12/pathlib.py:1027: in read_text
+    with self.open(mode='r', encoding=encoding, errors=errors) as f:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = PosixPath('/Users/nagarkar/workspace/repos/corpuslm-clientfix/src/corpuslm/llm.py')
+mode = 'r', buffering = -1, encoding = 'locale', errors = None, newline = None
+
+    def open(self, mode='r', buffering=-1, encoding=None,
+             errors=None, newline=None):
+        """
+        Open the file pointed to by this path and return a file object, as
+        the built-in open() function does.
+        """
+        if "b" not in mode:
+            encoding = io.text_encoding(encoding)
+>       return io.open(self, mode, buffering, encoding, errors, newline)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       FileNotFoundError: [Errno 2] No such file or directory: '/Users/nagarkar/workspace/repos/corpuslm-clientfix/src/corpuslm/llm.py'
+
+../../../miniconda3/lib/python3.12/pathlib.py:1013: FileNotFoundError
+=========================== short test summary info ============================
+FAILED tests/test_transports.py::test_the_transport_never_resends_without_a_parameter
+1 failed, 631 passed, 1 skipped in 20.23s

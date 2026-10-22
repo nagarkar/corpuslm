@@ -23,7 +23,7 @@ The plan that moves code here is nagarkar/ytlm#50 (ytlm
 
 ## Repo notes
 
-- The model-call layer is llmlm. `corpuslm.llm`, `corpuslm.ledger` and `corpuslm.prompts` are shims over it (corpuslm's validator, schemas and built-in prompts directory stay here); delete them once ytlm, beelm and mailerlm import llmlm directly.
+- The model-call layer is llmlm; corpuslm imports `llmlm.llm` and `llmlm.ledger` directly. `corpuslm.prompts` stays as the registration of this package's built-in prompts directory with `llmlm.prompts` (and re-exports its loader); corpuslm's validator and schemas stay here.
 - Design docs say "ytlm's" when they cite ytlm's documents, its `(was Dn)`
   numbers or its issue numbers; those live in nagarkar/ytlm.
 - Documented exceptions to metalm: none.

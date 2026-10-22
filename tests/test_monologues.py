@@ -11,8 +11,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from llm_support import client as llm_client
+from llmlm import llm
 
-from corpuslm import bodies, claims, db, document, llm, monologues
+from corpuslm import bodies, claims, db, document, monologues
 from corpuslm.store import Store
 
 MODEL = "gemini/gemini-2.5-flash-lite"
@@ -88,7 +90,7 @@ class World:
         )
 
     def client(self, config: dict | None = None) -> llm.Client:
-        return llm.client(
+        return llm_client(
             self.root, config or CONFIG, transport=llm.ScriptedTransport(self.scripts),
             clock=lambda: datetime(2026, 1, 1, tzinfo=UTC),
         )  # fmt: skip

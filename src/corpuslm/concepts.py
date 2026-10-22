@@ -51,8 +51,10 @@ import json
 import re
 from dataclasses import dataclass
 
+from llmlm import llm
+
 from . import claims as claims_module
-from . import llm, prompts
+from . import prompts
 from .identity import canonical_sha256
 from .store import Store
 

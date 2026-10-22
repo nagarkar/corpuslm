@@ -394,7 +394,9 @@ class Answers:
 
     def _monologue_tools(self):
         """(client, document store, workspace) from the settings, for estimate and run."""
-        from . import document, llm, schemas
+        from llmlm import llm
+
+        from . import document, schemas
 
         settings = self.settings
         if settings is None or settings.claims is None or settings.monologue is None:

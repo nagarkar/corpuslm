@@ -31,6 +31,8 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
+from llmlm import llm
+
 from . import (
     bodies,
     claims,
@@ -45,7 +47,6 @@ from . import (
     form,
     judge,
     line_speakers,
-    llm,
     moments,
     moments_page,
     monologue_page,
