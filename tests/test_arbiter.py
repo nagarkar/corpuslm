@@ -72,7 +72,7 @@ def validate(reply_body):
 
 
 def make(tmp_path, transport, *, min_probability=0.8, config=None):
-    client = llm.Client(tmp_path, config or {"llm": {}, "logs": {}})
+    client = llm.client(tmp_path, config or {"llm": {}, "logs": {}})
     return arbiter.Arbiter(
         client,
         arbiter.Settings(True, JUDGE_MODEL, min_probability),

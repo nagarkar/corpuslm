@@ -41,7 +41,7 @@ def noul_reply(value: float, question: str = "acted_on") -> dict:
 
 
 def client(tmp_path, caps: dict | None = None) -> llm.Client:
-    return llm.Client(tmp_path, {"llm": caps or {}}, clock=lambda: datetime(2026, 1, 1, tzinfo=UTC))
+    return llm.client(tmp_path, {"llm": caps or {}}, clock=lambda: datetime(2026, 1, 1, tzinfo=UTC))
 
 
 def test_without_the_key_the_judge_is_off_and_says_why(tmp_path, monkeypatch):

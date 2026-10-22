@@ -394,13 +394,19 @@ class Answers:
 
     def _monologue_tools(self):
         """(client, document store, workspace) from the settings, for estimate and run."""
-        from . import document, llm
+        from . import document, llm, schemas
 
         settings = self.settings
         if settings is None or settings.claims is None or settings.monologue is None:
             raise ValueError("the server was started without [claims] and [monologue] settings")
         config = settings.client_config()
-        client = llm.Client(settings.claims.workspace, config, verb="monologue page")
+        client = llm.Client(
+            settings.claims.workspace,
+            config,
+            verb="monologue page",
+            validator=schemas.validate,
+            schema_loader=schemas.schema,
+        )
         doc = document.store(config, settings.claims.workspace, origin="corpuslm")
         return client, doc, settings.claims.workspace
 

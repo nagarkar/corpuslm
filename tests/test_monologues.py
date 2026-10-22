@@ -88,7 +88,7 @@ class World:
         )
 
     def client(self, config: dict | None = None) -> llm.Client:
-        return llm.Client(
+        return llm.client(
             self.root, config or CONFIG, transport=llm.ScriptedTransport(self.scripts),
             clock=lambda: datetime(2026, 1, 1, tzinfo=UTC),
         )  # fmt: skip

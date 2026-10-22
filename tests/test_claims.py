@@ -64,7 +64,7 @@ class World:
         )
 
     def client(self, config: dict | None = None) -> llm.Client:
-        return llm.Client(
+        return llm.client(
             self.root,
             config or self.config,
             transport=llm.ScriptedTransport(self.scripts),
@@ -187,7 +187,12 @@ def test_a_bad_reply_fails_one_source_and_the_run_goes_on(world, tmp_path):
         llm_module,
         "Client",
         lambda root, config, **kw: real_client(
-            root, config, transport=llm.ScriptedTransport(world.scripts), verb=kw.get("verb", "")
+            root,
+            config,
+            transport=llm.ScriptedTransport(world.scripts),
+            verb=kw.get("verb", ""),
+            validator=kw.get("validator"),
+            schema_loader=kw.get("schema_loader"),
         ),
     )
     try:

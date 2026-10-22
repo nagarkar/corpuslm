@@ -142,7 +142,7 @@ def test_an_unknown_model_gets_the_plain_request(tmp_path):
         '---\nid = "greeting"\nversion = 1\nstage = "greet"\n'
         'output_schema = "greeting_reply"\nconfig_section = "greeting"\n---\nSay {word}.\n'
     )
-    client = llm.Client(
+    client = llm.client(
         tmp_path,
         {"greeting": {"model": "vendor/unknown-model", "temperature": 0.7}, "logs": {}},
         transport=Recorder(),
@@ -177,7 +177,7 @@ def test_a_model_that_honours_json_schema_is_sent_the_prompts_reply_schema(tmp_p
         'output_schema = "greeting_reply"\nconfig_section = "greeting"\n---\nSay {word}.\n'
     )
     schema = {"type": "object", "required": ["greeting"]}
-    client = llm.Client(
+    client = llm.client(
         tmp_path,
         {"greeting": {"model": "gemini/gemini-3.1-flash-lite"}, "logs": {}},
         transport=Recorder(),

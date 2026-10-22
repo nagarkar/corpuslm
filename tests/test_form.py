@@ -32,7 +32,7 @@ def store(tmp_path):
 
 
 def judge_with(tmp_path, replies):
-    client = llm.Client(tmp_path, {"llm": {}}, clock=lambda: datetime(2026, 1, 1, tzinfo=UTC))
+    client = llm.client(tmp_path, {"llm": {}}, clock=lambda: datetime(2026, 1, 1, tzinfo=UTC))
     made, _ = judge.make({}, client, RecordingTransport(replies))
     return made
 

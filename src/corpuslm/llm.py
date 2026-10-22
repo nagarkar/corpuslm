@@ -1,10 +1,10 @@
 """LLM: corpuslm's door to the shared model-call layer, `llmlm.llm`.
 
 The transport, reply cache, ledger lines and spend caps live in llmlm; this module re-exports
-them so corpuslm's modules keep their imports, and gives `Client` corpuslm's own reply validator
-and schema loader (`corpuslm.schemas`) as its defaults. The scripted directory (`SCRIPTS`) and
-the price table are llmlm's: a test that scripts replies sets `llmlm.llm.SCRIPTS`. Delete this
-shim once ytlm, beelm and mailerlm import llmlm directly (nagarkar/llmlm#1, step 3).
+them so corpuslm's modules keep their imports. `Client` is llmlm's class itself; `client()` builds
+one with corpuslm's own reply validator and schema loader (`corpuslm.schemas`). The scripted
+directory (`SCRIPTS`) and the price table are llmlm's: a test that scripts replies sets
+`llmlm.llm.SCRIPTS`. Delete this shim once ytlm, beelm and mailerlm import llmlm directly (nagarkar/llmlm#1, step 3).
 
 Never imports: db, store, clikit.
 """
@@ -49,17 +49,20 @@ from llmlm.llm import (
 
 from . import schemas
 
+# llmlm's own class, so that a function typed with `llm.Client` accepts the client a tool built
+# from `llmlm.llm.Client` (ytlm, beelm) and the reverse. corpuslm's two construction sites pass its
+# validator and schema loader (`corpuslm.schemas`) themselves; `client()` does the same for tests.
+Client = _llmlm.Client
 
-class Client(_llmlm.Client):
-    """llmlm's client with corpuslm's validator and schema loader as the defaults."""
 
-    def __init__(self, *args, validator=None, schema_loader=None, **kwargs):
-        super().__init__(
-            *args,
-            validator=validator if validator is not None else schemas.validate,
-            schema_loader=schema_loader if schema_loader is not None else schemas.schema,
-            **kwargs,
-        )
+def client(*args, validator=None, schema_loader=None, **kwargs) -> Client:
+    """llmlm's client with corpuslm's reply validator and schema loader as the defaults."""
+    return Client(
+        *args,
+        validator=validator if validator is not None else schemas.validate,
+        schema_loader=schema_loader if schema_loader is not None else schemas.schema,
+        **kwargs,
+    )
 
 
 __all__ = [
@@ -90,6 +93,7 @@ __all__ = [
     "TruncatedReply",
     "VendorError",
     "check_temperatures",
+    "client",
     "default_transport",
     "model_profile",
     "payload_sha256",
