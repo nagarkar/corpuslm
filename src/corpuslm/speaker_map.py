@@ -63,6 +63,9 @@ class SpeakerScheme:
     fixed_labels: bool  # labels come from the source; a model may not assign or change them
     review_key_prefix: str = "spk"  # review keys are `<prefix>-N`
     source_id_key: str = "video_id"  # the map's key for the source's id (stored bytes)
+    # The claims prompt for sources that use this scheme (corpuslm.claims): the Bee variant also
+    # extracts directives; ytlm's `claims` is untouched.
+    claims_prompt_id: str = "claims"
 
 
 def ordered_labels(scheme: SpeakerScheme, present: Iterable[str]) -> list[str]:
@@ -205,7 +208,14 @@ def bee_scheme(owner_first_name: str) -> SpeakerScheme:
         prompt_id="cleanup_bee",
         fixed_labels=True,
         source_id_key="source_id",
+        claims_prompt_id="claims_bee",
     )
+
+
+def claims_prompt_id(kind: str) -> str:
+    """The claims prompt a source kind uses: the Bee scheme's variant for `bee`, ytlm's
+    `claims` for every other kind (YouTube, Vimeo, file, text)."""
+    return bee_scheme("").claims_prompt_id if kind == "bee" else YOUTUBE.claims_prompt_id
 
 
 def _host_is_the_channel(label: str, source_row: dict) -> str | None:

@@ -79,6 +79,7 @@ def test_review_serve_dry_run_starts_nothing_and_names_the_url(config, capsys):
     assert (
         code == 0 and board["url"] == f"http://127.0.0.1:{port}/" and board["answers_waiting"] == 0
     )
+    assert board["directives_url"] == f"http://127.0.0.1:{port}/directives"
     with socket.socket() as probe:  # the port is still free
         probe.bind(("127.0.0.1", port))
 

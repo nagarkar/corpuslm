@@ -827,7 +827,8 @@ class Store:
         return [
             dict(row) | {"segments": loads(row["segments"], [])}
             for row in self.db.all(
-                f"SELECT * FROM claims WHERE kind = 'directive'{where} ORDER BY source_id, position",
+                f"SELECT * FROM claims WHERE kind = 'directive'{where} "
+                "ORDER BY source_id, position",
                 () if source_id is None else (source_id,),
             )
         ]

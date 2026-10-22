@@ -130,10 +130,39 @@ def test_the_claims_and_llm_tables_are_read_and_are_optional(tmp_path):
     assert settings.claims.section_chars == review_settings.DEFAULT_SECTION_CHARS
     assert settings.claims.workspace == tmp_path / "corpuslm"
     assert settings.llm == {"max_usd_per_run": 1.5}
+    assert settings.claims.directive_threshold == 0.6 and settings.jev is None
     assert settings.client_config() == {
         "llm": {"max_usd_per_run": 1.5},
-        "claims": {"model": "gemini/gemini-2.5-flash-lite", "section_chars": 6000},
+        "claims": {
+            "model": "gemini/gemini-2.5-flash-lite",
+            "section_chars": 6000,
+            "owner_first_name": "Quill",  # [kinds.bee] of the file
+            "directive_threshold": 0.6,
+        },
     }
+
+
+def _threshold(value: str) -> str:
+    return CLAIMS.replace("[llm]", f"directive_threshold = {value}\n[llm]")
+
+
+def test_the_directive_threshold_and_jev_table_are_read(tmp_path):
+    settings = review_settings.load(
+        write(tmp_path, GOOD + _threshold("0.75") + "[jev]\nmodel = 'jev-2'\n")
+    )
+    assert settings.claims.directive_threshold == 0.75 and settings.jev.model == "jev-2"
+    config = settings.client_config()
+    assert config["jev"] == {"model": "jev-2"}
+    assert config["claims"]["owner_first_name"] == "Quill"
+    assert config["claims"]["directive_threshold"] == 0.75
+    bare = review_settings.load(write(tmp_path, GOOD + "[jev]\n"))
+    assert bare.jev.model == review_settings.DEFAULT_JEV_MODEL
+    for addition, message in (
+        (_threshold("2"), "from 0 to 1"),
+        ("[jev]\nmodel = 'x'\nfoo = 1\n", "unknown key 'foo'"),
+    ):
+        with pytest.raises(SettingsError, match=message):
+            review_settings.load(write(tmp_path, GOOD + addition))
 
 
 @pytest.mark.parametrize(

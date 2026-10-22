@@ -18,9 +18,18 @@ reply cache alone and calls no model.
 keeping each digest's own provenance as the artifact's inputs under `imported_from`; such a source
 reads `imported` in `status` and is never rebuilt until the owner asks.
 
+The prompt is chosen by the source kind as the cleanup prompt is (`speaker_map.claims_prompt_id`):
+ytlm's `claims` for YouTube, Vimeo, file and text sources, untouched; `claims_bee` for Bee
+sources, which also extracts directives by the conversation's form (corpuslm.form) and receives
+the form and the owner's first name (`[claims].owner_first_name`). The form is a build input of
+a Bee source, so a reclassified source reads stale.
+
 Never imports: cli, clikit. Reads the database only through `Store`.
 
 Decisions:
+- A claims prompt variant per source kind, chosen by the kind as the cleanup prompt is; ytlm's
+  prompt is untouched. (owner, 2026-10-21) Enforced by:
+  tests/test_directives.py::test_a_bee_source_uses_the_bee_prompt_and_a_video_the_plain_one.
 - Links between claims are out of bounds: a wrong stored link poisons every later pass, and
   verifying them is combinatorial. Reasoning lives in the perspective sheet and in each recipe
   run's output. (owner)
@@ -40,7 +49,8 @@ Decisions:
 Terms:
 - **claim**: one short sentence (25 words or fewer) restating one thing a source says, with its
   kind and the segment positions that support it; a row of `claims`.
-- **claim kind**: assertion, definition, example, story, question, prediction, disagreement.
+- **claim kind**: assertion, definition, example, story, question, prediction, disagreement,
+  directive (corpuslm.directives; the Bee prompt only).
 - **claim pass**: the model calls per source that list its claims, one per section.
 - **section**: the span of a source's segments one claim-pass call reads, about
   `section_chars` characters; a text source's sections follow its headings
@@ -56,7 +66,11 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import llm, prompts, text_source
+from . import directives as directives_module
+from . import events as events_module
+from . import form as form_module
+from . import judge as judge_module
+from . import llm, prompts, speaker_map, text_source
 from .identity import canonical_sha256
 from .store import Store
 
@@ -71,20 +85,28 @@ SOURCE_LABELS = {
     "text": "a text",
 }
 IMPORTED_FROM = "ytlm.digest"
+UNKNOWN_FORM = "unknown"  # a Bee source not yet classified: the prompt reads it as company
 
 
-def prompt() -> prompts.Prompt:
-    return prompts.load("claims")
+def prompt(kind: str = "youtube") -> prompts.Prompt:
+    """The claims prompt of a source kind: the Bee variant (`claims_bee`, which also extracts
+    directives) for `bee`, ytlm's `claims` for every other kind."""
+    return prompts.load(speaker_map.claims_prompt_id(kind))
 
 
 def settings(config: dict) -> dict:
-    """`[claims]` of the settings: the model and the section size."""
+    """`[claims]` of the settings: the model, the section size, the owner's first name (for the
+    Bee prompt) and the directive gate's threshold."""
     section = config.get("claims") or {}
     if not section.get("model"):
         raise llm.NotConfigured("[claims].model is missing from the settings file")
     return {
         "model": str(section["model"]),
         "section_chars": int(section.get("section_chars", SECTION_CHARS)),
+        "owner_first_name": str(section.get("owner_first_name") or ""),
+        "directive_threshold": float(
+            section.get("directive_threshold", directives_module.DEFAULT_THRESHOLD)
+        ),
     }
 
 
@@ -130,14 +152,27 @@ def text_sha256(segments: list[dict]) -> str:
     )
 
 
+def form_of(store: Store, source_row: dict) -> str:
+    """The form the Bee prompt reads (corpuslm.form), `unknown` until classified; `''` for every
+    other kind, whose prompt has no form."""
+    if source_row.get("kind") != "bee":
+        return ""
+    return form_module.label_of(store, source_row["id"]) or UNKNOWN_FORM
+
+
 def inputs(store: Store, source_id: str, config: dict) -> dict:
     found = settings(config)
-    return {
+    row = store.source(source_id) or {"id": source_id, "kind": "youtube"}
+    record = {
         "text": text_sha256(store.best_segments(source_id)),
-        "prompt": prompt().sha256,
+        "prompt": prompt(row["kind"]).sha256,
         "model": found["model"],
         "section_chars": found["section_chars"],
     }
+    if row["kind"] == "bee":
+        # the form decides what the Bee prompt extracts, so a change rebuilds
+        record["form"] = form_of(store, row)
+    return record
 
 
 def build_key(inputs_record: dict) -> str:
@@ -151,13 +186,23 @@ def _lines(segments: list[dict]) -> str:
     )
 
 
-def _variables(source_row: dict, section_index: int, total: int, part: list[dict]) -> dict:
+def _variables(
+    source_row: dict,
+    section_index: int,
+    total: int,
+    part: list[dict],
+    *,
+    form: str = "",
+    owner: str = "",
+) -> dict:
     return {
         "source_label": SOURCE_LABELS.get(source_row["kind"], "a source"),
         "title": source_row.get("title") or "(untitled)",
         "date": (source_row.get("published_at") or "")[:10] or "(unknown)",
         "section": f"{section_index + 1} of {total}",
         "transcript": _lines(part),
+        "form": form or UNKNOWN_FORM,
+        "owner": owner or "(the owner)",
     }
 
 
@@ -244,17 +289,21 @@ def estimate(store: Store, client: llm.Client, source_ids: list[str]) -> Estimat
         if not parts:
             continue
         sources += 1
+        chosen = prompt(row["kind"])
+        extra = {"form": form_of(store, row), "owner": found["owner_first_name"]}
         missed = [
             part
             for section_index, part in enumerate(parts)
-            if client.lookup(STAGE, prompt(), _variables(row, section_index, len(parts), part))
+            if client.lookup(
+                STAGE, chosen, _variables(row, section_index, len(parts), part, **extra)
+            )
             is None
         ]
         if not missed:
             from_cache += 1
             continue
         calls += len(missed)
-        tokens_in += sum(_estimate_tokens(prompt().body + _lines(part)) for part in missed)
+        tokens_in += sum(_estimate_tokens(chosen.body + _lines(part)) for part in missed)
     tokens_out = int(tokens_in * ASSUMED_OUTPUT_PER_INPUT)
     return Estimate(
         sources,
@@ -289,10 +338,20 @@ def record_failed(store: Store, source_id: str, reason: str, *, created_by: str)
 
 
 def build(
-    store: Store, client: llm.Client, source_id: str, *, created_by: str, run_id: str = ""
+    store: Store,
+    client: llm.Client,
+    source_id: str,
+    *,
+    created_by: str,
+    run_id: str = "",
+    judge: judge_module.Judge | None = None,
+    events: events_module.Events | None = None,
 ) -> dict:
     """Ask the model section by section, check every cited segment, store the claims and the
-    artifact. Returns counts only."""
+    artifact. A Bee source's directives pass the form rule and, in a monologue, Jev's gate
+    (corpuslm.directives; `judge` None leaves a monologue's candidates ungated and says so).
+    Once the transaction commits, `claims.built` is published to `events` (corpuslm.events).
+    Returns counts only."""
     row = store.source(source_id)
     if row is None:
         raise KeyError(f"unknown source {source_id!r}")
@@ -303,12 +362,15 @@ def build(
     claims: list[dict] = []
     dropped = 0
     replies = []
+    chosen = prompt(row["kind"])
+    form = form_of(store, row)
+    extra = {"form": form, "owner": found["owner_first_name"]}
     for section_index, part in enumerate(parts):
         first, last = part[0]["idx"], part[-1]["idx"]
         reply = client.complete(
             STAGE,
-            prompt(),
-            _variables(row, section_index, len(parts), part),
+            chosen,
+            _variables(row, section_index, len(parts), part, **extra),
             tag=_tag(source_id, section_index),
         )
         replies.append(reply)
@@ -330,11 +392,27 @@ def build(
                     "text": " ".join(claim["statement"].split()),
                     "kind": claim["kind"],
                     "speaker": claim["speaker"].strip(),
+                    **{
+                        key: claim[key]
+                        for key in ("addressee", "heard", "else_kind")
+                        if claim.get(key) is not None
+                    },
                 }
             )
+    gate_stats: dict = {}
+    if row["kind"] == "bee":
+        claims, gate_stats = directives_module.gate(
+            judge,
+            claims,
+            form=form,
+            threshold=found["directive_threshold"],
+            tag_prefix=source_id,
+        )
+    else:
+        claims = [directives_module._without_directive_fields(claim) for claim in claims]
     inputs_record = inputs(store, source_id, client.config)
     key = build_key(inputs_record)
-    cost = sum(reply.cost_usd or 0.0 for reply in replies)
+    cost = sum(reply.cost_usd or 0.0 for reply in replies) + gate_stats.get("cost_usd", 0.0)
     with store.transaction():
         written = store.replace_claims(
             source_id, claims, build_key=key, run_id=run_id, created_by=created_by
@@ -348,21 +426,31 @@ def build(
             inputs=inputs_record,
             provenance={
                 "stage": STAGE,
-                "prompt_id": prompt().id,
-                "prompt_version": prompt().version,
+                "prompt_id": chosen.id,
+                "prompt_version": chosen.version,
                 "model": found["model"],
                 "sections": len(parts),
                 "tokens_in": sum(reply.tokens_in for reply in replies),
                 "tokens_out": sum(reply.tokens_out for reply in replies),
                 "cost_usd": round(cost, 6),
                 "cached": all(reply.cached for reply in replies),
+                **({"form": form, "directives": gate_stats} if gate_stats else {}),
             },
             created_by=created_by,
         )
+    events_module.publish(
+        events,
+        events_module.CLAIMS_BUILT,
+        {"source": source_id},
+        {"claims": written, "directives": gate_stats.get("directives", 0)},
+    )
     return {
         "source": source_id,
         "sections": len(parts),
         "claims": written,
+        "directives": gate_stats.get("directives", 0),
+        "directives_demoted": gate_stats.get("demoted", 0),
+        "gate": gate_stats.get("gate", "none"),
         "dropped": dropped,
         "cached": all(reply.cached for reply in replies) if replies else True,
         "cost_usd": round(cost, 6),

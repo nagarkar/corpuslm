@@ -104,9 +104,12 @@ def test_build_stores_claims_tied_to_segments_drops_strays_and_records_the_artif
     }
     artifact = world.store.artifact(SOURCE, claims.NODE)
     assert artifact["state"] == "built"
-    assert set(json.loads(artifact["inputs"])) == {"text", "prompt", "model", "section_chars"}
+    assert set(json.loads(artifact["inputs"])) == {
+        "text", "prompt", "model", "section_chars", "form",
+    }  # fmt: skip
     provenance = json.loads(artifact["provenance"])
-    assert provenance["sections"] == 2 and provenance["prompt_id"] == "claims"
+    assert provenance["sections"] == 2 and provenance["prompt_id"] == "claims_bee"
+    assert provenance["form"] == "unknown"  # a Bee source: the Bee prompt, unclassified
     (entry,) = claims.status(world.store, world.config, [SOURCE])
     assert (entry.state, entry.claims, entry.reason) == ("current", 3, "")
 

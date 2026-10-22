@@ -43,6 +43,7 @@ from __future__ import annotations
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 
+from . import events as events_module
 from . import review_rebuilders
 from .review_page import (
     KindSetup,
@@ -87,9 +88,12 @@ def apply(
     only_kinds: Collection[str] | None = None,
     dry_run: bool = False,
     rebuilders: Mapping[str, Rebuilder] | None = None,
+    events: events_module.Events | None = None,
 ) -> ApplyReport:
     """Land the saved answers of the corpora that have a source of one of `only_kinds` (default:
-    every kind in `kinds`). Returns counts only."""
+    every kind in `kinds`). Once every landing has committed (and the kind's rebuilder has run),
+    `speaker.landed` is published to `events` for each source whose speaker answer landed
+    (corpuslm.events). Returns counts only."""
     store = Store(db)
     allowed = {name for name in kinds if only_kinds is None or name in set(only_kinds)}
     # Kinds whose answers need the tool's rebuilder, and it is not here: nothing of theirs lands.
@@ -172,6 +176,14 @@ def apply(
             rebuild = (rebuilders or {}).get(kind_name)
             if rebuild:
                 rebuilt += rebuild(sources)
+        for kind_name, sources in sorted(speaker_sources.items()):
+            for source_id in sorted(sources):
+                events_module.publish(
+                    events,
+                    events_module.SPEAKER_LANDED,
+                    {"source": source_id},
+                    {"kind": kind_name, "rebuilt": kind_name in (rebuilders or {})},
+                )
     return ApplyReport(
         **totals,
         speaker_maps_rebuilt=rebuilt,

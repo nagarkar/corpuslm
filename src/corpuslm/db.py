@@ -203,7 +203,8 @@ DIRECTIVES_TABLES = f"""CREATE TABLE IF NOT EXISTS directive_verdicts (
     applied_at TEXT NOT NULL
 ) STRICT;
 
-CREATE INDEX IF NOT EXISTS directive_verdicts_slot ON directive_verdicts (source_id, subject_sha256);
+CREATE INDEX IF NOT EXISTS directive_verdicts_slot
+    ON directive_verdicts (source_id, subject_sha256);
 """
 
 DIRECTIVES_VIEW = """
