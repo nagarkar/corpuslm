@@ -339,6 +339,50 @@ def test_a_moment_verdict_lands_through_the_api(corpora, documents):
         database.close()
 
 
+def test_a_directive_verdict_and_a_form_ruling_land_through_the_api(corpora, documents):
+    path = corpora[0]
+    database = db.Database(path)
+    store = Store(database)
+    store.add_source(BEE_SOURCE, "l", created_by="test", kind="bee")
+    store.replace_claims(
+        BEE_SOURCE,
+        [{"section": 0, "segments": [0], "text": "Call Wren.", "kind": "directive",
+          "addressee": "computer", "heard": "Computer, call Wren"}],
+        build_key="k",
+        created_by="test",
+    )  # fmt: skip
+    (made,) = store.directives(BEE_SOURCE)
+    database.close()
+    httpd = review_server.make_server(
+        "127.0.0.1", 0, page=lambda: "<title>page</title>", answers=documents
+    )
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, body = call(httpd, "directive_verdict", {"id": made["id"], "verdict": "confirm"})
+        assert status == 200 and body["result"] == {"id": made["id"], "verdict": "confirm"}
+        status, body = call(httpd, "directive_verdict", {"id": made["id"], "verdict": "later"})
+        assert status == 400 and "confirm or decline" in body["error"]
+        status, _ = call(httpd, "directive_verdict", {"id": "clm-nope", "verdict": "confirm"})
+        assert status == 404
+        status, body = call(httpd, "form_verdict", {"source": BEE_SOURCE, "label": "dialogue"})
+        assert status == 200 and body["result"] == {"source": BEE_SOURCE, "label": "dialogue"}
+        status, body = call(httpd, "form_verdict", {"source": BEE_SOURCE, "label": "song"})
+        assert status == 400 and "monologue, dialogue, group, media" in body["error"]
+        status, _ = call(httpd, "form_verdict", {"source": "bee:404", "label": "media"})
+        assert status == 404
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+    database = db.Database(path)
+    try:
+        store = Store(database)
+        assert list(store.current_directive_verdicts(BEE_SOURCE).values()) == ["confirm"]
+        assert store.source_form(BEE_SOURCE)["label"] == "dialogue"
+    finally:
+        database.close()
+
+
 def test_several_moments_are_ruled_at_once_or_not_at_all(corpora, documents):
     path = corpora[0]
     database = db.Database(path)

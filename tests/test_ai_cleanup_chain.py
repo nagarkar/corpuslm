@@ -188,6 +188,34 @@ def test_the_shape_names_the_node_the_stage_and_the_inputs(world):
     assert [json.loads(line)["stage"] for line in lines] == ["model_cleanup"] * len(world.batches())
 
 
+def test_source_cleaned_is_published_once_the_artifact_is_committed(world):
+    from eventlm.events import Events
+
+    bus = Events.fake()
+    try:
+        seen = {}
+        real_publish = bus.publish
+
+        def publish(producer, kind, subject=None, facts=None):
+            seen["row"] = world.row() is not None
+            seen["in_transaction"] = world.database.conn.in_transaction
+            return real_publish(producer, kind, subject, facts)
+
+        bus.publish = publish  # type: ignore[method-assign]
+        script_all(world)
+        assert world.build(events=bus) is not None
+        (event,) = bus.tail()
+        assert (event.producer, event.kind, event.subject) == (
+            "corpuslm", "source.cleaned", {"source": SOURCE},
+        )  # fmt: skip
+        assert set(event.facts) == {"edits", "ambiguities", "replayed"}
+        assert seen == {"row": True, "in_transaction": False}
+        # a build that is current publishes nothing again
+        assert world.build(events=bus) is not None and len(bus.tail()) == 1
+    finally:
+        bus.close()
+
+
 def test_a_second_build_asks_nothing_and_rewrites_nothing(world):
     script_all(world)
     first = world.build()

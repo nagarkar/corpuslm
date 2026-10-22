@@ -8,7 +8,9 @@ version = "0.1.0"
 description = "The source-agnostic transcript corpus core shared by ytlm and beelm; owns the shared database schema"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+# eventlm (the common events database on this Mac, ~/workspace/repos/eventlm) is installed
+# editable from its checkout before this package: `pip install -e ../eventlm -e ".[dev]"`.
+dependencies = ["eventlm"]
 
 [project.optional-dependencies]
 # Shared transcript cleanup (corpuslm.transcript, corpuslm.basic_cleanup): the spell
@@ -56,6 +58,7 @@ select = ["E", "F", "I", "B", "UP"]
 "src/corpuslm/moments_page.py" = ["E501"]
 "src/corpuslm/teleprompter_page.py" = ["E501"]
 "src/corpuslm/monologue_page.py" = ["E501"]
+"src/corpuslm/directives_page.py" = ["E501"]
 
 [tool.pyright]
 include = ["src"]

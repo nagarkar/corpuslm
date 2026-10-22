@@ -40,7 +40,7 @@ from .identity import canonical_sha256  # noqa: F401  (re-exported: db.canonical
 
 # PRAGMA user_version of the schema below. 0 is a database made before the
 # version was tracked (the v1 schema, frozen in tests/fixtures/schema_v1.sql).
-USER_VERSION = 17
+USER_VERSION = 18
 
 BACKUPS_DIRNAME = "backups"
 # How many verified backups `<workspace>/backups/` keeps (owner ruling
@@ -163,7 +163,13 @@ CLAIM_KINDS = (
     "question",
     "prediction",
     "disagreement",
+    "directive",  # an instruction or commitment the owner spoke (corpuslm.claims, Bee prompt)
 )
+
+# Whom a directive addresses: `computer` when the utterance addresses the wake word "Computer"
+# (for computerlm), `self` for any other imperative (a note to the owner). NULL on every other
+# claim kind.
+DIRECTIVE_ADDRESSEES = ("computer", "self")
 
 # The claims of a source (corpuslm.claims): derived state, rebuilt whole per source.
 CLAIMS_TABLE = f"""CREATE TABLE IF NOT EXISTS claims (
@@ -177,10 +183,34 @@ CLAIMS_TABLE = f"""CREATE TABLE IF NOT EXISTS claims (
     speaker TEXT NOT NULL DEFAULT '',
     build_key TEXT NOT NULL,
     run_id TEXT NOT NULL DEFAULT '',
+    addressee TEXT CHECK (addressee IS NULL OR addressee IN ('computer', 'self')),
+    heard TEXT,
     UNIQUE (source_id, position)
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS claims_source ON claims (source_id);
+"""
+
+# Directive verdicts (corpuslm.directives): the owner's ruling on a directive claim, append-only,
+# keyed by the directive's subject (source, the words as heard, the addressee) so a rebuild
+# that extracts the same directive keeps its ruling.
+DIRECTIVES_TABLES = f"""CREATE TABLE IF NOT EXISTS directive_verdicts (
+    {KNOWLEDGE_OBJECT_COLUMNS},
+    source_id TEXT NOT NULL REFERENCES sources(id),
+    subject_sha256 TEXT NOT NULL CHECK (length(subject_sha256) = 64),
+    verdict TEXT NOT NULL CHECK (verdict IN ('confirm', 'decline')),
+    source TEXT NOT NULL DEFAULT 'phone page' CHECK (source IN ('review file', 'phone page')),
+    applied_at TEXT NOT NULL
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS directive_verdicts_slot
+    ON directive_verdicts (source_id, subject_sha256);
+"""
+
+DIRECTIVES_VIEW = """
+CREATE VIEW IF NOT EXISTS vw_current_directive_verdicts AS
+SELECT * FROM directive_verdicts
+WHERE rowid IN (SELECT max(rowid) FROM directive_verdicts GROUP BY source_id, subject_sha256);
 """
 
 # Concepts (corpuslm.concepts): the lexicon derived from claims. `concepts` and `claim_concepts`
@@ -582,6 +612,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS segments_fts USING fts5(
 {MONOLOGUES_TABLES}
 
 {LINE_SPEAKERS_TABLES}
+
+{DIRECTIVES_TABLES}
 """
 
 # Master data: every column whose change is written to change_log by trigger.
@@ -625,6 +657,7 @@ APPEND_ONLY = (
     "concept_verdicts",
     "moment_verdicts",
     "line_speaker_verdicts",
+    "directive_verdicts",
 )
 
 
@@ -730,6 +763,7 @@ WHERE rowid IN (SELECT max(rowid) FROM corrections GROUP BY span_norm);
     + CONCEPTS_VIEW
     + MOMENTS_VIEW
     + LINE_SPEAKERS_VIEW
+    + DIRECTIVES_VIEW
 )
 
 TRIGGERS = _triggers()
@@ -815,6 +849,7 @@ OWNER_TABLES = (
     "concept_verdicts",
     "moment_verdicts",
     "line_speaker_verdicts",
+    "directive_verdicts",
 )
 
 
@@ -1007,6 +1042,18 @@ def _v16_to_v17_script(connection: sqlite3.Connection) -> list[str]:
     return _rebuild_sources_script(connection, "sources_v17")
 
 
+def _v17_to_v18_script(connection: sqlite3.Connection) -> list[str]:
+    """nagarkar/corpuslm#86: `claims` is rebuilt from `CLAIMS_TABLE` so its `kind` CHECK allows
+    `directive` and it carries the nullable `addressee` and `heard` columns (every existing row
+    keeps its values and NULL in both new columns); the directive verdict table appears empty
+    with its view and append-only trigger (the rebuild re-creates every view and trigger from
+    SCHEMA, so they come with it)."""
+    return [
+        *_statements(DIRECTIVES_TABLES),
+        *_rebuild_table_script(connection, "claims", CLAIMS_TABLE, "claims_v18"),
+    ]
+
+
 def _v15_to_v16_script() -> list[str]:
     """Additive: the line-speaker tables (empty), their view and the append-only trigger of
     `line_speaker_verdicts` (`corpuslm speakers attribute` and the review page fill them)."""
@@ -1059,11 +1106,22 @@ def _v10_to_v11_script(connection: sqlite3.Connection) -> list[str]:
 
 
 def _rebuild_sources_script(connection: sqlite3.Connection, scratch_name: str) -> list[str]:
-    """Rebuild `sources` from `SOURCES_TABLE` (a CHECK cannot be altered in place): a new table
-    under `scratch_name`, every row copied by column name, the old table dropped, the new one
-    renamed. Triggers and views are dropped first and rebuilt from SCHEMA, because SQLite refuses
-    to rename while a trigger or view names a table that is gone. The caller runs this inside one
-    transaction with foreign keys off and checks `foreign_key_check` before COMMIT."""
+    return _rebuild_table_script(connection, "sources", SOURCES_TABLE, scratch_name)
+
+
+def _rebuild_table_script(
+    connection: sqlite3.Connection, table: str, create_sql: str, scratch_name: str
+) -> list[str]:
+    """Rebuild `table` from its CREATE statement (a CHECK cannot be altered in place): a new
+    table under `scratch_name`, every row copied by the column names the old table has (a column
+    the new table adds reads NULL or its default), the old table dropped, the new one renamed.
+    Triggers and views are dropped first and rebuilt from SCHEMA, because SQLite refuses to
+    rename while a trigger or view names a table that is gone. The caller runs this inside one
+    transaction with foreign keys off and checks `foreign_key_check` before COMMIT. A table an
+    earlier step of the same transaction creates is not there yet when the script is built: it
+    is created from SCHEMA in its new shape, so nothing is rebuilt."""
+    if table not in _tables(connection):
+        return _statements(create_sql)
     drops = [
         f"DROP TRIGGER IF EXISTS {name};"
         for (name,) in connection.execute("SELECT name FROM sqlite_master WHERE type = 'trigger'")
@@ -1072,21 +1130,25 @@ def _rebuild_sources_script(connection: sqlite3.Connection, scratch_name: str) -
         f"DROP VIEW IF EXISTS {name};"
         for (name,) in connection.execute("SELECT name FROM sqlite_master WHERE type = 'view'")
     ]
-    made = SOURCES_TABLE.replace(
-        "CREATE TABLE IF NOT EXISTS sources (", f"CREATE TABLE {scratch_name} ("
+    create_sql = create_sql.strip()
+    made = create_sql.replace(
+        f"CREATE TABLE IF NOT EXISTS {table} (", f"CREATE TABLE {scratch_name} (", 1
     )
+    made = made[: made.index(") STRICT;") + len(") STRICT;")]
     scratch = sqlite3.connect(":memory:")
     try:
         scratch.execute(made)
-        columns = ", ".join(row[1] for row in scratch.execute(f"PRAGMA table_info({scratch_name})"))
+        new_columns = [row[1] for row in scratch.execute(f"PRAGMA table_info({scratch_name})")]
     finally:
         scratch.close()
+    old_columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+    columns = ", ".join(column for column in new_columns if column in old_columns)
     return [
         *drops,
         made,
-        f"INSERT INTO {scratch_name} ({columns}) SELECT {columns} FROM sources ORDER BY rowid;",
-        "DROP TABLE sources;",
-        f"ALTER TABLE {scratch_name} RENAME TO sources;",
+        f"INSERT INTO {scratch_name} ({columns}) SELECT {columns} FROM {table} ORDER BY rowid;",
+        f"DROP TABLE {table};",
+        f"ALTER TABLE {scratch_name} RENAME TO {table};",
         *_statements(SCHEMA),
     ]
 
@@ -1291,9 +1353,10 @@ def migrate(connection: sqlite3.Connection, db_path: Path) -> dict:
         return {"from": version, "to": USER_VERSION, "backup": None, "created": True}
     saved = backup(connection, db_path, label=f"before-v{USER_VERSION}")
     deleted = prune_backups(db_path)  # only after the new one verified
-    if version in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16):
+    if version in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17):
         # From v8 on, every step checks every table's row count (the v8 -> v9, v10 -> v11 and
-        # v16 -> v17 steps rebuild `sources`; the additive steps may change nothing else).
+        # v16 -> v17 steps rebuild `sources`, the v17 -> v18 step rebuilds `claims`; the
+        # additive steps may change nothing else).
         watched = (
             sorted(table for table in _tables(connection) if not table.startswith("sqlite_"))
             if version >= 8
@@ -1315,7 +1378,8 @@ def migrate(connection: sqlite3.Connection, db_path: Path) -> dict:
                 *(_v13_to_v14_script() if version <= 13 else []),
                 *(_v14_to_v15_script() if version <= 14 else []),
                 *(_v15_to_v16_script() if version <= 15 else []),
-                *_v16_to_v17_script(column),
+                *(_v16_to_v17_script(column) if version <= 16 else []),
+                *_v17_to_v18_script(column),
             ]
 
         if not _run_in_transaction(

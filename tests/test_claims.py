@@ -104,9 +104,12 @@ def test_build_stores_claims_tied_to_segments_drops_strays_and_records_the_artif
     }
     artifact = world.store.artifact(SOURCE, claims.NODE)
     assert artifact["state"] == "built"
-    assert set(json.loads(artifact["inputs"])) == {"text", "prompt", "model", "section_chars"}
+    assert set(json.loads(artifact["inputs"])) == {
+        "text", "prompt", "model", "section_chars", "form",
+    }  # fmt: skip
     provenance = json.loads(artifact["provenance"])
-    assert provenance["sections"] == 2 and provenance["prompt_id"] == "claims"
+    assert provenance["sections"] == 2 and provenance["prompt_id"] == "claims_bee"
+    assert provenance["form"] == "unknown"  # a Bee source: the Bee prompt, unclassified
     (entry,) = claims.status(world.store, world.config, [SOURCE])
     assert (entry.state, entry.claims, entry.reason) == ("current", 3, "")
 
@@ -248,8 +251,10 @@ def test_replace_claims_rebuilds_whole_and_counts_by_kind(world):
 
 
 def test_the_claim_kinds_are_the_reply_schemas_enum():
-    enum = schemas.schema("claims_reply")["properties"]["claims"]["items"]["properties"]["kind"]
-    assert list(db.CLAIM_KINDS) == enum["enum"]
+    properties = schemas.schema("claims_reply")["properties"]["claims"]["items"]["properties"]
+    assert list(db.CLAIM_KINDS) == properties["kind"]["enum"]
+    assert properties["addressee"]["enum"] == list(db.DIRECTIVE_ADDRESSEES)
+    assert properties["else_kind"]["enum"] == [k for k in db.CLAIM_KINDS if k != "directive"]
 
 
 # ---- ytlm's digests ----------------------------------------------------------------------
@@ -353,8 +358,8 @@ def test_a_version_9_database_gains_the_claims_table_after_a_verified_backup(tmp
     connection.close()
     opened = db.Database(path)
     try:
-        assert opened.migration["from"] == 9 and opened.migration["to"] == db.USER_VERSION == 17
-        assert opened.migration["backup"].endswith("-before-v17.sqlite")
+        assert opened.migration["from"] == 9 and opened.migration["to"] == db.USER_VERSION == 18
+        assert opened.migration["backup"].endswith("-before-v18.sqlite")
         assert opened.one("PRAGMA integrity_check")[0] == "ok"
         assert opened.one("SELECT COUNT(*) FROM claims")[0] == 0
         assert opened.one("SELECT COUNT(*) FROM segments")[0] == len(SEGMENTS)
@@ -371,3 +376,99 @@ def test_a_version_9_database_gains_the_claims_table_after_a_verified_backup(tmp
     copy = sqlite3.connect(opened.migration["backup"])
     assert copy.execute("PRAGMA user_version").fetchone()[0] == 9
     copy.close()
+
+
+# ---- the v17 -> v18 step ------------------------------------------------------------------
+
+
+def test_a_version_17_database_keeps_its_claims_and_gains_directives_after_a_verified_backup(
+    tmp_path,
+):
+    """nagarkar/corpuslm#86: the step rebuilds `claims` with the kind `directive` and the
+    nullable `addressee` and `heard` columns; every existing row keeps its values, with NULL in
+    both new columns, and the directive verdict table appears empty."""
+    path = tmp_path / "transcript.sqlite"
+    first = db.Database(path)
+    store = Store(first)
+    store.add_source(SOURCE, "l", created_by="test", kind="bee")
+    store.replace_segments(SOURCE, SEGMENTS)
+    store.replace_claims(
+        SOURCE,
+        [{"section": 0, "segments": [0], "text": "One.", "kind": "assertion", "speaker": "Quill"}],
+        build_key="k",
+        created_by="test",
+    )
+    first.close()
+    connection = sqlite3.connect(path)
+    # the v17 shape of `claims`: seven kinds, no addressee or heard
+    v17_claims = (
+        db.CLAIMS_TABLE.replace(", 'directive'", "")
+        .replace(
+            "    addressee TEXT CHECK (addressee IS NULL OR addressee IN ('computer', 'self')),\n"
+            "    heard TEXT,\n",
+            "",
+        )
+        .replace("CREATE TABLE IF NOT EXISTS claims (", "CREATE TABLE claims_v17 (")
+    )
+    v17_claims = v17_claims[: v17_claims.index(") STRICT;") + len(") STRICT;")]
+    columns = (
+        "id, version, created_at, created_by, schema_version, metadata, source_id, "
+        "position, section, segments, text, kind, speaker, build_key, run_id"
+    )
+    for statement in (
+        "PRAGMA foreign_keys = OFF",
+        "DROP VIEW vw_current_directive_verdicts",
+        "DROP TRIGGER directive_verdicts_no_update",
+        "DROP TRIGGER directive_verdicts_no_delete",
+        "DROP INDEX directive_verdicts_slot",
+        "DROP TABLE directive_verdicts",
+        v17_claims,
+        f"INSERT INTO claims_v17 ({columns}) SELECT {columns} FROM claims",
+        "DROP TABLE claims",
+        "ALTER TABLE claims_v17 RENAME TO claims",
+        "CREATE INDEX claims_source ON claims (source_id)",
+        "PRAGMA user_version = 17",
+    ):
+        connection.execute(statement)
+    assert (
+        "directive"
+        not in connection.execute("SELECT sql FROM sqlite_master WHERE name = 'claims'").fetchone()[
+            0
+        ]
+    )
+    connection.commit()
+    connection.close()
+    opened = db.Database(path)
+    try:
+        assert opened.migration["from"] == 17 and opened.migration["to"] == db.USER_VERSION == 18
+        assert opened.migration["backup"].endswith("-before-v18.sqlite")
+        assert opened.one("PRAGMA integrity_check")[0] == "ok"
+        assert opened.all("PRAGMA foreign_key_check") == []
+        assert opened.one("SELECT COUNT(*) FROM directive_verdicts")[0] == 0
+        rows = opened.all("SELECT text, kind, speaker, addressee, heard FROM claims")
+        assert [tuple(row) for row in rows] == [("One.", "assertion", "Quill", None, None)]
+        store = Store(opened)
+        store.replace_claims(
+            SOURCE,
+            [
+                {"section": 0, "segments": [0], "text": "One.", "kind": "assertion"},
+                {"section": 0, "segments": [2], "text": "Choose again.", "kind": "directive",
+                 "addressee": "self", "heard": "so you choose again"},
+            ],
+            build_key="k2",
+            created_by="test",
+        )  # fmt: skip
+        assert store.claim_count(SOURCE) == 2
+        assert [row["kind"] for row in store.claims(SOURCE)] == ["assertion"]
+        (directive,) = store.directives(SOURCE)
+        assert (directive["addressee"], directive["heard"]) == ("self", "so you choose again")
+        with pytest.raises(sqlite3.IntegrityError):
+            store.replace_claims(
+                SOURCE,
+                [{"section": 0, "segments": [0], "text": "x", "kind": "directive",
+                  "addressee": "wife", "heard": "x"}],
+                build_key="k3",
+                created_by="test",
+            )  # fmt: skip
+    finally:
+        opened.close()

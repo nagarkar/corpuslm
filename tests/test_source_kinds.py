@@ -72,7 +72,7 @@ def test_a_version_16_database_is_rebuilt_so_vimeo_and_file_sources_can_be_added
     old.close()
 
     opened = db.Database(path)
-    assert opened.one("PRAGMA user_version")[0] == db.USER_VERSION == 17
+    assert opened.one("PRAGMA user_version")[0] == db.USER_VERSION == 18
     store = Store(opened)
     # every row kept its kind, and the member is still a member
     assert {row["id"]: row["kind"] for row in opened.all("SELECT id, kind FROM sources")} == {
@@ -88,7 +88,7 @@ def test_a_version_16_database_is_rebuilt_so_vimeo_and_file_sources_can_be_added
     store.update_source("vimeo:1014932215", {"metadata_source": "vimeo"})
     store.update_source("file:0123456789abcdef", {"metadata_source": "ffprobe"})
     assert store.source("file:0123456789abcdef")["metadata_source"] == "ffprobe"
-    backups = list((tmp_path / db.BACKUPS_DIRNAME).glob("*-before-v17.sqlite"))
+    backups = list((tmp_path / db.BACKUPS_DIRNAME).glob("*-before-v18.sqlite"))
     assert len(backups) == 1
     opened.close()
 

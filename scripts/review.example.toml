@@ -42,6 +42,15 @@ model = "gemini/gemini-2.5-flash-lite"
 # Characters of transcript per model call. Default 6000, about seven minutes of talk.
 section_chars = 6000
 workspace = "/path/to/corpuslm"
+# A monologue's imperative is a directive when Jev's probability that the owner wants it acted on
+# reaches this. Default 0.6. Optional.
+directive_threshold = 0.6
+
+# Optional: the model Jev (TypeSafe's System One) is asked as for the form of a Bee conversation
+# and the directive gate. Default "jev-latest". TYPESAFE_API_KEY in the environment turns Jev on;
+# without it the form is the speaker count's and a monologue's directives stand ungated.
+[jev]
+model = "jev-latest"
 
 # Optional: the spend caps the claim pass enforces before each billed call.
 [llm]

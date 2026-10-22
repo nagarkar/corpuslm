@@ -160,6 +160,79 @@ def test_claims_build_dry_run_estimates_and_sends_nothing(tmp_path, capsys, monk
     assert "unknown source: nope" in _board(capsys)["error"]
 
 
+def test_claims_build_says_whether_jev_is_on_and_where_events_go(tmp_path, capsys, monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    config = _claims_world(tmp_path)
+    assert cli.main(["--json", "claims", "build", "--config", config, "--dry-run"]) == 0
+    board = _board(capsys)
+    assert board["jev"] == "off: TYPESAFE_API_KEY is not set in .env"
+    assert board["forms_to_classify"] == 1  # the Bee source; the video has no form
+
+
+def test_form_verbs_classify_by_count_without_jev_and_report(tmp_path, capsys, monkeypatch):
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    config = _claims_world(tmp_path)
+    assert cli.main(["--json", "form", "status", "--config", config]) == 0
+    board = _board(capsys)
+    assert (board["sources"], board["unclassified"], board["disagreements"]) == (1, 1, 0)
+    assert cli.main(["--json", "form", "classify", "--config", config, "--dry-run"]) == 0
+    board = _board(capsys)
+    assert board["status"] == "dry-run" and board["sources_to_classify"] == 1
+    assert board["jev"].startswith("off:") and board["model"] == "jev-latest"
+    assert cli.main(["--json", "form", "classify", "--config", config]) == 0
+    board = _board(capsys)
+    assert (board["classified"], board["by_label"], board["form_cards"]) == (
+        1, {"monologue": 1}, 0,
+    )  # fmt: skip
+    assert board["cost_usd"] == 0.0
+    assert cli.main(["--json", "form", "classify", "--config", config]) == 0
+    assert _board(capsys)["sources_to_classify"] == 0  # classified once, left alone
+    assert cli.main(["--json", "form", "classify", "--config", config, "--again"]) == 0
+    assert _board(capsys)["classified"] == 1
+    assert cli.main(["--json", "form", "status", "--config", config]) == 0
+    board = _board(capsys)
+    assert (board["by_label"], board["unclassified"], board["next"]) == (
+        {"monologue": 1}, 0, "nothing to classify",
+    )  # fmt: skip
+    assert cli.main(["--json", "form", "classify", "--config", config, "--source", "nope"]) == 1
+    assert "unknown source: nope" in _board(capsys)["error"]
+    assert (
+        cli.main(["--json", "form", "classify", "--config", config, "--source", "Xq3vT9bLk2A"]) == 1
+    )
+    assert "not a Bee source" in _board(capsys)["error"]
+
+
+def test_directives_list_counts_and_names_the_page(tmp_path, capsys):
+    from corpuslm.store import Store
+
+    config = _claims_world(tmp_path)
+    database = db.Database(tmp_path / "transcript.sqlite")
+    Store(database).replace_claims(
+        "bee:1",
+        [{"section": 0, "segments": [0], "text": "Call Wren.", "kind": "directive",
+          "addressee": "computer", "heard": "Computer, call Wren"},
+         {"section": 0, "segments": [1], "text": "Plain.", "kind": "assertion"}],
+        build_key="k",
+        created_by="test",
+    )  # fmt: skip
+    database.close()
+    assert cli.main(["--json", "directives", "list", "--config", config]) == 0
+    board = _board(capsys)
+    assert board["count"] == 1 and board["summary"]["states"] == {
+        "confirm": 0, "decline": 0, "open": 1,
+    }  # fmt: skip
+    (row,) = board["directives"]
+    assert (row["source_id"], row["state"], row["addressee"], row["text"]) == (
+        "bee:1", "open", "computer", "Call Wren.",
+    )  # fmt: skip
+    assert "heard" not in row and board["next"].endswith("/directives")
+    assert cli.main(["--json", "directives", "list", "--config", config, "--state", "confirm"]) == 0
+    assert _board(capsys)["count"] == 0
+    assert cli.main(["--json", "claims", "status", "--config", config]) == 0
+    assert _board(capsys)["by_kind"] == {"assertion": 1, "directive": 1}
+
+
 def test_claims_build_without_the_claims_table_says_what_to_add(tmp_path, capsys):
     config = _claims_world(tmp_path, claims_table=False)
     assert cli.main(["--json", "claims", "build", "--config", config, "--dry-run"]) == 1

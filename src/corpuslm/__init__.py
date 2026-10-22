@@ -59,6 +59,13 @@ Terms:
   nothing; its board status is `dry-run`.
 - **build step**: the stage of the build order (1 to 4) in which a pipeline node is built;
   `Node.build_step`.
+- **directive**: an instruction or commitment the owner spoke, a claim of kind `directive` with
+  an addressee (`computer` or `self`) and the words as heard (corpuslm.directives); the owner's
+  confirm or decline is an append-only row of `directive_verdicts`.
+- **form**: the shape of a Bee conversation, `monologue`, `dialogue`, `group` or `media`, kept
+  in `sources.metadata.form` (corpuslm.form).
+- **event**: what a verb publishes to the common events database after its own commit
+  (corpuslm.events, eventlm): ids and counts, never content.
 """
 
 SCHEMA_VERSION = "5"

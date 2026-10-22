@@ -45,6 +45,15 @@ sharing the `[claims]` workspace: the model and how many moments a source may ge
     model = "gemini/gemini-2.5-flash-lite"
     max_moments = 8
 
+`[claims]` may also set `directive_threshold` (default 0.6): a monologue's imperative is a
+directive when Jev's probability that the owner wants it acted on reaches it
+(corpuslm.directives). An optional `[jev]` table names the model Jev is asked as (default
+`jev-latest`; corpuslm.judge); `TYPESAFE_API_KEY` in the environment turns Jev on, and without it
+the form of a conversation is the speaker count's and a monologue's directives stand ungated:
+
+    [jev]
+    model = "jev-latest"
+
 An optional `[sheet]` table turns on the perspective sheet draft (`corpuslm sheet draft`), sharing
 the `[claims]` workspace: the model.
 
@@ -113,6 +122,8 @@ from .review_page import KindSetup
 DEFAULT_PORT = 8781
 DEFAULT_USAGE_PORT = 8779
 DEFAULT_SECTION_CHARS = 6000
+DEFAULT_DIRECTIVE_THRESHOLD = 0.6  # corpuslm.directives: Jev's yes below it keeps the ordinary kind
+DEFAULT_JEV_MODEL = "jev-latest"  # corpuslm.judge
 
 
 class SettingsError(ValueError):
@@ -136,11 +147,20 @@ class UsageSettings:
 
 @dataclass(frozen=True, slots=True)
 class ClaimsSettings:
-    """`[claims]`: the model, the section size and the client's folder (cache and ledgers)."""
+    """`[claims]`: the model, the section size, the client's folder (cache and ledgers) and the
+    directive gate's threshold (corpuslm.directives)."""
 
     model: str
     section_chars: int
     workspace: Path
+    directive_threshold: float = DEFAULT_DIRECTIVE_THRESHOLD
+
+
+@dataclass(frozen=True, slots=True)
+class JevSettings:
+    """`[jev]`: the model Jev is asked as (corpuslm.judge); the key comes from the environment."""
+
+    model: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,15 +210,22 @@ class ReviewSettings:
     sheet: SheetSettings | None = None
     monologue: MonologueSettings | None = None
     line_speakers: dict | None = None
+    jev: JevSettings | None = None
 
     def client_config(self) -> dict:
-        """What `corpuslm.llm.Client` reads: the `[claims]` stage section and the `[llm]` caps."""
+        """What `corpuslm.llm.Client` reads: the `[claims]` stage section (with the Bee owner's
+        first name and the directive threshold), the `[llm]` caps and the `[jev]` model."""
         config: dict = {"llm": dict(self.llm)}
         if self.claims is not None:
+            bee = self.kinds.get("bee")
             config["claims"] = {
                 "model": self.claims.model,
                 "section_chars": self.claims.section_chars,
+                "owner_first_name": bee.owner_first_name if bee else "",
+                "directive_threshold": self.claims.directive_threshold,
             }
+        if self.jev is not None:
+            config["jev"] = {"model": self.jev.model}
         if self.monologue is not None:
             config["monologue"] = {
                 "model": self.monologue.model,
@@ -272,13 +299,30 @@ def _usage(raw: object, where: str) -> UsageSettings:
 def _claims(raw: object, where: str) -> ClaimsSettings:
     if not isinstance(raw, dict):
         raise SettingsError(f"{where}: must be a table")
-    _strict(raw, ("model", "section_chars", "workspace"), where)
+    _strict(raw, ("model", "section_chars", "workspace", "directive_threshold"), where)
     size = raw.get("section_chars", DEFAULT_SECTION_CHARS)
     if isinstance(size, bool) or not isinstance(size, int) or size < 500:
         raise SettingsError(f"{where}: section_chars must be a whole number of at least 500")
+    threshold = raw.get("directive_threshold", DEFAULT_DIRECTIVE_THRESHOLD)
+    if (
+        isinstance(threshold, bool)
+        or not isinstance(threshold, int | float)
+        or not 0 <= threshold <= 1
+    ):
+        raise SettingsError(f"{where}: directive_threshold must be a number from 0 to 1")
     return ClaimsSettings(
-        _text(raw, "model", where), size, Path(_text(raw, "workspace", where)).expanduser()
+        _text(raw, "model", where),
+        size,
+        Path(_text(raw, "workspace", where)).expanduser(),
+        float(threshold),
     )
+
+
+def _jev(raw: object, where: str) -> JevSettings:
+    if not isinstance(raw, dict):
+        raise SettingsError(f"{where}: must be a table")
+    _strict(raw, ("model",), where)
+    return JevSettings(_text(raw, "model", where, required=False) or DEFAULT_JEV_MODEL)
 
 
 def _concepts(raw: object, where: str) -> ConceptsSettings:
@@ -390,6 +434,7 @@ def load(path: Path) -> ReviewSettings:
             "sheet",
             "monologue",
             "line_speakers",
+            "jev",
         ),
         str(path),
     )
@@ -423,6 +468,7 @@ def load(path: Path) -> ReviewSettings:
         if "line_speakers" in raw
         else None
     )
+    jev = _jev(raw["jev"], f"{path} [jev]") if "jev" in raw else None
     return ReviewSettings(
         Path(_text(raw, "database", str(path))).expanduser(),
         port,
@@ -436,6 +482,7 @@ def load(path: Path) -> ReviewSettings:
         sheet,
         monologue,
         line_speakers,
+        jev,
     )
 
 
@@ -449,6 +496,9 @@ def kind_setups(settings: ReviewSettings) -> dict[str, KindSetup]:
 
 __all__ = [
     "ClaimsSettings",
+    "DEFAULT_DIRECTIVE_THRESHOLD",
+    "DEFAULT_JEV_MODEL",
+    "JevSettings",
     "ConceptsSettings",
     "DEFAULT_PORT",
     "MomentsSettings",

@@ -38,7 +38,12 @@ from . import (
     concepts,
     concepts_page,
     db,
+    directives,
+    directives_page,
     document,
+    events,
+    form,
+    judge,
     line_speakers,
     llm,
     moments,
@@ -157,9 +162,31 @@ DESCRIPTIONS |= {
     "claims build": (
         "List what the chosen sources claim, one short sentence per claim tied to its segments, "
         "by a cheap model call per section (billed; `[claims]` and `[llm]` in the settings "
-        "file). A source whose claims are current or imported is left alone. `--dry-run` "
-        "counts the calls and estimates the cost; nothing is sent.",
+        "file). A Bee source is first classified by form (`form classify`) when it is not yet, "
+        "and its directives (what the owner asked for) are gated by Jev in a monologue and by "
+        "the wake word in company. A source whose claims are current or imported is left alone. "
+        "`--dry-run` counts the calls and estimates the cost; nothing is sent. Publishes "
+        "`claims.built` per source to the events file `EVENTS_DB` names.",
         "corpuslm claims build --config /path/to/review.toml --kind bee --dry-run",
+    ),
+    "form classify": (
+        "Classify the chosen Bee sources by form (monologue, dialogue, group or media): the "
+        "speaker count proposes, Jev decides (billed through `[jev]`; off without "
+        "TYPESAFE_API_KEY, when the count's label stands), both are recorded on the source and "
+        "a disagreement is a card on the review server's /directives page. A source already "
+        "classified is left alone unless `--again`. `--dry-run` counts; nothing is sent.",
+        "corpuslm form classify --config /path/to/review.toml --dry-run",
+    ),
+    "form status": (
+        "How many Bee sources are classified, by label, how many Jev and the count disagree on "
+        "and the owner has not ruled, and how many are unclassified. Read-only.",
+        "corpuslm form status --config /path/to/review.toml",
+    ),
+    "directives list": (
+        "The directives the owner spoke, per source, with their state (confirm, decline, open), "
+        "addressee and time; `--state` narrows. Read-only; the owner rules on the review "
+        "server's /directives page.",
+        "corpuslm directives list --config /path/to/review.toml --state open",
     ),
     "claims status": (
         "What stands for each source: claims counted, and whether they are current, stale "
@@ -499,6 +526,42 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument(
                 "--dry-run", action="store_true", help="count and estimate; send and write nothing"
             )
+    form_group = verbs.add_parser(
+        "form", help="the form of each Bee conversation: classify, status"
+    )
+    form_verbs = form_group.add_subparsers(dest="form_verb", metavar="<subverb>")
+    for name, help_text in (
+        ("classify", "the count proposes, Jev decides; both recorded (billed)"),
+        ("status", "counts by label, disagreements, unclassified; read-only"),
+    ):
+        sub = leaf(form_verbs, name, help_text, f"form {name}")
+        sub.add_argument("--config", required=True, metavar="FILE", help="the review settings file")
+        sub.add_argument(
+            "--source",
+            action="append",
+            default=None,
+            metavar="SOURCE_ID",
+            help="one source (repeatable); without it, every Bee source",
+        )
+        if name == "classify":
+            sub.add_argument(
+                "--again", action="store_true", help="classify sources already classified too"
+            )
+            sub.add_argument("--dry-run", action="store_true", help="count; send and write nothing")
+    directives_group = verbs.add_parser("directives", help="what the owner asked for: list")
+    directives_verbs = directives_group.add_subparsers(dest="directives_verb", metavar="<subverb>")
+    directives_list = leaf(
+        directives_verbs, "list", "every directive with its state; read-only", "directives list"
+    )
+    directives_list.add_argument(
+        "--config", required=True, metavar="FILE", help="the review settings file"
+    )
+    directives_list.add_argument(
+        "--source", default=None, metavar="SOURCE_ID", help="one source's directives"
+    )
+    directives_list.add_argument(
+        "--state", default=None, choices=("open", "confirm", "decline"), help="only this state"
+    )
     concepts_group = verbs.add_parser(
         "concepts", help="the lexicon derived from claims: build, status, list, edges, verdict"
     )
@@ -794,6 +857,7 @@ def review_serve_board(settings: ReviewSettings, port: int | None, dry_run: bool
     if settings.concepts is not None:
         board["concepts_url"] = f"http://127.0.0.1:{chosen}/concepts"
     board["moments_url"] = f"http://127.0.0.1:{chosen}/moments"
+    board["directives_url"] = f"http://127.0.0.1:{chosen}/directives"
     board["teleprompter_url"] = f"http://127.0.0.1:{chosen}/teleprompter/<monologue>"
     board["monologues_url"] = f"http://127.0.0.1:{chosen}/monologues"
     if dry_run:
@@ -841,6 +905,20 @@ def review_serve_board(settings: ReviewSettings, port: int | None, dry_run: bool
             fresh.close()
 
     pages["/moments"] = build_moments_page
+
+    def build_directives_page() -> str:
+        fresh = db.Database(settings.database)
+        try:
+            store = Store(fresh)
+            return directives_page.render(
+                directives.summary(store),
+                directives.listing(store),
+                form.cards(store, store.source_ids("bee", include_ignored=False)),
+            )
+        finally:
+            fresh.close()
+
+    pages["/directives"] = build_directives_page
 
     def build_teleprompter(name: str) -> str:
         fresh = db.Database(settings.database)
@@ -923,14 +1001,20 @@ def review_apply_board(settings: ReviewSettings, kind: str | None, dry_run: bool
             if setups[name].kind.rebuilt_by and (kind is None or name == kind)
         }
         rebuilders, unavailable = review_rebuilders.discover(database, wanted)
-        report = apply_answers(
-            database,
-            setups,
-            created_by="corpuslm",
-            only_kinds=None if kind is None else [kind],
-            dry_run=dry_run,
-            rebuilders=rebuilders,
-        )
+        bus, events_note = (None, "dry run") if dry_run else events.open_events()
+        try:
+            report = apply_answers(
+                database,
+                setups,
+                created_by="corpuslm",
+                only_kinds=None if kind is None else [kind],
+                dry_run=dry_run,
+                rebuilders=rebuilders,
+                events=bus,
+            )
+        finally:
+            if bus is not None:
+                bus.close()
     finally:
         database.close()
     left = [
@@ -949,6 +1033,7 @@ def review_apply_board(settings: ReviewSettings, kind: str | None, dry_run: bool
         "unknown_cards": report.unknown_cards,
         "sources_waiting_for_ai_cleanup": report.sources_waiting_for_ai_cleanup,
         "left_unlanded": left,
+        "events": events_note or f"published to {bus.path if bus else ''}",
         "note": "dry run: nothing was written"
         if dry_run
         else "a speaker answer takes effect when its tool rebuilds the speaker map; other "
@@ -1251,35 +1336,64 @@ def claims_build_board(
             "model": estimate.model,
             "caps": settings.llm,
         }
+        jev, jev_reason = judge.make(client.config, client)
+        board["jev"] = "on" if jev else f"off: {jev_reason}"
+        unclassified = [
+            source_id
+            for source_id in source_ids
+            if (store.source(source_id) or {}).get("kind") == "bee"
+            and store.source_form(source_id) is None
+        ]
+        board["forms_to_classify"] = len(unclassified)
         if dry_run:
             return board | {"status": "dry-run", "note": "dry run: nothing was sent or written"}
+        bus, events_note = events.open_events()
+        board["events"] = events_note or f"published to {bus.path if bus else ''}"
         standing = {
             entry.source_id: entry.state
             for entry in claims.status(store, client.config, source_ids)
         }
         built, claims_written, dropped, cost = 0, 0, 0, 0.0
+        directives_found = forms_classified = form_cards = 0
         failed: dict[str, str] = {}
         stopped = ""
-        for source_id in source_ids:
-            if standing[source_id] in ("current", "imported"):
-                continue
-            try:
-                out = claims.build(store, client, source_id, created_by="corpuslm")
-            except llm.SpendCapReached as error:
-                stopped = str(error)
-                break
-            except (llm.BadReply, llm.VendorError, llm.TruncatedReply) as error:
-                # one source's bad reply is that source's failure, not the run's
-                failed[source_id] = f"{type(error).__name__}: {str(error)[:200]}"
-                claims.record_failed(store, source_id, failed[source_id], created_by="corpuslm")
-                continue
-            built += 1
-            claims_written += out["claims"]
-            dropped += out["dropped"]
-            cost += out["cost_usd"]
+        try:
+            for source_id in source_ids:
+                if standing[source_id] in ("current", "imported"):
+                    continue
+                try:
+                    if source_id in unclassified:
+                        record = form.classify(store, jev, source_id, created_by="corpuslm")
+                        forms_classified += 1
+                        form_cards += record["disagree"]
+                        cost += record["cost_usd"]
+                    out = claims.build(
+                        store, client, source_id, created_by="corpuslm", judge=jev, events=bus
+                    )
+                except llm.SpendCapReached as error:
+                    stopped = str(error)
+                    break
+                except (
+                    llm.BadReply, llm.VendorError, llm.TruncatedReply, judge.JudgeError
+                ) as error:  # fmt: skip
+                    # one source's bad reply is that source's failure, not the run's
+                    failed[source_id] = f"{type(error).__name__}: {str(error)[:200]}"
+                    claims.record_failed(store, source_id, failed[source_id], created_by="corpuslm")
+                    continue
+                built += 1
+                claims_written += out["claims"]
+                directives_found += out["directives"]
+                dropped += out["dropped"]
+                cost += out["cost_usd"]
+        finally:
+            if bus is not None:
+                bus.close()
         return board | {
             "built": built,
             "claims": claims_written,
+            "directives": directives_found,
+            "forms_classified": forms_classified,
+            "form_cards": form_cards,
             "dropped": dropped,
             "failed": len(failed),
             "failed_sources": failed,
@@ -1287,6 +1401,117 @@ def claims_build_board(
             "stopped_by": stopped,
             "ok": not stopped and not failed,
             "next": "corpuslm claims status --config " + str(settings.path),
+        }
+    finally:
+        database.close()
+
+
+def _bee_sources(store: Store, chosen: list[str] | None) -> list[str]:
+    if chosen:
+        unknown = [source_id for source_id in chosen if not store.has_source(source_id)]
+        if unknown:
+            raise ValueError(f"unknown source: {', '.join(unknown)}")
+        not_bee = [s for s in chosen if (store.source(s) or {}).get("kind") != "bee"]
+        if not_bee:
+            raise ValueError(f"not a Bee source: {', '.join(not_bee)}")
+        return list(dict.fromkeys(chosen))
+    return store.source_ids("bee", include_ignored=False)
+
+
+def form_classify_board(
+    settings: ReviewSettings, chosen: list[str] | None, again: bool, dry_run: bool
+) -> dict:
+    database = _open_existing(settings)
+    try:
+        store = Store(database)
+        client = _claims_client(settings, "form classify")
+        jev, jev_reason = judge.make(client.config, client)
+        source_ids = _bee_sources(store, chosen)
+        todo = [s for s in source_ids if again or store.source_form(s) is None]
+        board = {
+            "verb": "form classify",
+            "ok": True,
+            "sources_chosen": len(source_ids),
+            "sources_to_classify": len(todo),
+            "jev": "on" if jev else f"off: {jev_reason}",
+            "model": judge.settings(client.config).model,
+            "caps": settings.llm,
+        }
+        if dry_run:
+            return board | {"status": "dry-run", "note": "dry run: nothing was sent or written"}
+        labels: dict[str, int] = {}
+        cards = cost = 0
+        stopped = ""
+        for source_id in todo:
+            try:
+                record = form.classify(store, jev, source_id, created_by="corpuslm")
+            except llm.SpendCapReached as error:
+                stopped = str(error)
+                break
+            labels[record["label"]] = labels.get(record["label"], 0) + 1
+            cards += record["disagree"]
+            cost += record["cost_usd"]
+        return board | {
+            "classified": sum(labels.values()),
+            "by_label": labels,
+            "form_cards": cards,
+            "cost_usd": round(cost, 6),
+            "stopped_by": stopped,
+            "ok": not stopped,
+            "next": f"http://127.0.0.1:{settings.port}/directives (rule on the cards)"
+            if cards
+            else "corpuslm claims build --config " + str(settings.path) + " --kind bee --dry-run",
+        }
+    finally:
+        database.close()
+
+
+def form_status_board(settings: ReviewSettings, chosen: list[str] | None) -> dict:
+    database = _open_existing(settings)
+    try:
+        store = Store(database)
+        source_ids = _bee_sources(store, chosen)
+        labels: dict[str, int] = {}
+        unclassified = 0
+        for source_id in source_ids:
+            record = store.source_form(source_id)
+            if record is None:
+                unclassified += 1
+                continue
+            labels[record["label"]] = labels.get(record["label"], 0) + 1
+        cards = form.cards(store, source_ids)
+        return {
+            "verb": "form status",
+            "ok": True,
+            "sources": len(source_ids),
+            "by_label": labels,
+            "unclassified": unclassified,
+            "disagreements": len(cards),
+            "next": "corpuslm form classify --config " + str(settings.path) + " --dry-run"
+            if unclassified
+            else f"http://127.0.0.1:{settings.port}/directives"
+            if cards
+            else "nothing to classify",
+        }
+    finally:
+        database.close()
+
+
+def directives_list_board(settings: ReviewSettings, source: str | None, state: str | None) -> dict:
+    database = _open_existing(settings)
+    try:
+        store = Store(database)
+        rows = directives.listing(store, source_id=source, state=state)
+        return {
+            "verb": "directives list",
+            "ok": True,
+            "count": len(rows),
+            "summary": directives.summary(store),
+            "directives": [
+                {k: row[k] for k in ("id", "source_id", "date", "state", "addressee", "text")}
+                for row in rows
+            ],
+            "next": f"http://127.0.0.1:{settings.port}/directives",
         }
     finally:
         database.close()
@@ -1920,6 +2145,14 @@ def main(argv: list[str] | None = None) -> int:
             text, code = clikit.help_text(parser, PROG, ["sheet"])
             print(text, end="")
             return code
+        if namespace.verb == "form" and namespace.form_verb is None:
+            text, code = clikit.help_text(parser, PROG, ["form"])
+            print(text, end="")
+            return code
+        if namespace.verb == "directives" and namespace.directives_verb is None:
+            text, code = clikit.help_text(parser, PROG, ["directives"])
+            print(text, end="")
+            return code
         if namespace.verb == "moments" and namespace.moments_verb is None:
             text, code = clikit.help_text(parser, PROG, ["moments"])
             print(text, end="")
@@ -2038,6 +2271,19 @@ def main(argv: list[str] | None = None) -> int:
                 board = speakers_status_board(settings, namespace.corpus, namespace.source)
             _print(board, as_json)
             return 0 if board["ok"] else 1
+        if namespace.verb == "form":
+            if namespace.form_verb == "classify":
+                board = form_classify_board(
+                    settings, namespace.source, namespace.again, namespace.dry_run
+                )
+            else:
+                board = form_status_board(settings, namespace.source)
+            _print(board, as_json)
+            return 0 if board["ok"] else 1
+        if namespace.verb == "directives":
+            board = directives_list_board(settings, namespace.source, namespace.state)
+            _print(board, as_json)
+            return 0
         if namespace.verb == "claims":
             match namespace.claims_verb:
                 case "build":

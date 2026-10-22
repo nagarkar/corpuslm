@@ -12,7 +12,8 @@ Routes: `GET /` the page (built per request by the function the caller passes in
 `pages` (`/concepts`, corpuslm.concepts_page; `/moments`, corpuslm.moments_page; built per
 request too), any page under a prefix in `page_prefixes` (`/teleprompter/<monologue>`,
 corpuslm.teleprompter_page), and one `POST /api/review` with `{"method": ..., "params": {...}}`
-dispatched to `Answers`, whose `concept_verdict` and `moment_verdict` methods append a ruling.
+dispatched to `Answers`, whose `concept_verdict`, `moment_verdict`, `directive_verdict` and
+`form_verdict` methods record a ruling (`/directives`, corpuslm.directives_page).
 The pages' scripts (never a second copy of a page) are the only clients.
 
 Never imports: cli, clikit, any model transport.
@@ -229,6 +230,41 @@ class Answers:
             finally:
                 db.close()
 
+    def directive_verdict(self, claim_id: object, verdict: object) -> dict:
+        """Append the owner's ruling on a directive (corpuslm.directives)."""
+        from . import directives  # the server knows directives only for this one call
+
+        if not isinstance(claim_id, str) or not claim_id.strip():
+            raise ValueError("id is the directive's claim id")
+        if verdict not in ("confirm", "decline"):
+            raise ValueError("verdict is confirm or decline")
+        with self._lock:
+            db, store = self._store()
+            try:
+                return directives.verdict(
+                    store, claim_id, verdict, answered_through="phone page", created_by=CREATED_BY
+                )
+            finally:
+                db.close()
+
+    def form_verdict(self, source_id: object, label: object) -> dict:
+        """The owner's ruling on a source's form (corpuslm.form)."""
+        from . import form  # the server knows forms only for this one call
+
+        if not isinstance(source_id, str) or not source_id.strip():
+            raise ValueError("source is the source's id")
+        if label not in form.LABELS:
+            raise ValueError(f"label is one of {', '.join(form.LABELS)}")
+        with self._lock:
+            db, store = self._store()
+            try:
+                if not store.has_source(source_id):
+                    raise KeyError(f"no source {source_id!r}")
+                record = form.rule(store, source_id, label, created_by=CREATED_BY)
+                return {"source": source_id, "label": record["label"]}
+            finally:
+                db.close()
+
     def line_speaker(self, params: dict) -> dict:
         """The owner's pick for who spoke one line, from the moments page
         (corpuslm.line_speakers)."""
@@ -420,6 +456,10 @@ class Answers:
             return self.moment_edit(params.get("id"), params.get("insight"))
         if method == "moment_verdicts":
             return self.moment_verdicts(params.get("ids"), params.get("verdict"))
+        if method == "directive_verdict":
+            return self.directive_verdict(params.get("id"), params.get("verdict"))
+        if method == "form_verdict":
+            return self.form_verdict(params.get("source"), params.get("label"))
         if method == "line_speaker":
             return self.line_speaker(params)
         if method == "monologue_search":
@@ -450,7 +490,8 @@ class Answers:
             return self.list(params.get("collection"))
         raise ValueError(
             "method must be one of: health, get, set, delete, list, concept_verdict, "
-            "moment_verdict, moment_verdicts, moment_edit, line_speaker, monologue_search, "
+            "moment_verdict, moment_verdicts, moment_edit, directive_verdict, form_verdict, "
+            "line_speaker, monologue_search, "
             "monologue_new, monologue_brief, monologue_attach, monologue_detach, "
             "monologue_estimate, monologue_run"
         )

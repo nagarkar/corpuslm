@@ -71,6 +71,7 @@ from typing import Protocol
 
 from . import ai_cleanup, llm, model_suggestions, review
 from . import clock as clock_module
+from . import events as events_module
 from . import prompts as prompts_module
 from .chain import Chain, Report, canonical_sha256, is_current, record, write_if_changed
 from .db import loads
@@ -216,6 +217,9 @@ class AiCleanupSetup:
     arbiter: Callable[[], tuple[ArbiterLike | None, str | None]] = _no_arbiter
     rebuild_stale: bool = False
     clock: clock_module.Clock = clock_module.utc_now
+    # The events store `source.cleaned` is published to once the artifact's transaction commits
+    # (corpuslm.events); None publishes nothing.
+    events: events_module.Events | None = None
 
     @property
     def node(self) -> str:
@@ -622,6 +626,16 @@ def build_ai_cleanup(
         model_suggestions.record(
             store, source_id, document, artifact_sha256=sha256, created_by=chain.created_by
         )
+    events_module.publish(
+        ai_cleanup_setup.events,
+        events_module.SOURCE_CLEANED,
+        {"source": source_id},
+        {
+            "edits": totals["edits"],
+            "ambiguities": totals["ambiguities"],
+            "replayed": bool(held),
+        },
+    )
     report.count(f"{node}_replayed" if held else node)
     return sha256
 
