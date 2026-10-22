@@ -4,7 +4,8 @@ The transport, reply cache, ledger lines and spend caps live in llmlm; this modu
 them so corpuslm's modules keep their imports. `Client` is llmlm's class itself; `client()` builds
 one with corpuslm's own reply validator and schema loader (`corpuslm.schemas`). The scripted
 directory (`SCRIPTS`) and the price table are llmlm's: a test that scripts replies sets
-`llmlm.llm.SCRIPTS`. Delete this shim once ytlm, beelm and mailerlm import llmlm directly (nagarkar/llmlm#1, step 3).
+`llmlm.llm.SCRIPTS`. Delete this shim once ytlm, beelm and mailerlm import llmlm directly
+(nagarkar/llmlm#1, step 3).
 
 Never imports: db, store, clikit.
 """
