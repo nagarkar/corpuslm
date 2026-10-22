@@ -40,6 +40,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+from llmlm import llm as llmlm_llm
+
 from . import clock, files, llm
 
 STAGE = "jev"
@@ -149,8 +151,9 @@ def _urllib_post(url: str, body: dict, headers: dict, timeout: float) -> tuple[i
 
 
 def default_transport() -> Transport:
-    """Scripted when the suite set `llm.SCRIPTS`, else TypeSafe over HTTP."""
-    return ScriptedTransport(llm.SCRIPTS) if llm.SCRIPTS is not None else HttpTransport()
+    """Scripted when the suite set `llmlm.llm.SCRIPTS`, else TypeSafe over HTTP."""
+    scripts = llmlm_llm.SCRIPTS
+    return ScriptedTransport(scripts) if scripts is not None else HttpTransport()
 
 
 def off_reason(found: Settings, transport: Transport) -> str | None:

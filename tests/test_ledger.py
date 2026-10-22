@@ -8,7 +8,7 @@ Sources:
   JSONL under logs/, one line per event, rotated at 5 MB with two
   generations kept, written best-effort so a ledger failure never fails a
   run, each with an off-switch under [logs]; db-perf off by default.
-- src/corpuslm/schemas/usage_line.json and trace_line.json (the line schemas).
+- llmlm's schemas/usage_line.json and trace_line.json (the line schemas).
 - metalm coding.md, "Failure" (fail loudly on our own bad data) and
   "Idempotence and writes" (validate every artifact at write and at read).
 - metalm operations.md, "Scheduled and unattended work".
@@ -23,8 +23,9 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
+from llmlm import schemas
 
-from corpuslm import ledger, schemas
+from corpuslm import ledger
 
 
 def usage_event(**over):

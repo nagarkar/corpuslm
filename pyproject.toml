@@ -10,7 +10,11 @@ readme = "README.md"
 requires-python = ">=3.12"
 # eventlm (the common events database on this Mac, ~/workspace/repos/eventlm) is installed
 # editable from its checkout before this package: `pip install -e ../eventlm -e ".[dev]"`.
-dependencies = ["eventlm"]
+# llmlm (the shared model-call layer, nagarkar/llmlm#1) is installed the same way, before this
+# package: `pip install -e ../eventlm -e ../llmlm -e ".[dev]"`. (A direct reference to the sibling
+# checkout, `llmlm @ {root:parent:uri}/llmlm`, makes pip 24 fail on the editable install of the
+# same folder: "conflicting dependencies".)
+dependencies = ["eventlm", "llmlm"]
 
 [project.optional-dependencies]
 # Shared transcript cleanup (corpuslm.transcript, corpuslm.basic_cleanup): the spell
@@ -19,12 +23,8 @@ clean = [
   "symspellpy>=6.7",
   "jsonschema>=4.0",
 ]
-# Model transport (corpuslm.llm) for consumers that call a model; corpuslm itself calls none.
-# jsonschema validates the ledger lines.
-llm = [
-  "litellm>=1.70",
-  "jsonschema>=4.0",
-]
+# Kept so `corpuslm[llm]` still installs for consumers that name it; litellm now arrives with llmlm.
+llm = []
 dev = [
   "corpuslm[clean]",
   "pytest>=8.0",

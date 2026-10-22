@@ -12,7 +12,7 @@ The plan that moves code here is nagarkar/ytlm#50 (ytlm
 
 ## Commands
 
-- Install: `python3.12 -m venv .venv && .venv/bin/pip install -e ".[dev]"`.
+- Install: `python3.12 -m venv .venv && .venv/bin/pip install -e ../eventlm -e ../llmlm -e ".[dev]"` (llmlm, the shared model-call layer, is the sibling checkout, editable; nagarkar/llmlm#1).
 - Test: `.venv/bin/pytest` (offline; never touches a real database; the review-page script check needs Node and `npm ci --prefix tests/js` once).
 - Lint and format: `.venv/bin/ruff check src tests`, `.venv/bin/ruff format src tests`.
 - Types: `.venv/bin/pyright`.
@@ -23,6 +23,7 @@ The plan that moves code here is nagarkar/ytlm#50 (ytlm
 
 ## Repo notes
 
+- The model-call layer is llmlm. `corpuslm.llm`, `corpuslm.ledger` and `corpuslm.prompts` are shims over it (corpuslm's validator, schemas and built-in prompts directory stay here); delete them once ytlm, beelm and mailerlm import llmlm directly.
 - Design docs say "ytlm's" when they cite ytlm's documents, its `(was Dn)`
   numbers or its issue numbers; those live in nagarkar/ytlm.
 - Documented exceptions to metalm: none.
