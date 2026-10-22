@@ -278,8 +278,8 @@ def test_a_version_8_database_is_rebuilt_with_every_row_and_the_author_tables_un
 
     opened = db.Database(path)
     try:
-        assert opened.migration["from"] == 8 and opened.migration["to"] == db.USER_VERSION == 17
-        assert opened.migration["backup"].endswith("-before-v17.sqlite")
+        assert opened.migration["from"] == 8 and opened.migration["to"] == db.USER_VERSION == 18
+        assert opened.migration["backup"].endswith("-before-v18.sqlite")
         assert opened.one("PRAGMA integrity_check")[0] == "ok"
         assert opened.all("PRAGMA foreign_key_check") == []
         after = _everything(path)

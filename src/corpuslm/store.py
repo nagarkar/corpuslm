@@ -782,8 +782,9 @@ class Store:
         created_by: str,
     ) -> int:
         """One source's claims, rebuilt whole in one transaction. Each claim is
-        `{"section", "segments": [position, ...], "text", "kind", "speaker"}`; its
-        position is its place in the list. Returns how many were written."""
+        `{"section", "segments": [position, ...], "text", "kind", "speaker"}`, a directive
+        also `{"addressee": "computer" | "self", "heard": <the words as heard>}`; its position
+        is its place in the list. Returns how many were written."""
         written = 0
         with self.db.transaction():
             self.db.execute("DELETE FROM claims WHERE source_id = ?", (source_id,))
@@ -801,17 +802,33 @@ class Store:
                         "speaker": claim.get("speaker", ""),
                         "build_key": build_key,
                         "run_id": run_id,
+                        "addressee": claim.get("addressee"),
+                        "heard": claim.get("heard"),
                     },
                 )
                 written += 1
         return written
 
-    def claims(self, source_id: str) -> list[dict]:
-        """One source's claims in order; `segments` is the list of segment positions."""
+    def claims(self, source_id: str, *, include_directives: bool = False) -> list[dict]:
+        """One source's claims in order; `segments` is the list of segment positions. Directives
+        (kind `directive`) are left out unless asked for: moments, concepts and the monologue
+        recipes read what a source says, not what the owner asked for (owner, 2026-10-21)."""
+        where = "" if include_directives else " AND kind <> 'directive'"
         return [
             dict(row) | {"segments": loads(row["segments"], [])}
             for row in self.db.all(
-                "SELECT * FROM claims WHERE source_id = ? ORDER BY position", (source_id,)
+                f"SELECT * FROM claims WHERE source_id = ?{where} ORDER BY position", (source_id,)
+            )
+        ]
+
+    def directives(self, source_id: str | None = None) -> list[dict]:
+        """The directive claims of one source, or of every source, in source then position order."""
+        where = "" if source_id is None else " AND source_id = ?"
+        return [
+            dict(row) | {"segments": loads(row["segments"], [])}
+            for row in self.db.all(
+                f"SELECT * FROM claims WHERE kind = 'directive'{where} ORDER BY source_id, position",
+                () if source_id is None else (source_id,),
             )
         ]
 
@@ -1160,6 +1177,56 @@ class Store:
                 (source_id,),
             )
         return {row["subject_sha256"]: row["verdict"] for row in rows}
+
+    # ---- directive verdicts (corpuslm.directives) ------------------------------------------
+
+    def append_directive_verdict(
+        self,
+        source_id: str,
+        subject_sha256: str,
+        verdict: str,
+        *,
+        answered_through: str,
+        created_by: str,
+    ) -> str:
+        return self.db.insert(
+            "directive_verdicts",
+            standard_fields("dvr", created_by=created_by)
+            | {
+                "source_id": source_id,
+                "subject_sha256": subject_sha256,
+                "verdict": verdict,
+                "source": answered_through,
+                "applied_at": now_iso(),
+            },
+        )
+
+    def current_directive_verdicts(self, source_id: str | None = None) -> dict[str, str]:
+        """Subject hash -> the verdict in force (one source, or every source)."""
+        if source_id is None:
+            rows = self.db.all("SELECT subject_sha256, verdict FROM vw_current_directive_verdicts")
+        else:
+            rows = self.db.all(
+                "SELECT subject_sha256, verdict FROM vw_current_directive_verdicts "
+                "WHERE source_id = ?",
+                (source_id,),
+            )
+        return {row["subject_sha256"]: row["verdict"] for row in rows}
+
+    def source_form(self, source_id: str) -> dict | None:
+        """The source's form record, `metadata.form` (corpuslm.form), or None when unclassified."""
+        row = self._source_row(source_id)
+        found = metadata_of(row).get("form")
+        return dict(found) if isinstance(found, dict) else None
+
+    def set_source_form(self, source_id: str, form: dict, *, created_by: str = "cli") -> None:
+        """Write the source's form record into `metadata.form`, keeping the rest of the metadata
+        (logged by the change-log trigger)."""
+        row = self._source_row(source_id)
+        metadata = metadata_of(row) | {"form": form}
+        self.update_source(
+            source_id, {"metadata": json.dumps(metadata, sort_keys=True)}, created_by=created_by
+        )
 
     # ---- line speakers (corpuslm.line_speakers) -------------------------------------------
 

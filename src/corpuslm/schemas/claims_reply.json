@@ -44,7 +44,34 @@
      },
      "kind": {
       "type": "string",
-      "description": "One of assertion, definition, example, story, question, prediction, disagreement.",
+      "description": "One of assertion, definition, example, story, question, prediction, disagreement, directive (an instruction or commitment the owner spoke; Bee prompt only).",
+      "enum": [
+       "assertion",
+       "definition",
+       "example",
+       "story",
+       "question",
+       "prediction",
+       "disagreement",
+       "directive"
+      ]
+     },
+     "addressee": {
+      "type": "string",
+      "description": "A directive's addressee: computer when the utterance addresses the wake word \"Computer\", self for any other imperative. Only on kind directive.",
+      "enum": [
+       "computer",
+       "self"
+      ]
+     },
+     "heard": {
+      "type": "string",
+      "description": "A directive's words as heard, verbatim from the cited lines. Only on kind directive.",
+      "minLength": 1
+     },
+     "else_kind": {
+      "type": "string",
+      "description": "The ordinary kind a directive would be if it were not one; the pass keeps the row under it when the gate leaves it out. Only on kind directive.",
       "enum": [
        "assertion",
        "definition",
