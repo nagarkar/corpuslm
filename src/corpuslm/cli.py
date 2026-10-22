@@ -1171,12 +1171,20 @@ def _claims_sources(store: Store, kind: str | None, chosen: list[str] | None) ->
 
 
 def _claims_client(settings: ReviewSettings, verb: str) -> llm.Client:
+    from . import schemas
+
     if settings.claims is None:
         raise SettingsError(
             f"{settings.path}: [claims] is missing; add model and workspace (see "
             "scripts/review.example.toml)"
         )
-    return llm.Client(settings.claims.workspace, settings.client_config(), verb=verb)
+    return llm.Client(
+        settings.claims.workspace,
+        settings.client_config(),
+        verb=verb,
+        validator=schemas.validate,
+        schema_loader=schemas.schema,
+    )
 
 
 def _corpus_members(store: Store, corpus: str) -> list[str]:

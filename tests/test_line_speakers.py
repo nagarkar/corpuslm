@@ -63,7 +63,7 @@ class World:
         )
 
     def client(self, config: dict | None = None) -> llm.Client:
-        return llm.Client(
+        return llm.client(
             self.root,
             config or CONFIG,
             transport=llm.ScriptedTransport(self.scripts),
@@ -257,7 +257,7 @@ def test_a_stage_timeout_reaches_the_vendor_request(tmp_path, monkeypatch):
 
     config = json.loads(json.dumps(CONFIG))
     config["line_speakers"]["timeout_seconds"] = 900
-    client = llm.Client(tmp_path / "ws", config, transport=Transport())
+    client = llm.client(tmp_path / "ws", config, transport=Transport())
     variables = {"owner": "Ana", "household": "", "evidence": "", "summary": "", "transcript": "",
                  "first": "1", "last": "1"}  # fmt: skip
     monkeypatch.setenv("GEMINI_API_KEY", "test")

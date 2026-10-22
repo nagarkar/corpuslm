@@ -78,7 +78,7 @@ class World:
         )
 
     def client(self, config: dict | None = None) -> llm.Client:
-        return llm.Client(
+        return llm.client(
             self.root,
             config or CONFIG,
             transport=llm.ScriptedTransport(self.scripts),

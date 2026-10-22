@@ -122,7 +122,7 @@ class World:
 
     def context(self, **changes):
         def client():
-            made = llm.Client(
+            made = llm.client(
                 self.root,
                 self.config,
                 transport=llm.ScriptedTransport(self.scripts),

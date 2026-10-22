@@ -61,7 +61,7 @@ class World:
         )
 
     def client(self) -> llm.Client:
-        return llm.Client(
+        return llm.client(
             self.root,
             self.config,
             transport=llm.ScriptedTransport(self.scripts),
@@ -244,7 +244,7 @@ def test_a_video_source_gets_no_directive_fields(tmp_path):
         (scripts / f"{VIDEO}-s0.json").write_text(
             json.dumps({"reply": json.dumps(REPLY), "tokens_in": 100, "tokens_out": 20})
         )
-        client = llm.Client(
+        client = llm.client(
             tmp_path / "ws",
             {"claims": {"model": MODEL, "section_chars": 10_000}, "llm": {}},
             transport=llm.ScriptedTransport(tmp_path / "scripts"),

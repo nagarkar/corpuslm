@@ -23,7 +23,7 @@ def _claims_world(tmp_path):
     (folder / f"{SOURCE}-s0.json").write_text(
         json.dumps({"reply": json.dumps(REPLY), "tokens_in": 100, "tokens_out": 20})
     )
-    client = llm.Client(
+    client = llm.client(
         tmp_path / "ws",
         {"claims": {"model": MODEL, "section_chars": 10_000}, "llm": {}},
         transport=llm.ScriptedTransport(tmp_path / "scripts"),
