@@ -364,17 +364,27 @@ def build(
     claims: list[dict] = []
     dropped = 0
     replies = []
+    skipped: list[int] = []
+    skipped_cost = 0.0
     chosen = prompt(row["kind"])
     form = form_of(store, row)
     extra = {"form": form, "owner": found["owner_first_name"]}
     for section_index, part in enumerate(parts):
         first, last = part[0]["idx"], part[-1]["idx"]
-        reply = client.complete(
-            STAGE,
-            chosen,
-            _variables(row, section_index, len(parts), part, **extra),
-            tag=_tag(source_id, section_index),
-        )
+        try:
+            reply = client.complete(
+                STAGE,
+                chosen,
+                _variables(row, section_index, len(parts), part, **extra),
+                tag=_tag(source_id, section_index),
+            )
+        except llm.TruncatedReply as error:
+            # A reply running past the limit is the model looping on a noisy section. The vendor
+            # bills it (the ledger has it) and a retry would pay again, so the section is left out
+            # and recorded, and the source's other sections stand.
+            skipped.append(section_index)
+            skipped_cost += error.raw.cost_usd if error.raw and error.raw.cost_usd else 0.0
+            continue
         replies.append(reply)
         for claim in reply.parsed["claims"]:
             cited = list(
@@ -414,7 +424,11 @@ def build(
         claims = [directives_module._without_directive_fields(claim) for claim in claims]
     inputs_record = inputs(store, source_id, client.config)
     key = build_key(inputs_record)
-    cost = sum(reply.cost_usd or 0.0 for reply in replies) + gate_stats.get("cost_usd", 0.0)
+    cost = (
+        sum(reply.cost_usd or 0.0 for reply in replies)
+        + gate_stats.get("cost_usd", 0.0)
+        + skipped_cost
+    )
     with store.transaction():
         written = store.replace_claims(
             source_id, claims, build_key=key, run_id=run_id, created_by=created_by
@@ -436,6 +450,7 @@ def build(
                 "tokens_out": sum(reply.tokens_out for reply in replies),
                 "cost_usd": round(cost, 6),
                 "cached": all(reply.cached for reply in replies),
+                **({"sections_skipped": skipped} if skipped else {}),
                 **({"form": form, "directives": gate_stats} if gate_stats else {}),
             },
             created_by=created_by,
@@ -449,6 +464,7 @@ def build(
     return {
         "source": source_id,
         "sections": len(parts),
+        "sections_skipped": len(skipped),
         "claims": written,
         "directives": gate_stats.get("directives", 0),
         "directives_demoted": gate_stats.get("demoted", 0),

@@ -479,3 +479,24 @@ def test_a_version_17_database_keeps_its_claims_and_gains_directives_after_a_ver
             )  # fmt: skip
     finally:
         opened.close()
+
+
+class RunawayTransport(llm.ScriptedTransport):
+    """The first section's reply runs past the token limit; the others answer as scripted."""
+
+    def send(self, model, messages, params, *, tag):
+        if tag.endswith("-s0"):
+            raise llm.TruncatedReply("cut off", llm.RawReply("loop loop", 100, 8000, 0.012))
+        return super().send(model, messages, params, tag=tag)
+
+
+def test_a_section_whose_reply_runs_past_the_limit_is_skipped_and_recorded(world):
+    """A runaway reply loses its one section, not the source: the others' claims stand, the skip is
+    in the artifact's provenance, and its cost is in the build's."""
+    client = llm_client(world.root, world.config, transport=RunawayTransport(world.scripts))
+    built = claims.build(world.store, client, SOURCE, created_by="test")
+    assert (built["sections_skipped"], built["claims"]) == (1, 2)
+    assert built["cost_usd"] >= 0.012
+    provenance = json.loads(world.store.artifact(SOURCE, claims.NODE)["provenance"])
+    assert provenance["sections_skipped"] == [0]
+    assert [row["section"] for row in world.store.claims(SOURCE)] == [1, 1]
