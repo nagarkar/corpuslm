@@ -79,6 +79,9 @@ from .store import Store
 STAGE = "claims"
 NODE = "claims"
 MAX_SEGMENTS = 6  # per claim; the prompt asks for the clearest few
+# `heard` is a short quote (median 375 characters). A model looping inside it has written 147,000,
+# which Jev answers with HTTP 400 and no reader wants; the claim itself is sound.
+MAX_HEARD_CHARS = 2000
 SECTION_CHARS = 6000  # default section size, about seven minutes of talk
 ASSUMED_OUTPUT_PER_INPUT = 0.35  # what `estimate` assumes a reply costs per token sent
 SOURCE_LABELS = {
@@ -409,6 +412,11 @@ def build(
                         for key in ("addressee", "heard", "else_kind")
                         if claim.get(key) is not None
                     },
+                    **(
+                        {"heard": claim["heard"][:MAX_HEARD_CHARS]}
+                        if claim.get("heard") is not None
+                        else {}
+                    ),
                 }
             )
     gate_stats: dict = {}
