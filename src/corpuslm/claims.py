@@ -24,6 +24,12 @@ sources, which also extracts directives by the conversation's form (corpuslm.for
 the form and the owner's first name (`[claims].owner_first_name`). The form is a build input of
 a Bee source, so a reclassified source reads stale.
 
+A section whose reply ran past the token limit is recorded in the artifact's `sections_skipped`.
+A later build over the same inputs reads it with `claims_bee_short`, which caps the `heard` quote
+where the model tends to loop; `skipped_sections` names the sources that have such sections, and
+only an explicit rebuild retries them. Its prompt is no build input of the source, so adding or
+changing it leaves every built source current.
+
 Never imports: cli, clikit. Reads the database only through `Store`.
 
 Decisions:
@@ -45,6 +51,10 @@ Decisions:
   goes on to the next source; only a spend cap stops a run. Seen 2026-10-13: one video's reply
   listed seven segments for a claim and the whole YouTube run stopped at it. Enforced by:
   tests/test_claims.py::test_a_bad_reply_fails_one_source_and_the_run_goes_on.
+- A skipped section is retried by its own short-quote prompt, never by changing `claims_bee`:
+  that prompt's hash is a build input, so changing it would bill a rebuild of every Bee source.
+  (owner, 2026-11-02) Enforced by:
+  tests/test_claims.py::test_a_rebuild_retries_only_the_skipped_section_with_the_short_prompt.
 
 Terms:
 - **claim**: one short sentence (25 words or fewer) restating one thing a source says, with its
@@ -90,6 +100,7 @@ SOURCE_LABELS = {
     "text": "a text",
 }
 IMPORTED_FROM = "ytlm.digest"
+RETRY_PROMPT_ID = "claims_bee_short"  # a recorded skipped section's second read
 UNKNOWN_FORM = "unknown"  # a Bee source not yet classified: the prompt reads it as company
 
 
@@ -182,6 +193,17 @@ def inputs(store: Store, source_id: str, config: dict) -> dict:
 
 def build_key(inputs_record: dict) -> str:
     return canonical_sha256(inputs_record)
+
+
+def skipped_sections(store: Store, source_id: str, config: dict) -> list[int]:
+    """The sections a built source left out as runaway replies, while the inputs that made them
+    run away still hold; `[]` once any input changed, because a section is only a position."""
+    artifact = store.artifact(source_id, NODE)
+    if artifact is None or artifact["state"] != "built":
+        return []
+    if json.loads(artifact["inputs"]) != inputs(store, source_id, config):
+        return []
+    return list(json.loads(artifact["provenance"]).get("sections_skipped") or [])
 
 
 def _lines(segments: list[dict]) -> str:
@@ -321,6 +343,30 @@ def estimate(store: Store, client: llm.Client, source_ids: list[str]) -> Estimat
     )
 
 
+def estimate_retry(store: Store, client: llm.Client, source_ids: list[str]) -> Estimate:
+    """What retrying the recorded skipped sections would send, from the cache alone. Calls no
+    model, prints no text, writes nothing."""
+    found = settings(client.config)
+    chosen = prompts.load(RETRY_PROMPT_ID)
+    sources = calls = tokens_in = 0
+    for source_id in source_ids:
+        row = store.source(source_id)
+        skipped = skipped_sections(store, source_id, client.config)
+        if row is None or not skipped:
+            continue
+        sources += 1
+        parts = sections_of(row, store.best_segments(source_id), found["section_chars"])
+        extra = {"form": form_of(store, row), "owner": found["owner_first_name"]}
+        for section_index in skipped:
+            variables = _variables(row, section_index, len(parts), parts[section_index], **extra)
+            if client.lookup(STAGE, chosen, variables) is None:
+                calls += 1
+                tokens_in += _estimate_tokens(chosen.body + _lines(parts[section_index]))
+    tokens_out = int(tokens_in * ASSUMED_OUTPUT_PER_INPUT)
+    usd = llm.price_usd(found["model"], tokens_in, tokens_out)
+    return Estimate(sources, 0, calls, tokens_in, tokens_out, usd, found["model"])
+
+
 def _estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4 + 1)
 
@@ -372,14 +418,15 @@ def build(
     chosen = prompt(row["kind"])
     form = form_of(store, row)
     extra = {"form": form, "owner": found["owner_first_name"]}
+    retried = set(skipped_sections(store, source_id, client.config))
     for section_index, part in enumerate(parts):
         first, last = part[0]["idx"], part[-1]["idx"]
         try:
             reply = client.complete(
                 STAGE,
-                chosen,
+                prompts.load(RETRY_PROMPT_ID) if section_index in retried else chosen,
                 _variables(row, section_index, len(parts), part, **extra),
-                tag=_tag(source_id, section_index),
+                tag=_tag(source_id, section_index) + ("-short" if section_index in retried else ""),
             )
         except llm.TruncatedReply as error:
             # A reply running past the limit is the model looping on a noisy section. The vendor
@@ -459,6 +506,7 @@ def build(
                 "cost_usd": round(cost, 6),
                 "cached": all(reply.cached for reply in replies),
                 **({"sections_skipped": skipped} if skipped else {}),
+                **({"sections_retried": sorted(retried)} if retried else {}),
                 **({"form": form, "directives": gate_stats} if gate_stats else {}),
             },
             created_by=created_by,
@@ -568,9 +616,11 @@ __all__ = [
     "build",
     "build_key",
     "estimate",
+    "estimate_retry",
     "import_digests",
     "inputs",
     "sections",
     "settings",
+    "skipped_sections",
     "status",
 ]
