@@ -502,6 +502,43 @@ def test_a_section_whose_reply_runs_past_the_limit_is_skipped_and_recorded(world
     assert [row["section"] for row in world.store.claims(SOURCE)] == [1, 1]
 
 
+def test_a_rebuild_retries_only_the_skipped_section_with_the_short_prompt(world):
+    """The short prompt reads the skipped section, the other is served from the cache, and nothing
+    stays recorded as skipped; the source never read stale for it."""
+    world.script(f"{SOURCE}-s1", SECOND)
+    client = llm_client(world.root, world.config, transport=RunawayTransport(world.scripts))
+    claims.build(world.store, client, SOURCE, created_by="test")
+    assert claims.skipped_sections(world.store, SOURCE, world.config) == [0]
+    assert claims.status(world.store, world.config, [SOURCE])[0].state == "current"
+    bill = claims.estimate_retry(world.store, client, [SOURCE])
+    assert (bill.sources, bill.calls) == (1, 1)
+
+    world.script(f"{SOURCE}-s0-short", FIRST)
+    built = claims.build(world.store, client, SOURCE, created_by="test")
+
+    assert (built["sections_skipped"], built["claims"]) == (0, 3)
+    assert claims.skipped_sections(world.store, SOURCE, world.config) == []
+    provenance = json.loads(world.store.artifact(SOURCE, claims.NODE)["provenance"])
+    assert provenance["sections_retried"] == [0]
+    assert "sections_skipped" not in provenance
+
+
+def test_a_short_read_that_also_runs_away_stays_skipped(world):
+    world.script(f"{SOURCE}-s1", SECOND)
+
+    class AlwaysRunaway(RunawayTransport):
+        def send(self, model, messages, params, *, tag):
+            if "-s0" in tag:
+                raise llm.TruncatedReply("cut off", llm.RawReply("loop", 100, 8000, 0.012))
+            return super().send(model, messages, params, tag=tag)
+
+    client = llm_client(world.root, world.config, transport=AlwaysRunaway(world.scripts))
+    claims.build(world.store, client, SOURCE, created_by="test")
+    built = claims.build(world.store, client, SOURCE, created_by="test")
+    assert built["sections_skipped"] == 1
+    assert claims.skipped_sections(world.store, SOURCE, world.config) == [0]
+
+
 def test_a_runaway_quote_is_clipped_and_the_claim_stands(world):
     """A model looping inside `heard` leaves a directive whose statement is sound; the quote is
     kept to its limit, so it can reach Jev, and the claim survives."""
