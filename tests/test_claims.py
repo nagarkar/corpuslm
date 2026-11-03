@@ -500,3 +500,25 @@ def test_a_section_whose_reply_runs_past_the_limit_is_skipped_and_recorded(world
     provenance = json.loads(world.store.artifact(SOURCE, claims.NODE)["provenance"])
     assert provenance["sections_skipped"] == [0]
     assert [row["section"] for row in world.store.claims(SOURCE)] == [1, 1]
+
+
+def test_a_runaway_quote_is_clipped_and_the_claim_stands(world):
+    """A model looping inside `heard` leaves a directive whose statement is sound; the quote is
+    kept to its limit, so it can reach Jev, and the claim survives."""
+    runaway = {
+        "claims": [
+            {
+                "statement": "Send the report.",
+                "segments": [0],
+                "kind": "directive",
+                "speaker": "Chinmay",
+                "addressee": "computer",
+                "heard": "send it " * 20000,
+                "else_kind": "assertion",
+            }
+        ]
+    }
+    world.script(f"{SOURCE}-s0", runaway)
+    claims.build(world.store, world.client(), SOURCE, created_by="test")
+    (found,) = world.store.directives(SOURCE)
+    assert len(found["heard"]) == claims.MAX_HEARD_CHARS
