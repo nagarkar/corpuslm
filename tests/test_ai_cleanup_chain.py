@@ -457,3 +457,104 @@ def test_building_the_ai_cleanup_records_its_suggestions(world):
     rows = world.store.model_suggestions(SOURCE)
     assert {row["artifact_sha256"] for row in rows.values()} == {again}
     assert len(rows) == len(held) and rows["amb-0001"]["suggestion"] == "lime"
+
+
+def _corrupt_the_cache(world):
+    for path in (world.root / llm.CACHE_DIR).glob("*.json"):
+        cached = json.loads(path.read_text())
+        cached["reply"] = "not json"
+        path.write_text(json.dumps(cached))
+
+
+def test_a_replay_with_a_bad_cached_reply_keeps_the_held_build(world):
+    script_all(world)
+    built = world.build()
+    file_bytes = world.chain.path(SOURCE, "model_cleanup").read_bytes()
+    before = world.row()
+    world.config["cleanup"]["model"] = "gemini/gemini-2.5-flash"
+    world.review.value = {"amb-0001": "x"}
+    _corrupt_the_cache(world)
+    assert world.build() == built
+    after = world.row()
+    assert (after["state"], after["inputs"]) == ("built", before["inputs"])
+    assert world.chain.path(SOURCE, "model_cleanup").read_bytes() == file_bytes
+    assert world.report.counts["model_cleanup_held"] == 1
+    assert "batch 0" in world.report.errors[SOURCE]
+
+
+@pytest.mark.parametrize("failure", ["bad_reply", "vendor", "spend_cap", "stopped"])
+def test_a_failed_rebuild_keeps_the_good_build(world, monkeypatch, failure):
+    script_all(world)
+    built = world.build()
+    # the owner's --rebuild-stale over a moved model: the model is asked, and the attempt fails
+    world.config["cleanup"]["model"] = "gemini/gemini-2.5-flash"
+    errors = {
+        "bad_reply": llm.BadReply("reply does not match", 1, "{}"),
+        "vendor": llm.VendorError("BadRequest"),
+        "spend_cap": llm.SpendCapReached("run", "at the cap"),
+    }
+    if failure == "stopped":
+        world.spend_cap_stop.stop("run", world.report)
+    else:
+
+        def fail(*_arguments, **_keywords):
+            raise errors[failure]
+
+        monkeypatch.setattr(llm.Client, "complete", fail)
+    assert world.build(rebuild_stale=True) == built
+    assert world.row()["state"] == "built"
+    assert world.report.counts["model_cleanup_held"] == 1
+    assert SOURCE in world.report.errors
+
+
+def test_a_held_build_replays_under_the_prompt_that_made_it(world, tmp_path):
+    """A newer prompt version's stricter reply schema never judges replies an older version made."""
+    from corpuslm import prompts
+
+    old = prompts.load(world.context().scheme.prompt_id)
+    directory = tmp_path / "newer"
+    directory.mkdir()
+    (directory / f"{old.id}_v{old.version + 1}.md").write_text(
+        old.path.read_text().replace(f"version = {old.version}", f"version = {old.version + 1}", 1)
+        + "\nBe brief.\n"
+    )
+    script_all(world)
+    world.build()
+    seen = []
+    real = llm.Client.replay
+
+    def spy(self, stage, prompt, payload_hash, **keywords):
+        seen.append(prompt.version)
+        return real(self, stage, prompt, payload_hash, **keywords)
+
+    llm.Client.replay = spy
+    try:
+        world.review.value = {"amb-0001": "x"}
+        world.build(prompt_directories=[directory, prompts.BUILT_IN_DIRECTORY])
+    finally:
+        llm.Client.replay = real
+    assert seen and set(seen) == {old.version}
+    assert world.report.counts["model_cleanup_replayed"] == 1
+
+
+def test_plan_and_would_bill_agree_with_what_the_builder_does(world):
+    setup = world.context()
+    assert ai_cleanup_chain.plan(setup, SOURCE, world.spell_fix) == "build"
+    assert ai_cleanup_chain.would_bill(setup, SOURCE, world.spell_fix)
+    script_all(world)
+    world.build()
+    assert ai_cleanup_chain.plan(setup, SOURCE, world.spell_fix) == "current"
+    # a model change holds the build: nothing is billed, until the owner says rebuild
+    world.config["cleanup"]["model"] = "gemini/gemini-2.5-flash"
+    assert ai_cleanup_chain.plan(setup, SOURCE, world.spell_fix) == "held"
+    assert not ai_cleanup_chain.would_bill(setup, SOURCE, world.spell_fix)
+    rebuild = world.context(rebuild_stale=True)
+    assert ai_cleanup_chain.plan(rebuild, SOURCE, world.spell_fix) == "build"
+    assert ai_cleanup_chain.would_bill(rebuild, SOURCE, world.spell_fix)
+    # a verdict on the held build is a replay, free
+    world.review.value = {"amb-0001": "x"}
+    assert ai_cleanup_chain.plan(setup, SOURCE, world.spell_fix) == "replay"
+    assert not ai_cleanup_chain.would_bill(setup, SOURCE, world.spell_fix)
+    # a moved spell-fix document is a real rebuild, and it is priced
+    assert ai_cleanup_chain.plan(setup, SOURCE, "other") == "build"
+    assert ai_cleanup_chain.would_bill(setup, SOURCE, "other")

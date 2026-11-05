@@ -26,6 +26,18 @@ Decisions:
   transcript keeps the prompt and model it was built with until `rebuild_stale` is said.
   Enforced by:
   tests/test_ai_cleanup_chain.py::test_a_changed_prompt_applies_forward_only_and_a_patch_input_replays_the_cache.
+- A failed attempt never costs a source its good build: while a built transcript's file exists,
+  a declined step, a spend cap, a vendor error, a bad reply or a missing key leaves the artifact
+  row and the file as they are, and the attempt is counted `<node>_held` and named in the report.
+  Enforced by:
+  tests/test_ai_cleanup_chain.py::test_a_failed_rebuild_keeps_the_good_build,
+  tests/test_ai_cleanup_chain.py::test_a_replay_with_a_bad_cached_reply_keeps_the_held_build.
+- A held build's replies are replayed under the prompt version that made them, so a newer reply
+  schema never reads them as bad. Enforced by:
+  tests/test_ai_cleanup_chain.py::test_a_held_build_replays_under_the_prompt_that_made_it.
+- `plan` is the one answer to what the step would do for a source; the builder and the dry runs
+  both ask it, so they cannot disagree. Enforced by:
+  tests/test_ai_cleanup_chain.py::test_plan_and_would_bill_agree_with_what_the_builder_does.
 - At a spend cap the step starts no new call and records the source failed (transient,
   budget); the next run continues. Enforced by:
   tests/test_ai_cleanup_chain.py::test_the_run_cap_stops_the_step_and_marks_the_rest_failed.
@@ -90,6 +102,8 @@ __all__ = [
     "SpendCapStop",
     "build_ai_cleanup",
     "estimate",
+    "plan",
+    "would_bill",
 ]
 
 # Inputs by kind: a change in a CONFIG input applies forward only; a change in a PATCH input is
@@ -305,6 +319,62 @@ def _run_arbiter(
     return stats
 
 
+def plan(ai_cleanup_setup: AiCleanupSetup, source_id: str, spell_fix_sha256: str) -> str:
+    """What `build_ai_cleanup` would do for this source: `current` (nothing), `held` (a CONFIG
+    input moved: the build stays), `replay` (a PATCH input moved on a held build: from the cache,
+    never the model) or `build` (ask the model, or the cache when it holds the payload)."""
+    chain = ai_cleanup_setup.chain
+    node = chain.kind.shape.ai_cleanup
+    inputs = ai_cleanup_setup.inputs(source_id, spell_fix_sha256)
+    row = chain.store.artifact(source_id, node)
+    if not row or not chain.path(source_id, node).exists():
+        return "build"
+    if row["state"] == "built" and loads(row["inputs"], {}) == inputs:
+        return "current"
+    if row["state"] not in ("built", "stale"):
+        return "build"
+    old_inputs = loads(row["inputs"], {})
+    changed = {name for name, value in inputs.items() if old_inputs.get(name) != value}
+    if (
+        changed & CONFIG_INPUTS
+        and not ai_cleanup_setup.rebuild_stale
+        and not (changed - CONFIG_INPUTS - PATCH_INPUTS)
+    ):
+        return "replay" if changed & PATCH_INPUTS else "held"
+    return "build"
+
+
+def would_bill(ai_cleanup_setup: AiCleanupSetup, source_id: str, spell_fix_sha256: str) -> bool:
+    """True when a run would pay the model for this source: `plan` says `build`, the step is not
+    off, and the reply cache lacks a batch. Calls no model and writes nothing."""
+    if plan(ai_cleanup_setup, source_id, spell_fix_sha256) != "build":
+        return False
+    if ai_cleanup_setup.off_reason(source_id):
+        return False
+    document = ai_cleanup_setup.chain.load(source_id, ai_cleanup_setup.chain.kind.shape.spell_fix)
+    if ai_cleanup_setup.scheme.fixed_labels:
+        ai_cleanup.adopt_fixed_labels(document)
+    return bool(_walk_cache(ai_cleanup_setup, source_id, document))
+
+
+def _held_prompt(
+    ai_cleanup_setup: AiCleanupSetup, provenance: dict, current: prompts_module.Prompt
+) -> prompts_module.Prompt:
+    """The prompt version that made a held build; the current one when that is not recorded or
+    no longer on disk."""
+    version = provenance.get("prompt_version")
+    if not version:
+        return current
+    try:
+        return prompts_module.load(
+            ai_cleanup_setup.scheme.prompt_id,
+            int(version),
+            directories=ai_cleanup_setup.prompt_directories,
+        )
+    except prompts_module.PromptError:
+        return current
+
+
 def build_ai_cleanup(
     ai_cleanup_setup: AiCleanupSetup, source_id: str, spell_fix_sha256: str, report: Report
 ) -> str | None:
@@ -327,6 +397,14 @@ def build_ai_cleanup(
     row = store.artifact(source_id, node)
     if row and row["state"] == "built" and loads(row["inputs"], {}) == inputs and path.exists():
         return row["sha256"]
+    good_build = row if row and path.exists() and row["state"] in ("built", "stale") else None
+
+    def keep_good_build(problem: str, *, quiet: bool = False) -> str:
+        assert good_build is not None
+        if not quiet:
+            report.count(f"{node}_held")
+            report.errors[source_id] = problem
+        return good_build["sha256"]
 
     def put(
         *,
@@ -396,11 +474,14 @@ def build_ai_cleanup(
                 report.count(f"{node}_held")
                 report.errors[source_id] = f"{node}: held build has no recorded calls to replay"
                 return row["sha256"]
+            prompt = _held_prompt(ai_cleanup_setup, old_provenance_record, prompt)
             batch_tokens = int(held.get("batch_tokens") or batch_tokens)
             overlap = int(held.get("overlap_segments") or overlap)
     reason = ai_cleanup_setup.off_reason(source_id)
     if reason:
         state = "failed" if reason.startswith("budget") else "skipped"
+        if good_build:
+            return keep_good_build(f"{node}: {reason}", quiet=state == "skipped")
         put(
             path=None,
             sha256="",
@@ -473,6 +554,8 @@ def build_ai_cleanup(
             report.errors[source_id] = f"{node}: {error}"
             return row["sha256"] if row else None
         except llm.NotConfigured as error:
+            if good_build:
+                return keep_good_build(f"{node}: {error}", quiet=True)
             put(
                 path=None,
                 sha256="",
@@ -483,6 +566,8 @@ def build_ai_cleanup(
             return None
         except llm.SpendCapReached as error:
             ai_cleanup_setup.spend_cap_stop.stop(error.cap, report)
+            if good_build:
+                return keep_good_build(f"{node}: budget: {error}")
             put(
                 path=None,
                 sha256="",
@@ -499,6 +584,8 @@ def build_ai_cleanup(
             return None
         except llm.VendorError as error:
             # transient by definition: recorded, the run goes on
+            if good_build:
+                return keep_good_build(f"{node} batch {batch.number}: vendor: {error}")
             put(
                 path=None,
                 sha256="",
@@ -510,6 +597,8 @@ def build_ai_cleanup(
             report.errors[source_id] = f"{node} batch {batch.number}: vendor: {error}"
             return None
         except (llm.BadReply, llm.TruncatedReply, ai_cleanup.BatchError) as error:
+            if good_build:
+                return keep_good_build(f"{node} batch {batch.number}: {error}")
             put(
                 path=None,
                 sha256="",
