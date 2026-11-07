@@ -119,6 +119,12 @@ class FakeAuthorlm:
         api.get_manuscript = get_manuscript
         api.collect = collect
         api.resolve_revisions = resolve_revisions
+
+        def update_manuscript_metadata(db, manuscript, **changes):
+            fake.manuscripts[manuscript["name"]].update(changes)
+            return dict(fake.manuscripts[manuscript["name"]])
+
+        api.update_manuscript_metadata = update_manuscript_metadata
         api.register_manuscript = register_manuscript
         api.caller_metadata = caller_metadata
         api.set_caller_metadata = set_caller_metadata
@@ -175,6 +181,9 @@ class FakeAuthorlm:
 @pytest.fixture
 def real(tmp_path, monkeypatch):
     monkeypatch.setattr("corpuslm.document.FAKE_DIR", None)
+    blank = tmp_path / "blank-credits.toml"
+    blank.write_text("")
+    monkeypatch.setenv("CORPUSLM_DOCUMENT_CREDITS", str(blank))
     fake = FakeAuthorlm(tmp_path)
     fake.install(monkeypatch)
     workspace = tmp_path / "ytlm-ws"
@@ -376,3 +385,59 @@ def test_the_stand_in_authorlm_offers_exactly_the_frozen_entry_points(tmp_path, 
             name for name in vars(sys.modules[f"authorlm.{module}"]) if not name.startswith("__")
         }
         assert offered == set(names), module
+
+
+CREDITS = """author = "Chinmay Nagarkar"
+copyright_owner = "Chinmay Nagarkar"
+narrator = "Adam Stone"
+publisher = "The Spiritual Hindu"
+"""
+
+
+def test_a_new_manuscript_takes_the_owners_credits(real, tmp_path, monkeypatch):
+    fake, store, _ = real
+    credits = tmp_path / "credits.toml"
+    credits.write_text(CREDITS)
+    monkeypatch.setenv("CORPUSLM_DOCUMENT_CREDITS", str(credits))
+    book = tmp_path / "book"
+    book.mkdir()
+    store.ensure("dharma", book, "Dharma talks")
+    row = fake.manuscripts["dharma"]
+    assert row["author"] == row["copyright_owner"] == "Chinmay Nagarkar"
+    assert row["narrator"] == "Adam Stone"
+    assert row["publisher"] == "The Spiritual Hindu"
+    assert isinstance(row["copyright_year"], int) and row["copyright_year"] >= 2026
+    assert store.warnings == []
+
+
+def test_credits_leave_an_existing_manuscript_alone(real, tmp_path, monkeypatch):
+    fake, store, _ = real
+    book = tmp_path / "book"
+    book.mkdir()
+    fake.manuscripts["dharma"] = {"id": "x", "name": "dharma", "path": str(book)}
+    credits = tmp_path / "credits.toml"
+    credits.write_text(CREDITS)
+    monkeypatch.setenv("CORPUSLM_DOCUMENT_CREDITS", str(credits))
+    store.ensure("dharma", book, "Dharma talks")
+    assert "author" not in fake.manuscripts["dharma"]
+
+
+def test_no_credits_file_is_said_on_the_board(real, tmp_path, monkeypatch):
+    fake, store, _ = real
+    monkeypatch.setenv("CORPUSLM_DOCUMENT_CREDITS", str(tmp_path / "missing.toml"))
+    book = tmp_path / "book"
+    book.mkdir()
+    store.ensure("dharma", book, "Dharma talks")
+    assert "author" not in fake.manuscripts["dharma"]
+    assert any("no credits file" in warning for warning in store.warnings)
+
+
+def test_a_mistyped_credit_is_declined_by_name(real, tmp_path, monkeypatch):
+    _, store, _ = real
+    credits = tmp_path / "credits.toml"
+    credits.write_text('auther = "Chinmay Nagarkar"\n')
+    monkeypatch.setenv("CORPUSLM_DOCUMENT_CREDITS", str(credits))
+    book = tmp_path / "book"
+    book.mkdir()
+    with pytest.raises(adapter.DocumentUnavailable, match="auther"):
+        store.ensure("dharma", book, "Dharma talks")

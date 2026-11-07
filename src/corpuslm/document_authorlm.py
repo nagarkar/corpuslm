@@ -41,6 +41,7 @@ ENTRY_POINTS: dict[str, frozenset[str]] = {
             "resolve_workspace",
             "set_caller_metadata",
             "stage_revisions",
+            "update_manuscript_metadata",
             "withdraw_revisions",
         }
     ),
@@ -69,6 +70,34 @@ WRITE_ALLOWANCE_PERIOD_SECONDS = 62
 REBUILD_WRITES = 8
 STAGE_OVERHEAD_WRITES = 8
 WRITES_FILE = "document-writes.json"
+
+# The owner's credits, set on every corpus manuscript this store creates, so its
+# audiobook export finds an author, narrator and the rest without a hand step
+# (owner, 2026-11-07). A local TOML file, gitignored: CORPUSLM_DOCUMENT_CREDITS
+# names it, else document-credits.toml at the repository root. The copyright
+# year is the year the manuscript is created.
+CREDITS_ENV = "CORPUSLM_DOCUMENT_CREDITS"
+CREDITS_FILE = Path(__file__).resolve().parents[2] / "document-credits.toml"
+CREDIT_KEYS = frozenset({"author", "copyright_owner", "narrator", "publisher"})
+
+
+def load_credits() -> tuple[dict[str, str], str | None]:
+    """The credits and a warning when there are none. An unknown key or a
+    value that is not text is declined by name: a typo never goes quiet."""
+    import os
+    import tomllib
+
+    path = Path(os.environ.get(CREDITS_ENV) or CREDITS_FILE)
+    if not path.exists():
+        return {}, f"no credits file at {path}: the new manuscript has no author or narrator"
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    unknown = sorted(set(data) - CREDIT_KEYS)
+    if unknown:
+        raise DocumentUnavailable(f"{path}: unknown key(s) {', '.join(unknown)}")
+    bad = sorted(key for key, value in data.items() if not isinstance(value, str))
+    if bad:
+        raise DocumentUnavailable(f"{path}: {', '.join(bad)} must be text")
+    return {key: value for key, value in data.items() if value.strip()}, None
 
 
 class AuthorlmStore:
@@ -242,8 +271,18 @@ class AuthorlmStore:
                 "a document cannot share its name"
             )
         if created:
+            credits, missing = load_credits()
             self._api.register_manuscript(self._db, name, str(path), extraction=False)
             self._api.set_caller_metadata(self._db, self._ms(name), self._origin, {"title": title})
+            if credits:
+                from datetime import UTC, datetime
+
+                year = datetime.fromtimestamp(self._time(), UTC).year
+                self._api.update_manuscript_metadata(
+                    self._db, self._ms(name), copyright_year=year, **credits
+                )
+            if missing:
+                self.warnings.append(missing)
         return {"created": created, "url": self._url(self._ms(name))}
 
     def read(self, name: str) -> dict:
