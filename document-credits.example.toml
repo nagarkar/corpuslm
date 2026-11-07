@@ -1,0 +1,8 @@
+# Copy to document-credits.toml (gitignored) and fill in. corpuslm sets these on
+# every corpus manuscript it creates in authorlm (ytlm and beelm corpus documents),
+# so `authorlm audio export` finds them. The copyright year is the creation year.
+# CORPUSLM_DOCUMENT_CREDITS names another file. Unknown keys are declined.
+author = ""
+copyright_owner = ""
+narrator = ""
+publisher = ""
