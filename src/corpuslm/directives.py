@@ -6,8 +6,8 @@ of the claims prompt (`claims_bee`, corpuslm.claims) in the same model read as t
 with two columns of its own: `addressee` (`computer` for what Computer is to act on, `self` for a
 note to the owner) and `heard` (the words as heard, verbatim: the lines the model cites). The
 model says on what basis a line is a candidate (`basis`: `wake_word`, `guidance`,
-`instruction`, `commitment`); the gate here, never the model, decides from the basis and the conversation's form (corpuslm.form)
-whether it is a directive, for whom, and whether Jev checks it ("is this something the owner
+`instruction`, `commitment`); the gate here, never the model, decides from the basis and the
+conversation's form (corpuslm.form) whether it is a directive, for whom, and whether Jev checks it ("is this something the owner
 wants acted on", corpuslm.judge, at `[claims].directive_threshold`):
 
 | basis | monologue | dialogue, group | media, unclassified |
