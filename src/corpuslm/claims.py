@@ -20,15 +20,17 @@ reads `imported` in `status` and is never rebuilt until the owner asks.
 
 The prompt is chosen by the source kind as the cleanup prompt is (`speaker_map.claims_prompt_id`):
 ytlm's `claims` for YouTube, Vimeo, file and text sources, untouched; `claims_bee` for Bee
-sources, which also extracts directives by the conversation's form (corpuslm.form) and receives
-the form and the owner's first name (`[claims].owner_first_name`). The form is a build input of
-a Bee source, so a reclassified source reads stale.
+sources, which also extracts directives (instructions, guidance and commitments, each with its
+basis; corpuslm.directives decides which stand by the conversation's form) and receives the form
+and the owner's first name (`[claims].owner_first_name`). The form is a build input of a Bee
+source, so a reclassified source reads stale.
 
 A section whose reply ran past the token limit is recorded in the artifact's `sections_skipped`.
-A later build over the same inputs reads it with `claims_bee_short`, which caps the `heard` quote
-where the model tends to loop; `skipped_sections` names the sources that have such sections, and
-only an explicit rebuild retries them. Its prompt is no build input of the source, so adding or
-changing it leaves every built source current.
+A later build over the same inputs reads it with `claims_bee_short`, kept apart so that changing
+it rebuilds nothing. Since version 2 neither prompt asks for the `heard` quote, where the model
+tends to loop: a directive takes the words of the lines it cites. `skipped_sections` names the
+sources that have such sections, and only an explicit rebuild retries them. The retry prompt is
+no build input of the source, so adding or changing it leaves every built source current.
 
 Never imports: cli, clikit. Reads the database only through `Store`.
 
@@ -55,6 +57,11 @@ Decisions:
   that prompt's hash is a build input, so changing it would bill a rebuild of every Bee source.
   (owner, 2026-11-02) Enforced by:
   tests/test_claims.py::test_a_rebuild_retries_only_the_skipped_section_with_the_short_prompt.
+- A directive the model did not quote takes its words as heard from the lines it cites, and
+  version 2 of both Bee prompts asks for no quote at all. Why: on the three recordings of
+  2026-11-19 the model looped inside the quote of a guidance line in 4 of 12 sections, each
+  billed to the token limit and left out; without the quote all 12 were read. Enforced by:
+  tests/test_directives.py::test_a_directive_without_a_quote_takes_the_words_of_its_lines.
 
 Terms:
 - **claim**: one short sentence (25 words or fewer) restating one thing a source says, with its
@@ -233,6 +240,14 @@ def _variables(
     }
 
 
+def _words_of(part: list[dict], cited: list[int]) -> str:
+    """The words as heard of a directive the model did not quote: the text of the lines it
+    cites, in the order they were spoken."""
+    wanted = set(cited)
+    words = " ".join(segment["text"].strip() for segment in part if segment["idx"] in wanted)
+    return words[:MAX_HEARD_CHARS]
+
+
 def _tag(source_id: str, section_index: int) -> str:
     return f"{source_id}-s{section_index}"
 
@@ -399,8 +414,8 @@ def build(
     events: events_module.Events | None = None,
 ) -> dict:
     """Ask the model section by section, check every cited segment, store the claims and the
-    artifact. A Bee source's directives pass the form rule and, in a monologue, Jev's gate
-    (corpuslm.directives; `judge` None leaves a monologue's candidates ungated and says so).
+    artifact. A Bee source's directives pass the form rule and Jev's gate (corpuslm.directives;
+    `judge` None leaves the candidates Jev would check ungated and says so).
     Once the transaction commits, `claims.built` is published to `events` (corpuslm.events).
     Returns counts only."""
     row = store.source(source_id)
@@ -456,12 +471,17 @@ def build(
                     "speaker": claim["speaker"].strip(),
                     **{
                         key: claim[key]
-                        for key in ("addressee", "heard", "else_kind")
+                        for key in ("addressee", "heard", "else_kind", "basis")
                         if claim.get(key) is not None
                     },
                     **(
                         {"heard": claim["heard"][:MAX_HEARD_CHARS]}
                         if claim.get("heard") is not None
+                        else {}
+                    ),
+                    **(
+                        {"heard": _words_of(part, cited)}
+                        if claim["kind"] == directives_module.KIND and not claim.get("heard")
                         else {}
                     ),
                 }

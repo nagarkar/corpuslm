@@ -102,3 +102,52 @@ def test_the_owners_ruling_stands_through_a_reclassification(store, tmp_path):
 def test_an_unclassified_source_has_no_label(store):
     assert store.source_form(SOURCE) is None and form.label_of(store, SOURCE) is None
     assert form.cards(store, [SOURCE]) == []
+
+
+ALONE = [
+    {"idx": 0, "t0": 0.0, "t1": 1.0, "speaker": "Quill", "text": "we should write that down"},
+    {"idx": 1, "t0": 1.0, "t1": 2.0, "speaker": "Unknown", "text": "the next step is a chapter"},
+    {"idx": 2, "t0": 2.0, "t1": 3.0, "speaker": "", "text": "and then the sermons"},
+]
+
+
+def test_the_owners_name_and_unknown_alone_is_a_monologue_unless_jev_says_media(store, tmp_path):
+    store.replace_segments(SOURCE, ALONE)
+    assert form.owner_alone(ALONE, "Quill") and not form.owner_alone(ALONE, "")
+    assert not form.owner_alone(SEGMENTS, "Quill")  # a Media line: not only the owner and Unknown
+    assert not form.owner_alone(ALONE[1:], "Quill")  # the owner's name is on no line
+    made = judge_with(tmp_path, [choice_reply("dialogue", {"dialogue": 0.86, "monologue": 0.05})])
+    record = form.classify(store, made, SOURCE, created_by="test", owner="Quill")
+    assert (record["jev"], record["label"], record["owner_alone"]) == (
+        "dialogue", "monologue", True,
+    )  # fmt: skip
+    assert not record["disagree"] and form.cards(store, [SOURCE]) == []  # set aside, no card
+    assert form.label_of(store, SOURCE) == "monologue"
+    # only `media` overrules: a podcast heard beside the owner is not the owner speaking
+    made = judge_with(tmp_path / "again", [choice_reply("media", {"media": 0.9})])
+    record = form.classify(store, made, SOURCE, created_by="test", owner="Quill")
+    assert (record["label"], record["disagree"]) == ("media", True)
+    # without the owner's name the old rule holds: Jev decides
+    made = judge_with(tmp_path / "third", [choice_reply("dialogue", {"dialogue": 0.86})])
+    record = form.classify(store, made, SOURCE, created_by="test")
+    assert (record["label"], record["disagree"]) == ("dialogue", True)
+    assert "owner_alone" not in record
+
+
+def test_a_record_made_before_the_lines_changed_is_outdated(store, tmp_path):
+    assert not form.outdated(store, SOURCE, "Quill")  # nothing recorded: classify, not reclassify
+    store.replace_segments(SOURCE, ALONE)
+    made = judge_with(tmp_path, [choice_reply("dialogue", {"dialogue": 0.86})])
+    form.classify(store, made, SOURCE, created_by="test")  # as before this rule: no owner given
+    assert form.label_of(store, SOURCE) == "dialogue"
+    assert form.outdated(store, SOURCE, "Quill")  # the owner alone, recorded as a dialogue
+    form.classify(store, made, SOURCE, created_by="test", owner="Quill")
+    assert form.label_of(store, SOURCE) == "monologue" and not form.outdated(store, SOURCE, "Quill")
+    # a guest appears when the rest of the conversation arrives
+    store.replace_segments(
+        SOURCE, ALONE + [{"idx": 3, "t0": 3.0, "t1": 4.0, "speaker": "Wren", "text": "yes"}]
+    )
+    assert form.outdated(store, SOURCE, "Quill")
+    # the owner's ruling is never outdated
+    form.rule(store, SOURCE, "monologue", created_by="owner")
+    assert not form.outdated(store, SOURCE, "Quill")

@@ -166,9 +166,10 @@ CLAIM_KINDS = (
     "directive",  # an instruction or commitment the owner spoke (corpuslm.claims, Bee prompt)
 )
 
-# Whom a directive addresses: `computer` when the utterance addresses the wake word "Computer"
-# (for computerlm), `self` for any other imperative (a note to the owner). NULL on every other
-# claim kind.
+# Whom a directive addresses: `computer` when Computer is to act on it (an utterance addressed to
+# the wake word "Computer", guidance, or a plain instruction spoken alone; for computerlm), `self`
+# for a note to the owner (a first-person promise). Decided by corpuslm.directives. NULL on every
+# other claim kind.
 DIRECTIVE_ADDRESSEES = ("computer", "self")
 
 # The claims of a source (corpuslm.claims): derived state, rebuilt whole per source.

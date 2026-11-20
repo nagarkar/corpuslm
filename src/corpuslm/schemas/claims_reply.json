@@ -44,7 +44,7 @@
      },
      "kind": {
       "type": "string",
-      "description": "One of assertion, definition, example, story, question, prediction, disagreement, directive (an instruction or commitment the owner spoke; Bee prompt only).",
+      "description": "One of assertion, definition, example, story, question, prediction, disagreement, directive (an instruction, guidance or commitment the owner spoke; Bee prompt only).",
       "enum": [
        "assertion",
        "definition",
@@ -56,9 +56,19 @@
        "directive"
       ]
      },
+     "basis": {
+      "type": "string",
+      "description": "Why a directive is a candidate: wake_word (addressed to \"Computer\"), guidance (the owner says work ought to be done: \"we should\", \"the next step is\"), instruction (a plain imperative) or commitment (a first-person promise). Only on kind directive.",
+      "enum": [
+       "wake_word",
+       "guidance",
+       "instruction",
+       "commitment"
+      ]
+     },
      "addressee": {
       "type": "string",
-      "description": "A directive's addressee: computer when the utterance addresses the wake word \"Computer\", self for any other imperative. Only on kind directive.",
+      "description": "A directive's addressee as the first version of the Bee prompt gave it: computer when the utterance addresses the wake word \"Computer\", self for any other imperative. Read only when a reply has no basis; the gate decides the addressee (corpuslm.directives). Only on kind directive.",
       "enum": [
        "computer",
        "self"

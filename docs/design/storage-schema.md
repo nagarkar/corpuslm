@@ -837,11 +837,11 @@ the inputs the list was built from. No row ever links one claim to another.
 | section | INTEGER | no | the claim-pass section the claim came from, from 0 |
 | segments | TEXT | no | JSON list of the supporting segment positions, clearest first, at most six |
 | text | TEXT | no | the claim, 25 words or fewer |
-| kind | TEXT | no | one of `assertion`, `definition`, `example`, `story`, `question`, `prediction`, `disagreement`, `directive` (an instruction or commitment the owner spoke, from the Bee claims prompt; corpuslm.directives) |
+| kind | TEXT | no | one of `assertion`, `definition`, `example`, `story`, `question`, `prediction`, `disagreement`, `directive` (an instruction, guidance or commitment the owner spoke, from the Bee claims prompt; corpuslm.directives) |
 | speaker | TEXT | no | the speaker label on the cited lines, `''` when none |
 | build_key | TEXT | no | the hash of the pass's inputs (text, prompt, model, section size) |
 | run_id | TEXT | no | the run that built it, `''` when none |
-| addressee | TEXT | yes | a directive's addressee: `computer` when the utterance addresses the wake word "Computer", `self` for any other imperative (a note to the owner); NULL on every other kind |
+| addressee | TEXT | yes | a directive's addressee, decided by the directive gate (corpuslm.directives): `computer` when Computer is to act on it (an utterance addressed to the wake word "Computer", guidance such as "we should", or a plain instruction spoken alone), `self` for a note to the owner (a first-person promise); NULL on every other kind |
 | heard | TEXT | yes | a directive's words as heard, verbatim; NULL on every other kind |
 
 ### `concepts`
