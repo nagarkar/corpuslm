@@ -255,8 +255,9 @@ def test_a_directive_without_a_quote_takes_the_words_of_its_lines(world):
     first, second = world.store.directives(SOURCE)
     assert first["heard"] == GUIDED_SEGMENTS[0]["text"]
     assert second["heard"] == GUIDED_SEGMENTS[0]["text"] + " " + GUIDED_SEGMENTS[1]["text"]
-    retry = prompts.load(claims.RETRY_PROMPT_ID)
-    assert "`heard`" not in retry.body and "`heard`" in prompts.load("claims_bee").body
+    # neither prompt asks for the quote: the model loops inside it on guidance lines
+    for prompt_id in ("claims_bee", claims.RETRY_PROMPT_ID):
+        assert "`heard`" not in prompts.load(prompt_id).body
 
 
 def test_the_bee_prompt_asks_for_the_basis_and_reads_unknown_lines_as_the_owners():

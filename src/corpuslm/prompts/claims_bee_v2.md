@@ -76,13 +76,11 @@ Which of them to list depends on FORM:
 For each directive, besides `statement` (what is to be done, restated as one
 clear sentence, with what, whom and when as far as the lines say; for
 guidance name the thing it is about, taken from the lines around it, so the
-sentence stands alone), `speaker`, `segments` and `kind` "directive", also
-give:
+sentence stands alone), `speaker`, `segments` (only the line or two that
+make the request) and `kind` "directive", also give (and do not quote the
+lines anywhere: the words as heard are taken from the lines you cite):
 - `basis`: one of the four above. When two fit, "wake_word" wins, then
   "guidance", then "instruction".
-- `heard`: the words as heard, verbatim from the cited lines, the whole
-  utterance from the wake word, the imperative or the guidance to the end of
-  the request.
 - `else_kind`: the ordinary kind this would be if it were not a directive
   (usually "assertion"; "prediction" for an intention about the future).
 
@@ -103,7 +101,6 @@ Reply with ONE JSON object and nothing else:
     {{"statement": "<the request>", "speaker": "{owner}",
       "segments": [<index>], "kind": "directive",
       "basis": "wake_word" | "guidance" | "instruction" | "commitment",
-      "heard": "<the words as heard>",
       "else_kind": "<ordinary kind>"}}
   ]
 }}

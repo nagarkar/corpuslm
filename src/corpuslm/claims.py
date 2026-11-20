@@ -26,9 +26,9 @@ and the owner's first name (`[claims].owner_first_name`). The form is a build in
 source, so a reclassified source reads stale.
 
 A section whose reply ran past the token limit is recorded in the artifact's `sections_skipped`.
-A later build over the same inputs reads it with `claims_bee_short`, which asks for no `heard`
-quote, where the model tends to loop: a directive that comes without one takes the words of the
-lines it cites; `skipped_sections` names the sources that have such sections, and
+A later build over the same inputs reads it with `claims_bee_short`, kept apart so that changing
+it rebuilds nothing. Since version 2 neither prompt asks for the `heard` quote, where the model
+tends to loop: a directive takes the words of the lines it cites; `skipped_sections` names the sources that have such sections, and
 only an explicit rebuild retries them. Its prompt is no build input of the source, so adding or
 changing it leaves every built source current.
 
@@ -57,10 +57,10 @@ Decisions:
   that prompt's hash is a build input, so changing it would bill a rebuild of every Bee source.
   (owner, 2026-11-02) Enforced by:
   tests/test_claims.py::test_a_rebuild_retries_only_the_skipped_section_with_the_short_prompt.
-- A directive the model did not quote takes its words as heard from the lines it cites, so the
-  retry prompt can ask for no quote at all. Why: on `bee:12986356` (2026-11-19) the model looped
-  inside the quote of one guidance line under both prompts, and the section that held it was
-  left out twice. Enforced by:
+- A directive the model did not quote takes its words as heard from the lines it cites, and
+  version 2 of both Bee prompts asks for no quote at all. Why: on the three recordings of
+  2026-11-19 the model looped inside the quote of a guidance line in 4 of 12 sections, each
+  billed to the token limit and left out; without the quote all 12 were read. Enforced by:
   tests/test_directives.py::test_a_directive_without_a_quote_takes_the_words_of_its_lines.
 
 Terms:
