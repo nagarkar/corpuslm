@@ -20,9 +20,10 @@ reads `imported` in `status` and is never rebuilt until the owner asks.
 
 The prompt is chosen by the source kind as the cleanup prompt is (`speaker_map.claims_prompt_id`):
 ytlm's `claims` for YouTube, Vimeo, file and text sources, untouched; `claims_bee` for Bee
-sources, which also extracts directives by the conversation's form (corpuslm.form) and receives
-the form and the owner's first name (`[claims].owner_first_name`). The form is a build input of
-a Bee source, so a reclassified source reads stale.
+sources, which also extracts directives (instructions, guidance and commitments, each with its
+basis; corpuslm.directives decides which stand by the conversation's form) and receives the form
+and the owner's first name (`[claims].owner_first_name`). The form is a build input of a Bee
+source, so a reclassified source reads stale.
 
 A section whose reply ran past the token limit is recorded in the artifact's `sections_skipped`.
 A later build over the same inputs reads it with `claims_bee_short`, which caps the `heard` quote
@@ -399,8 +400,8 @@ def build(
     events: events_module.Events | None = None,
 ) -> dict:
     """Ask the model section by section, check every cited segment, store the claims and the
-    artifact. A Bee source's directives pass the form rule and, in a monologue, Jev's gate
-    (corpuslm.directives; `judge` None leaves a monologue's candidates ungated and says so).
+    artifact. A Bee source's directives pass the form rule and Jev's gate (corpuslm.directives;
+    `judge` None leaves the candidates Jev would check ungated and says so).
     Once the transaction commits, `claims.built` is published to `events` (corpuslm.events).
     Returns counts only."""
     row = store.source(source_id)
@@ -456,7 +457,7 @@ def build(
                     "speaker": claim["speaker"].strip(),
                     **{
                         key: claim[key]
-                        for key in ("addressee", "heard", "else_kind")
+                        for key in ("addressee", "heard", "else_kind", "basis")
                         if claim.get(key) is not None
                     },
                     **(

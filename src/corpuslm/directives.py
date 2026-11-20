@@ -1,15 +1,25 @@
 """Directives: what the owner asked for, as claims of kind `directive`, gated and ruled on.
 
-A directive is an instruction or commitment the owner spoke: a claim of kind `directive` in the
-shared `claims` table (nagarkar/corpuslm#86), produced by the Bee variant of the claims prompt
-(`claims_bee`, corpuslm.claims) in the same model read as the other claims, with two columns of
-its own: `addressee` (`computer` when the utterance addresses the wake word "Computer", `self`
-for any other imperative) and `heard` (the words as heard, verbatim). Which lines are candidates
-depends on the conversation's form (corpuslm.form): in a monologue every imperative or
-first-person commitment the owner speaks is one, and Jev gates each ("is this an instruction the
-owner wants acted on", corpuslm.judge) at `[claims].directive_threshold`; in company only an
-utterance that addresses "Computer" is one, and no gate is needed. A candidate the gate leaves
-out stays a claim of its ordinary kind (the reply's `else_kind`).
+A directive is an instruction, a piece of guidance or a commitment the owner spoke: a claim of
+kind `directive` in the shared `claims` table (nagarkar/corpuslm#86), produced by the Bee variant
+of the claims prompt (`claims_bee`, corpuslm.claims) in the same model read as the other claims,
+with two columns of its own: `addressee` (`computer` for what Computer is to act on, `self` for a
+note to the owner) and `heard` (the words as heard, verbatim). The model says on what basis a
+line is a candidate (`basis`: `wake_word`, `guidance`, `instruction`, `commitment`); the gate
+here, never the model, decides from the basis and the conversation's form (corpuslm.form)
+whether it is a directive, for whom, and whether Jev checks it ("is this something the owner
+wants acted on", corpuslm.judge, at `[claims].directive_threshold`):
+
+| basis | monologue | dialogue, group | media, unclassified |
+|---|---|---|---|
+| `wake_word`: addressed to "Computer" | `computer`, Jev | `computer` | `computer` |
+| `guidance`: "we should", "the next step is" | `computer`, Jev | `computer`, Jev | a claim |
+| `instruction`: "write that down" | `computer`, Jev | a claim | a claim |
+| `commitment`: "I will call her" | `self`, Jev | a claim | a claim |
+
+A candidate the gate leaves out stays a claim of its ordinary kind (the reply's `else_kind`). A
+reply without a basis (the first version of the prompt) is read by its addressee: `computer` as
+the wake word, anything else as a commitment.
 
 The owner rules on each directive from the review surface (corpuslm.directives_page): confirm or
 decline, an append-only row of `directive_verdicts` keyed by the directive's subject (the source,
@@ -20,15 +30,29 @@ directives (`Store.claims` leaves them out by default).
 Never imports: cli, clikit. Reads the database only through `Store`.
 
 Decisions:
-- Addressee is decided by the wake word alone: an utterance addressed to "Computer" is for
-  computerlm, whatever it asks; any other imperative is a note to the owner (`self`), listed and
-  never acted on. Household members are not addressees. (owner, 2026-10-21)
-- Extraction is form-dependent: in a monologue every imperative is a candidate, gated by Jev; in
-  company only an addressed utterance is one. A candidate below the threshold keeps its ordinary
-  kind. (owner, 2026-10-21) Enforced by:
-  tests/test_directives.py::test_a_monologue_candidate_below_the_threshold_keeps_its_ordinary_kind,
+- Guidance the owner speaks in general terms is for Computer: any line of the owner's that says
+  work ought to be done ("we should", "we must", "we need", "the next step is", "there should
+  be"), read by meaning, never from a phrase list, and checked by Jev; alone or in a dialogue or
+  group, never in a media recording. Its addressee is `computer` outright, as a wake-word
+  utterance's is. Why: owner, 2026-11-20, "There may be guidance in general like "we should do
+  this" or "the next step is to" and those are guidances for computer" (nagarkar/beelm#43).
+  (owner) Enforced by:
+  tests/test_directives.py::test_in_a_monologue_guidance_and_plain_instructions_are_for_computer,
+  tests/test_directives.py::test_in_company_guidance_is_for_computer_and_a_plain_instruction_is_a_claim,
+  tests/test_directives.py::test_in_a_media_recording_only_the_wake_word_is_a_directive.
+- A plain instruction without the wake word ("write that down") is for Computer when the owner
+  is alone and an ordinary claim in company, where it is said to the person in the room; a
+  first-person promise is a note to the owner (`self`), listed and never acted on, and only when
+  alone. An utterance addressed to "Computer" is for Computer in every form, whatever it asks.
+  Household members are not addressees. (owner) Enforced by:
+  tests/test_directives.py::test_in_a_monologue_guidance_and_plain_instructions_are_for_computer,
   tests/test_directives.py::test_in_company_only_an_addressed_utterance_is_a_directive.
-- Without Jev a monologue's candidates stand ungated and the artifact says so. Enforced by:
+- The gate decides the addressee from the basis and the form; the model's own `addressee` is
+  read only when a reply has no basis. Enforced by:
+  tests/test_directives.py::test_the_gate_not_the_model_decides_the_addressee.
+- A candidate below the threshold keeps its ordinary kind. (owner) Enforced by:
+  tests/test_directives.py::test_a_monologue_candidate_below_the_threshold_keeps_its_ordinary_kind.
+- Without Jev the candidates Jev would check stand ungated and the artifact says so. Enforced by:
   tests/test_directives.py::test_without_jev_monologue_candidates_stand_and_the_pass_says_so.
 - A rebuild never overwrites the owner's verdict: the verdict is keyed by subject, not by claim
   id. (owner, 2026-10-21) Enforced by:
@@ -37,10 +61,14 @@ Decisions:
   Enforced by: tests/test_directives.py::test_the_other_passes_never_see_a_directive.
 
 Terms:
-- **directive**: an instruction or commitment the owner spoke; a claim of kind `directive`.
-- **addressee**: `computer` (the wake word was spoken) or `self` (a note to the owner).
+- **directive**: an instruction, guidance or commitment the owner spoke; a claim of kind
+  `directive`.
+- **basis**: why a line is a candidate: `wake_word` (addressed to "Computer"), `guidance` (says
+  work ought to be done), `instruction` (a plain imperative) or `commitment` (a first-person
+  promise).
+- **addressee**: `computer` (Computer is to act on it) or `self` (a note to the owner).
 - **heard**: a directive's words as heard, verbatim.
-- **directive gate**: Jev's yes/no on a monologue candidate, applied at the threshold.
+- **directive gate**: the form rule and Jev's yes/no on a candidate, applied at the threshold.
 - **directive verdict**: the owner's confirm or decline, a row of `directive_verdicts`; the
   newest per (source, subject) is in force.
 """
@@ -55,18 +83,53 @@ KIND = "directive"
 QUESTION = "acted_on"
 DEFAULT_THRESHOLD = 0.6
 VERDICTS = ("confirm", "decline")
+BASES = ("wake_word", "guidance", "instruction", "commitment")
+COMPUTER, SELF = "computer", "self"
 INSTRUCTIONS = (
-    "`utterance` is something the owner said while alone, as the recorder heard it, and "
-    "`restated` is a model's one-sentence reading of it. Is it an instruction, request or "
-    "commitment the owner wants acted on later (something to do, remember, buy, send, book, "
-    "look up, or a promise to someone), rather than a thought spoken aloud, a quotation, a "
-    "hypothetical, or a remark about the past?"
+    "`utterance` is something the owner of a wearable recorder said, as the recorder heard it, "
+    "and `restated` is a model's one-sentence reading of it. `form` says whether the owner was "
+    "alone (monologue) or in company, and `basis` why it was picked: `wake_word` (addressed to "
+    'the owner\'s assistant, "Computer"), `instruction` (a plain imperative), `guidance` (the '
+    'owner saying that work ought to be done: "we should explore this and write it down", '
+    '"we must put that into the sermons", "we need an argument for it", "the next step is '
+    'to", "there should be a chapter on that"; the owner\'s "we" is the owner and the '
+    "assistant) or `commitment` (a first-person promise). Is it something the owner wants acted "
+    "on later (work to do, write, explore, explain, add, remember, buy, send, book, look up, or "
+    "a promise to someone), rather than a thought spoken aloud, a quotation, a hypothetical, a "
+    "remark about the past, or a general opinion about how people or the world should be?"
 )
 CRITERIA = {
-    "true": "the owner wants this done or remembered: an actionable instruction or a commitment",
-    "false": "thinking aloud, narration, a quotation, a hypothetical, advice to nobody, or a "
-    "remark that merely mentions doing something",
+    "true": "the owner wants this done or remembered: an actionable instruction, guidance about "
+    "work that ought to be done on the owner's own projects, or a commitment",
+    "false": "thinking aloud, narration, a quotation, a hypothetical, advice to nobody, a "
+    "general opinion about how people or the world should be, or a remark that merely mentions "
+    "doing something",
 }
+# basis -> form -> (addressee, whether Jev checks it); a form not listed leaves the candidate out
+_ALONE = ("monologue",)
+_TOGETHER = ("dialogue", "group")
+RULES: dict[str, dict[str, tuple[str, bool]]] = {
+    "guidance": dict.fromkeys(_ALONE + _TOGETHER, (COMPUTER, True)),
+    "instruction": dict.fromkeys(_ALONE, (COMPUTER, True)),
+    "commitment": dict.fromkeys(_ALONE, (SELF, True)),
+}
+
+
+def basis_of(claim: dict) -> str:
+    """Why a candidate is one: the reply's `basis`, else (a reply of the first prompt version)
+    its addressee read as the wake word or a commitment."""
+    basis = claim.get("basis")
+    if basis in BASES:
+        return str(basis)
+    return "wake_word" if claim.get("addressee") == COMPUTER else "commitment"
+
+
+def ruling(basis: str, form: str) -> tuple[str, bool] | None:
+    """(addressee, whether Jev checks it) for a candidate of `basis` in a conversation of
+    `form`; None when it is no directive there."""
+    if basis == "wake_word":
+        return COMPUTER, form in _ALONE
+    return RULES.get(basis, {}).get(form)
 
 
 def subject_sha256(source_id: str, heard: str, addressee: str | None) -> str:
@@ -90,9 +153,11 @@ def gate(
     threshold: float,
     tag_prefix: str,
 ) -> tuple[list[dict], dict]:
-    """Apply the form rule and, in a monologue, Jev's gate to the candidates in `claims`
-    (dicts as `Store.replace_claims` takes them, plus `else_kind`). Returns the claims to store
-    and counts: `candidates`, `asked`, `directives`, `demoted`, `cost_usd`, `gate`."""
+    """Apply the form rule and Jev's gate to the candidates in `claims` (dicts as
+    `Store.replace_claims` takes them, plus `basis` and `else_kind`). Returns the claims to store
+    and counts: `candidates`, `asked`, `directives`, `demoted`, `cost_usd`, `gate` (`jev` when
+    Jev was asked, `off` when it should have been and there is none, `wake word` when the form
+    rule alone decided, `none` with no candidate)."""
     stats = {
         "candidates": 0,
         "asked": 0,
@@ -101,38 +166,53 @@ def gate(
         "cost_usd": 0.0,
         "gate": "none",
     }
+    ungated = False
     out = []
     for position, claim in enumerate(claims):
         if claim.get("kind") != KIND:
             out.append(_without_directive_fields(claim))
             continue
         stats["candidates"] += 1
+        basis = basis_of(claim)
+        ruled = ruling(basis, form)
+        if ruled is None:
+            stats["demoted"] += 1
+            out.append(_demoted(claim))
+            continue
+        addressee, checked = ruled
+        claim = dict(claim) | {"addressee": addressee}
         keep = True
-        if form == "monologue":
-            if judge is None:
-                stats["gate"] = "off"
-            else:
-                stats["gate"] = "jev"
-                probability, call = judge.yes(
-                    {"utterance": claim.get("heard") or "", "restated": claim["text"]},
-                    QUESTION,
-                    INSTRUCTIONS,
-                    CRITERIA,
-                    tag=f"{tag_prefix}-d{position}",
-                )
-                stats["asked"] += 1
-                stats["cost_usd"] = round(stats["cost_usd"] + (call["cost_usd"] or 0.0), 6)
-                claim = dict(claim) | {"gate_probability": round(probability, 3)}
-                keep = probability >= threshold
-        else:
-            stats["gate"] = "wake word"
-            keep = claim.get("addressee") == "computer"
+        if checked and judge is None:
+            ungated = True
+        elif checked and judge is not None:
+            probability, call = judge.yes(
+                {
+                    "utterance": claim.get("heard") or "",
+                    "restated": claim["text"],
+                    "basis": basis,
+                    "form": form,
+                },
+                QUESTION,
+                INSTRUCTIONS,
+                CRITERIA,
+                tag=f"{tag_prefix}-d{position}",
+            )
+            stats["asked"] += 1
+            stats["cost_usd"] = round(stats["cost_usd"] + (call["cost_usd"] or 0.0), 6)
+            claim = claim | {"gate_probability": round(probability, 3)}
+            keep = probability >= threshold
         if keep:
             stats["directives"] += 1
             out.append(_directive(claim))
         else:
             stats["demoted"] += 1
             out.append(_demoted(claim))
+    if stats["asked"]:
+        stats["gate"] = "jev"
+    elif ungated:
+        stats["gate"] = "off"
+    elif stats["candidates"]:
+        stats["gate"] = "wake word"
     return out, stats
 
 
@@ -140,7 +220,7 @@ def _without_directive_fields(claim: dict) -> dict:
     return {
         key: value
         for key, value in claim.items()
-        if key not in ("addressee", "heard", "else_kind", "gate_probability")
+        if key not in ("addressee", "heard", "else_kind", "basis", "gate_probability")
     }
 
 
@@ -233,14 +313,18 @@ def verdict(
 
 
 __all__ = [
+    "BASES",
     "CRITERIA",
     "DEFAULT_THRESHOLD",
     "INSTRUCTIONS",
     "KIND",
     "QUESTION",
+    "RULES",
     "VERDICTS",
+    "basis_of",
     "gate",
     "listing",
+    "ruling",
     "state_of",
     "subject_sha256",
     "summary",

@@ -43,6 +43,37 @@ REPLY = {
 }  # fmt: skip
 
 
+# What the Bee prompt (version 2) replies: each directive says on what basis it is one, and the
+# gate, not the model, decides the addressee.
+GUIDED_SEGMENTS = [
+    {"idx": 0, "t0": 0.0, "t1": 1.0, "speaker": "Quill",
+     "text": "this is a poem that we should further explore and write down"},
+    {"idx": 1, "t0": 1.0, "t1": 2.0, "speaker": "Unknown",
+     "text": "there should be a chapter on that"},
+    {"idx": 2, "t0": 2.0, "t1": 3.0, "speaker": "Quill", "text": "look up the Gaudapada verse"},
+    {"idx": 3, "t0": 3.0, "t1": 4.0, "speaker": "Quill", "text": "I will call Wren tomorrow"},
+    {"idx": 4, "t0": 4.0, "t1": 5.0, "speaker": "Quill", "text": "Computer, set a timer"},
+]  # fmt: skip
+GUIDED_REPLY = {
+    "claims": [
+        {"statement": "Explore the poem further and write it down.", "speaker": "Quill",
+         "segments": [0], "kind": "directive", "basis": "guidance",
+         "heard": "we should further explore and write down", "else_kind": "assertion"},
+        {"statement": "Add a chapter on that.", "speaker": "Unknown", "segments": [1],
+         "kind": "directive", "basis": "guidance", "heard": "there should be a chapter on that",
+         "else_kind": "assertion"},
+        {"statement": "Look up the Gaudapada verse.", "speaker": "Quill", "segments": [2],
+         "kind": "directive", "basis": "instruction", "heard": "look up the Gaudapada verse",
+         "else_kind": "assertion"},
+        {"statement": "The owner will call Wren tomorrow.", "speaker": "Quill", "segments": [3],
+         "kind": "directive", "basis": "commitment", "heard": "I will call Wren tomorrow",
+         "else_kind": "prediction"},
+        {"statement": "Set a timer.", "speaker": "Quill", "segments": [4], "kind": "directive",
+         "basis": "wake_word", "heard": "Computer, set a timer", "else_kind": "assertion"},
+    ]
+}  # fmt: skip
+
+
 class World:
     def __init__(self, tmp_path: Path, *, threshold: float | None = None):
         self.root = tmp_path / "ws"
@@ -79,6 +110,17 @@ class World:
 
     def form(self, label: str) -> None:
         form.rule(self.store, SOURCE, label, created_by="owner")
+
+    def guided(self) -> None:
+        """The source speaks in guidance, and the model replies with each directive's basis."""
+        self.store.replace_segments(SOURCE, GUIDED_SEGMENTS)
+        (self.scripts / claims.STAGE / f"{SOURCE}-s0.json").write_text(
+            json.dumps({"reply": json.dumps(GUIDED_REPLY), "tokens_in": 100, "tokens_out": 20})
+        )
+
+    def kept(self) -> list[tuple]:
+        rows = self.store.claims(SOURCE, include_directives=True)
+        return [(row["kind"], row["addressee"]) for row in rows]
 
 
 @pytest.fixture
@@ -144,6 +186,67 @@ def test_in_company_only_an_addressed_utterance_is_a_directive(world):
     rows = world.store.claims(SOURCE, include_directives=True)
     assert [row["kind"] for row in rows] == ["assertion", "directive", "prediction", "assertion"]
     assert rows[1]["addressee"] == "computer"
+
+
+def test_in_a_monologue_guidance_and_plain_instructions_are_for_computer(world):
+    world.guided()
+    world.form("monologue")
+    made = world.judge([0.9, 0.8, 0.9, 0.9, 0.9])  # Jev checks every candidate
+    out = claims.build(world.store, world.client(), SOURCE, created_by="test", judge=made)
+    assert (out["directives"], out["directives_demoted"], out["gate"]) == (5, 0, "jev")
+    assert world.kept() == [
+        ("directive", "computer"),  # "we should further explore and write down"
+        ("directive", "computer"),  # "there should be a chapter on that", on an Unknown line
+        ("directive", "computer"),  # a plain instruction, no wake word
+        ("directive", "self"),  # a first-person promise stays a note to the owner
+        ("directive", "computer"),  # the wake word
+    ]
+    state = made.transport.bodies[0][1]["state"]
+    assert (state["basis"], state["form"]) == ("guidance", "monologue")
+
+
+def test_in_company_guidance_is_for_computer_and_a_plain_instruction_is_a_claim(world):
+    world.guided()
+    world.form("dialogue")
+    made = world.judge([0.9, 0.2])  # Jev is asked about the two guidance lines only
+    out = claims.build(world.store, world.client(), SOURCE, created_by="test", judge=made)
+    assert (out["directives"], out["directives_demoted"], out["gate"]) == (2, 3, "jev")
+    assert world.kept() == [
+        ("directive", "computer"),  # guidance Jev kept
+        ("assertion", None),  # guidance Jev left out: its ordinary kind
+        ("assertion", None),  # a plain instruction is said to the person in the room
+        ("prediction", None),  # so is a promise
+        ("directive", "computer"),  # the wake word, not checked
+    ]
+    assert [body["state"]["utterance"] for _, body in made.transport.bodies] == [
+        "we should further explore and write down", "there should be a chapter on that",
+    ]  # fmt: skip
+
+
+def test_in_a_media_recording_only_the_wake_word_is_a_directive(world):
+    world.guided()
+    world.form("media")
+    made = world.judge([])  # never asked
+    out = claims.build(world.store, world.client(), SOURCE, created_by="test", judge=made)
+    assert (out["directives"], out["directives_demoted"], out["gate"]) == (1, 4, "wake word")
+    assert world.kept()[-1] == ("directive", "computer") and made.transport.bodies == []
+
+
+def test_the_gate_not_the_model_decides_the_addressee(world):
+    # a reply that calls guidance a note to self is overruled by its basis
+    claim = GUIDED_REPLY["claims"][0] | {"text": "x", "addressee": "self"}
+    (kept,), stats = directives.gate(None, [claim], form="monologue", threshold=0.6, tag_prefix="t")
+    assert (kept["kind"], kept["addressee"], stats["gate"]) == ("directive", "computer", "off")
+    assert "basis" not in kept
+
+
+def test_the_bee_prompt_asks_for_the_basis_and_reads_unknown_lines_as_the_owners():
+    for prompt_id in ("claims_bee", claims.RETRY_PROMPT_ID):
+        prompt = prompts.load(prompt_id)
+        assert prompt.version == 2
+        for word in ('"guidance"', '"instruction"', '"commitment"', '"wake_word"',
+                     "we should", "the next step is", "there should be", "Unknown"):  # fmt: skip
+            assert word in prompt.body, (prompt_id, word)
 
 
 def test_without_jev_monologue_candidates_stand_and_the_pass_says_so(world):
