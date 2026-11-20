@@ -240,6 +240,25 @@ def test_the_gate_not_the_model_decides_the_addressee(world):
     assert "basis" not in kept
 
 
+def test_a_directive_without_a_quote_takes_the_words_of_its_lines(world):
+    world.store.replace_segments(SOURCE, GUIDED_SEGMENTS)
+    unquoted = [
+        {key: value for key, value in claim.items() if key != "heard"}
+        for claim in GUIDED_REPLY["claims"][:2]
+    ]
+    unquoted[1]["segments"] = [1, 0]  # the clearest first; the words keep the spoken order
+    (world.scripts / claims.STAGE / f"{SOURCE}-s0.json").write_text(
+        json.dumps({"reply": json.dumps({"claims": unquoted}), "tokens_in": 9, "tokens_out": 9})
+    )
+    world.form("monologue")
+    claims.build(world.store, world.client(), SOURCE, created_by="test", judge=None)
+    first, second = world.store.directives(SOURCE)
+    assert first["heard"] == GUIDED_SEGMENTS[0]["text"]
+    assert second["heard"] == GUIDED_SEGMENTS[0]["text"] + " " + GUIDED_SEGMENTS[1]["text"]
+    retry = prompts.load(claims.RETRY_PROMPT_ID)
+    assert "`heard`" not in retry.body and "`heard`" in prompts.load("claims_bee").body
+
+
 def test_the_bee_prompt_asks_for_the_basis_and_reads_unknown_lines_as_the_owners():
     for prompt_id in ("claims_bee", claims.RETRY_PROMPT_ID):
         prompt = prompts.load(prompt_id)

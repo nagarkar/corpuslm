@@ -26,8 +26,9 @@ and the owner's first name (`[claims].owner_first_name`). The form is a build in
 source, so a reclassified source reads stale.
 
 A section whose reply ran past the token limit is recorded in the artifact's `sections_skipped`.
-A later build over the same inputs reads it with `claims_bee_short`, which caps the `heard` quote
-where the model tends to loop; `skipped_sections` names the sources that have such sections, and
+A later build over the same inputs reads it with `claims_bee_short`, which asks for no `heard`
+quote, where the model tends to loop: a directive that comes without one takes the words of the
+lines it cites; `skipped_sections` names the sources that have such sections, and
 only an explicit rebuild retries them. Its prompt is no build input of the source, so adding or
 changing it leaves every built source current.
 
@@ -56,6 +57,11 @@ Decisions:
   that prompt's hash is a build input, so changing it would bill a rebuild of every Bee source.
   (owner, 2026-11-02) Enforced by:
   tests/test_claims.py::test_a_rebuild_retries_only_the_skipped_section_with_the_short_prompt.
+- A directive the model did not quote takes its words as heard from the lines it cites, so the
+  retry prompt can ask for no quote at all. Why: on `bee:12986356` (2026-11-19) the model looped
+  inside the quote of one guidance line under both prompts, and the section that held it was
+  left out twice. Enforced by:
+  tests/test_directives.py::test_a_directive_without_a_quote_takes_the_words_of_its_lines.
 
 Terms:
 - **claim**: one short sentence (25 words or fewer) restating one thing a source says, with its
@@ -232,6 +238,14 @@ def _variables(
         "form": form or UNKNOWN_FORM,
         "owner": owner or "(the owner)",
     }
+
+
+def _words_of(part: list[dict], cited: list[int]) -> str:
+    """The words as heard of a directive the model did not quote: the text of the lines it
+    cites, in the order they were spoken."""
+    wanted = set(cited)
+    words = " ".join(segment["text"].strip() for segment in part if segment["idx"] in wanted)
+    return words[:MAX_HEARD_CHARS]
 
 
 def _tag(source_id: str, section_index: int) -> str:
@@ -463,6 +477,11 @@ def build(
                     **(
                         {"heard": claim["heard"][:MAX_HEARD_CHARS]}
                         if claim.get("heard") is not None
+                        else {}
+                    ),
+                    **(
+                        {"heard": _words_of(part, cited)}
+                        if claim["kind"] == directives_module.KIND and not claim.get("heard")
                         else {}
                     ),
                 }

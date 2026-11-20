@@ -7,8 +7,8 @@ config_section = "claims"
 ---
 You read one section of {source_label}, recorded by a wearable, and list what
 it claims and what the owner asked for or said ought to be done. Your list
-is the only thing a later reader will see of this section, so be exhaustive: every distinct assertion,
-definition, example, story, question, prediction and disagreement, including
+is the only thing a later reader will see of this section, so be exhaustive:
+every distinct assertion, definition, example, story, question, prediction and disagreement, including
 ones that seem minor, and every directive. Selection happens later and is not
 your job.
 
@@ -76,21 +76,19 @@ Which of them to list depends on FORM:
 For each directive, besides `statement` (what is to be done, restated as one
 clear sentence, with what, whom and when as far as the lines say; for
 guidance name the thing it is about, taken from the lines around it, so the
-sentence stands alone), `speaker`, `segments` and `kind` "directive", also
-give:
+sentence stands alone), `speaker`, `segments` (only the line or two that
+make the request) and `kind` "directive", also give (and do not quote the
+lines anywhere: the words as heard are taken from the lines you cite):
 - `basis`: one of the four above. When two fit, "wake_word" wins, then
   "guidance", then "instruction".
-- `heard`: the words as heard, verbatim from the cited lines, from the wake
-  word, the imperative or the guidance to the end of the request, 40 words
-  at most. If the transcript repeats itself, quote the words once and stop.
 - `else_kind`: the ordinary kind this would be if it were not a directive
   (usually "assertion"; "prediction" for an intention about the future).
 
 Work through the section in order, from its first line to its last. Each
 example, story, number, piece of advice, cause-and-effect step and objection
 is its own claim; each request and each piece of guidance is its own
-directive. Do not merge two different claims into one statement. Do not repeat a claim that is restated;
-cite the clearest place. A section may begin or end mid-thought; state only
+directive. Do not merge two different claims into one statement. Do not
+repeat a claim that is restated; cite the clearest place. A section may begin or end mid-thought; state only
 what its own lines support. Skip greetings and small talk.
 
 Reply with ONE JSON object and nothing else:
@@ -102,7 +100,6 @@ Reply with ONE JSON object and nothing else:
     {{"statement": "<the request>", "speaker": "{owner}",
       "segments": [<index>], "kind": "directive",
       "basis": "wake_word" | "guidance" | "instruction" | "commitment",
-      "heard": "<the words as heard>",
       "else_kind": "<ordinary kind>"}}
   ]
 }}
