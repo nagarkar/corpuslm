@@ -12,7 +12,7 @@ corpuslm is a library. ytlm and beelm import it. The command line is for checks.
 | What can it do? | `corpuslm help` |
 | Is the database healthy? Which schema version is it on? How many rows? | `corpuslm doctor PATH` (add `--json` for machines) |
 | Write the review page of every corpus as one file, to look at | `corpuslm review page --config FILE [--out FILE] [--dry-run]` |
-| Serve the review page (all corpora, all source kinds) and keep the owner's taps | `corpuslm review serve --config FILE [--port N] [--dry-run]` (launchd runs it; see `scripts/com.nagarkar.corpuslm.review.plist`) |
+| Serve the review page (all corpora, all source kinds) and keep the owner's taps; a Bee corpus shows each recording as an entry of its own (heading, time recorded, length, its cards under it), sorted by date (newest first, one tap reverses) and filtered by heading text or date | `corpuslm review serve --config FILE [--port N] [--dry-run]` (launchd runs it; see `scripts/com.nagarkar.corpuslm.review.plist`) |
 | Land the saved YouTube answers as verdicts (the Bee ones are beelm's: `./beelm.sh review apply`; this verb leaves them unlanded unless beelm is installed in the same environment) | `corpuslm review apply --config FILE [--kind SOURCE_KIND] [--dry-run]` |
 | Keep the AI cleanup's top suggestion for every ambiguity in the database (read from the existing files; no model, no cost) | `corpuslm suggestions record --config FILE [--dry-run]` (safe to run again; the AI cleanup builder records them itself from now on) |
 | Fill open review cards with those suggestions for older recordings, for the owner to change on the page | `corpuslm review accept-suggestions --config FILE --kind NAME --before YYYY-MM-DD [--dry-run]` |

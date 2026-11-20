@@ -55,10 +55,23 @@ Decisions:
   tests/test_review_page.py::test_a_workspace_page_lists_only_the_corpora_of_its_kind.
 - A page is split by whole corpora at the byte budget, never trimmed. Enforced by:
   tests/test_review_page.py::test_split_cuts_by_whole_corpora_and_never_trims.
+- A kind with `source_entries` gives one entry per source that has a card (`sources` of the page
+  data: heading, time recorded, length), and the page puts each card under the entry of the
+  source it is first heard in; other kinds give none and stay one list. Enforced by:
+  tests/test_review_page.py::test_a_kind_with_source_entries_gives_one_entry_per_source,
+  tests/test_review_page.py::test_a_source_with_no_card_has_no_entry_and_other_kinds_have_none.
+- An entry with no heading is headed by its time and its source id; one with no readable time by
+  its id alone, and it sorts as the oldest. Enforced by:
+  tests/test_review_page.py::test_a_source_with_no_heading_is_headed_by_its_time_and_id,
+  tests/test_review_page.py::test_a_source_with_no_time_sorts_as_oldest_and_is_headed_by_its_id.
+- Entries sort by the time recorded, newest first until the owner reverses it, and a heading
+  filter leaves only the entries whose heading, time or id has every typed word. Enforced by:
+  tests/test_review_page_script.py::test_a_page_of_entries_sorts_by_date_and_filters_by_heading.
 
 Terms:
 - **card**: one item on the review page: all review items sharing a normalized span collapse into
   one card; one tap answers them all.
+- **entry**: one source shown on the page under its own heading, with its cards beneath it.
 """
 
 from __future__ import annotations
@@ -68,6 +81,7 @@ import html
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from .files import write_atomic
@@ -100,6 +114,37 @@ def _context(segment: dict, span: str, applied: str) -> str:
     return text
 
 
+def _duration(seconds: object) -> str:
+    """A length a person reads: `45 s`, `10 min`, `2 h 21 min`; empty when unknown."""
+    if not isinstance(seconds, int | float) or seconds <= 0:
+        return ""
+    minutes = int(seconds) // 60
+    if minutes < 1:
+        return f"{int(seconds)} s"
+    if minutes < 60:
+        return f"{minutes} min"
+    return f"{minutes // 60} h {minutes % 60} min"
+
+
+def _source_entry(source: dict) -> dict:
+    """One source as an entry of the page: its heading (the title, else its time and id), the
+    time it was recorded as its own clock read (`Sat 2026-10-03 09:14`), a number to sort by
+    (seconds since 1970; 0 when the time cannot be read) and its length."""
+    try:
+        moment = datetime.fromisoformat(str(source.get("published_at") or ""))
+    except ValueError:
+        moment = None
+    recorded = moment.strftime("%a %Y-%m-%d %H:%M") if moment else ""
+    fallback = " · ".join(part for part in (recorded, source["id"]) if part)
+    return {
+        "id": source["id"],
+        "heading": (source.get("title") or "").strip() or fallback,
+        "recorded": recorded,
+        "sort": moment.timestamp() if moment else 0,
+        "duration": _duration(source.get("duration_seconds")),
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class KindSetup:
     """One source kind on the page: its review kind, and the folder holding its sources'
@@ -128,6 +173,7 @@ def page_data_by_kind(db, kinds: Mapping[str, KindSetup], corpus_name: str) -> d
     videos = store.member_sources(corpus["id"])
     groups: dict[str, dict] = {}
     speakers: list[dict] = []
+    entries: dict[str, dict] = {}
     open_items = 0
     for order, video in enumerate(videos):
         video_id = video["id"]
@@ -140,6 +186,8 @@ def page_data_by_kind(db, kinds: Mapping[str, KindSetup], corpus_name: str) -> d
             continue
         transcript = transcript_loads(t_path.read_text("utf-8"), refined_schema=kind.refined_schema)
         segments = transcript["segments"]
+        if kind.source_entries:
+            entries[video_id] = _source_entry(video)
         for ambiguity in transcript.get("ambiguities") or []:
             if ambiguity["status"] in ("capped", "expired"):
                 continue
@@ -258,9 +306,11 @@ def page_data_by_kind(db, kinds: Mapping[str, KindSetup], corpus_name: str) -> d
             speaker["role"],
         ),
     )
+    with_cards = {card.get("video_id") or card["first"]["video_id"] for card in cards}
     return {
         "corpus": corpus_name,
         "corpus_id": corpus["id"],
+        "sources": [entry for source_id, entry in entries.items() if source_id in with_cards],
         "collection": f"reviews/{corpus['id']}/items",
         "videos": len(videos),
         "open_items": open_items,
@@ -331,6 +381,16 @@ border-radius:999px;padding:6px 12px;font:inherit;font-size:13px;font-weight:600
 .chips button[aria-pressed="true"]{background:var(--band-ink);color:var(--band)}
 #q{display:block;width:100%;max-width:640px;margin:8px auto 0;font:inherit;font-size:15px;padding:8px 12px;border-radius:999px;border:1px solid rgba(255,255,255,.45);background:rgba(255,255,255,.12);color:var(--band-ink);min-height:40px}
 #q::placeholder{color:rgba(255,255,255,.7)}
+.entries{display:flex;gap:6px;max-width:640px;margin:8px auto 0}.entries[hidden]{display:none}
+.entries input{flex:1 1 auto;min-width:0;font:inherit;font-size:15px;padding:8px 12px;border-radius:999px;border:1px solid rgba(255,255,255,.45);background:rgba(255,255,255,.12);color:var(--band-ink);min-height:40px}
+.entries input::placeholder{color:rgba(255,255,255,.7)}
+.entries button{flex:0 0 auto;border:1px solid rgba(255,255,255,.45);background:transparent;color:var(--band-ink);border-radius:999px;padding:6px 12px;font:inherit;font-size:13px;font-weight:600}
+.entry{display:grid;gap:10px;padding-top:8px;border-top:2px solid var(--line)}.entry[hidden]{display:none}
+.entry h2{margin:0;font-size:17px;line-height:1.25}
+.entry h2 button{font:inherit;font-weight:700;color:inherit;background:none;border:0;padding:4px 2px;text-align:left;width:100%;cursor:pointer}
+.entry h2 button::before{content:"▾ "}.entry.shut h2 button::before{content:"▸ "}
+.entry .facts{margin:-8px 2px 0;font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
+.entry.shut article{display:none}
 .empty{max-width:640px;margin:24px auto;padding:0 14px;text-align:center;color:var(--muted)}
 .note{max-width:640px;margin:10px auto 0;padding:0 14px;font-size:13px;color:var(--muted)}.note.warn{color:var(--warn)}
 main{max-width:640px;margin:0 auto;padding:12px 10px 80px;display:grid;gap:14px}
@@ -372,6 +432,23 @@ _JS = r"""
   // input is never rebuilt mid-phrase. `shown` holds the cards pinned that way.
   let shown = new Set();
   let query = '';
+  // Entries: a corpus whose data lists `sources` shows each source under its own heading, its
+  // cards beneath it. `entryQuery` is the heading filter; `toggled` holds the entries the owner
+  // opened or folded against the page-wide choice (`headingsOnly`).
+  let entryQuery = ''; let newestFirst = true; let headingsOnly = false; let toggled = new Set(); let entryById = {};
+  const sourceOf = c => c.video_id || (c.first && c.first.video_id);
+  const entryList = () => DATA.sources || [];
+  const entryText = e => (e.heading + ' ' + e.recorded + ' ' + e.id).toLowerCase();
+  function headingMatches(c){
+    if (!entryQuery) return true; const e = entryById[sourceOf(c)];
+    return !!e && entryQuery.split(/\s+/).filter(Boolean).every(w => entryText(e).includes(w));
+  }
+  const shut = e => headingsOnly !== toggled.has(e.id);
+  const facts = (e, n) => [e.recorded, e.duration, `${n} card${n===1?'':'s'}`].filter(Boolean).join(' · ');
+  function setEntries(){
+    entryById = {}; for (const e of entryList()) entryById[e.id] = e;
+    document.getElementById('entries').hidden = !entryList().length;
+  }
   // everything a card shows, lowercased, for the search box
   function haystack(c){
     const bits = [c.span, c.context, c.resolution, c.role, c.title, c.status, c.current, c.anchor,
@@ -387,7 +464,21 @@ _JS = r"""
   const label = s => s === 'jev' ? 'Jev picked' : s;
   function state(c){ if (c.resolved) return 'resolved'; const d = decisions[c.id]; if (d && d.verdict) return 'answered'; if (c.jev) return 'jev'; return c.kind==='speaker' && !c.open ? 'named' : 'todo'; }
   function inTab(c){ if (shown.has(c.id)) return true; const s = state(c); if (filter==='all') return true; return s===filter; }
-  function visible(c){ return inTab(c) && matches(c); }
+  function visible(c){ return inTab(c) && matches(c) && headingMatches(c); }
+  function countText(){
+    const open = cards.filter(c => state(c)==='todo').length;
+    const hits = query ? ` · ${cards.filter(visible).length} match` : '';
+    const total = entryList().length;
+    const on = total ? new Set(cards.filter(visible).map(sourceOf).filter(id => entryById[id])).size : 0;
+    return `${open} to do · ${cards.length} cards${hits}` + (total ? ` · ${on} of ${total} transcripts` : '');
+  }
+  function refreshEntries(){
+    // after one card left the view: each entry's count, and the entry itself when it was the last
+    for (const section of document.querySelectorAll('section.entry')){
+      const n = [...section.querySelectorAll('article')].filter(a => !a.hidden).length;
+      section.hidden = !n; section.querySelector('.facts').textContent = facts(entryById[section.dataset.source], n);
+    }
+  }
   function refilter(){ shown = new Set(); for (const c of cards) if (inTab(c)) shown.add(c.id); }
   function todoCards(c){ return c.cards.filter(x => !x.resolved && !x.jev && (x.kind !== 'speaker' || x.open)); }
   function doneCount(i){
@@ -417,16 +508,17 @@ _JS = r"""
     const art = $(`article[data-id="${id}"]`); if (!art) return; const c = cards.find(x => x.id===id); const d = decisions[id] || {};
     for (const b of art.querySelectorAll('.candidate-buttons button')) b.setAttribute('aria-pressed', d.verdict===b.dataset.v);
     const chip = art.querySelector('.state'); const s = state(c); chip.textContent = label(s); chip.className = 'state ' + (s==='answered'||s==='resolved'?'done':'');
-    const open = cards.filter(x => state(x)==='todo').length; $('#count').textContent = `${open} to do · ${cards.length} cards`;
+    $('#count').textContent = countText();
     relabel();
   }
   function settle(id){
     // the card leaves the view when it no longer matches the filter
     shown.delete(id); const c = cards.find(x => x.id===id); const art = $(`article[data-id="${id}"]`);
     if (art) art.hidden = !visible(c);
+    refreshEntries(); $('#count').textContent = countText();
   }
   function render(){
-    $('#cards').innerHTML = cards.map(c => {
+    const article = c => {
       const s = state(c);
       __LINK_FUNCTION__
       const where = c.kind==='ambiguity'
@@ -441,13 +533,26 @@ _JS = r"""
       return `<article data-id="${c.id}" ${visible(c)?'':'hidden'}>
         <div class="head"><span>${c.kind==='ambiguity'?`heard "${esc(c.span)}"`:'speaker'}</span><span class="state ${s==='answered'?'done':''}">${label(s)}</span></div>
         ${body}<div class="where">${where}</div>${candidateButtons(c)}${more}</article>`;
-    }).join('');
-    const open = cards.filter(c => state(c)==='todo').length;
-    const hits = query ? ` · ${cards.filter(visible).length} match` : '';
-    $('#count').textContent = `${open} to do · ${cards.length} cards${hits}`;
+    };
+    const list = entryList();
+    if (!list.length) $('#cards').innerHTML = cards.map(article).join('');
+    else {
+      // cards of a source with no entry (another kind's) come first, as they always did
+      const mine = {}; const loose = [];
+      for (const c of cards){ const id = sourceOf(c); if (entryById[id]) (mine[id] = mine[id] || []).push(c); else loose.push(c); }
+      const ordered = list.slice().sort((a, b) => (newestFirst ? b.sort - a.sort : a.sort - b.sort) || (a.id < b.id ? -1 : 1));
+      $('#cards').innerHTML = loose.map(article).join('') + ordered.map(e => {
+        const own = mine[e.id] || []; const n = own.filter(visible).length;
+        return `<section class="entry${shut(e)?' shut':''}" data-source="${esc(e.id)}" ${n?'':'hidden'}>
+          <h2><button aria-expanded="${!shut(e)}">${esc(e.heading)}</button></h2>
+          <p class="facts">${esc(facts(e, n))}</p>${own.map(article).join('')}</section>`;
+      }).join('');
+    }
+    $('#count').textContent = countText();
     if (!cards.some(visible)){
       const done = doneCount(current);
-      const why = query ? 'No card here matches the search.'
+      const why = entryQuery && cards.some(c => inTab(c) && matches(c)) ? 'No transcript here matches the heading filter.'
+        : query ? 'No card here matches the search.'
         : filter === 'todo' && done ? `Nothing left to do here: ${done} answered and saved. ${applyHint}`
         : filter === 'todo' ? 'Nothing to do here.' : 'Nothing here yet.';
       $('#cards').insertAdjacentHTML('beforeend', `<p class="empty">${why}</p>`);
@@ -466,7 +571,18 @@ _JS = r"""
   let qTimer;
   $('#q').addEventListener('input', e => { clearTimeout(qTimer); qTimer = setTimeout(() => { query = e.target.value.trim().toLowerCase(); render(); window.scrollTo({top: 0, behavior: 'auto'}); }, 150); });
   $('#q').addEventListener('search', e => { query = e.target.value.trim().toLowerCase(); render(); });
+  let hTimer;
+  $('#heading-filter').addEventListener('input', e => { clearTimeout(hTimer); hTimer = setTimeout(() => { entryQuery = e.target.value.trim().toLowerCase(); render(); window.scrollTo({top: 0, behavior: 'auto'}); }, 150); });
+  $('#sort').addEventListener('click', e => { newestFirst = !newestFirst; e.currentTarget.textContent = newestFirst ? 'Newest first' : 'Oldest first'; render(); });
+  $('#fold').addEventListener('click', e => { headingsOnly = !headingsOnly; toggled = new Set(); e.currentTarget.textContent = headingsOnly ? 'Show cards' : 'Headings only'; render(); });
   $('#cards').addEventListener('click', e => {
+    const heading = e.target.closest('.entry h2 button');
+    if (heading){
+      // one entry opened or folded on its own, without rebuilding the page
+      const section = heading.closest('section'); const id = section.dataset.source;
+      if (toggled.has(id)) toggled.delete(id); else toggled.add(id);
+      section.classList.toggle('shut', shut(entryById[id])); heading.setAttribute('aria-expanded', !shut(entryById[id])); return;
+    }
     const b = e.target.closest('button'); if (!b) return; const id = b.closest('article').dataset.id;
     const cur = decisions[id] || (decisions[id] = {}); cur.verdict = cur.verdict === b.dataset.v ? '' : b.dataset.v;
     const inp = b.closest('article').querySelector('input[type=text]'); if (inp && cur.verdict !== inp.value.trim()) inp.value = '';
@@ -488,10 +604,11 @@ _JS = r"""
   function selectCorpus(i){
     answered[current] = new Set(Object.keys(decisions).filter(id => decisions[id].verdict));
     current = i; DATA = DOC.corpora[i]; cards = DATA.cards; decisions = {}; query = ''; $('#q').value = '';
+    entryQuery = ''; $('#heading-filter').value = ''; toggled = new Set(); setEntries();
     refilter(); render(); window.scrollTo({top: 0, behavior: 'auto'}); subscribe();
   }
   $('#corpus').addEventListener('change', e => selectCorpus(Number(e.target.value)));
-  refilter(); render();
+  setEntries(); refilter(); render();
   function subscribe(){
     if (!db) return;
     if (typeof unsubscribe === 'function') { try { unsubscribe(); } catch(e){} }
@@ -584,7 +701,12 @@ def render(data: dict, *, links_note: str = "", part: int = 1, parts: int = 1) -
         f'<button data-f="resolved" aria-pressed="false">Resolved</button>'
         f'<button data-f="all" aria-pressed="false">All</button></div>'
         f'<input type="search" id="q" placeholder="Search this tab" '
-        f'aria-label="Search this tab" autocomplete="off"></header>\n'
+        f'aria-label="Search this tab" autocomplete="off">'
+        f'<div class="entries" id="entries" hidden>'
+        f'<input type="search" id="heading-filter" placeholder="Filter by heading or date" '
+        f'aria-label="Filter transcripts by heading or date" autocomplete="off">'
+        f'<button id="sort" aria-label="Sort by date, tap to reverse">Newest first</button>'
+        f'<button id="fold">Headings only</button></div></header>\n'
         f'<p class="note" id="status">Loading…</p>\n'
         + (f'<p class="note">{links_note}</p>\n' if links_note else "")
         + '<main id="cards"></main>\n'

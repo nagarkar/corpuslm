@@ -35,6 +35,11 @@ def test_a_bee_card_has_no_link_and_the_picker_offers_the_owner():
     assert kind.stale_nodes == ()
 
 
+def test_bee_recordings_are_entries_of_their_own_and_youtube_cards_stay_one_list():
+    assert review_kinds.bee_review("Quill").source_entries is True
+    assert review_kinds.youtube_review().source_entries is False
+
+
 def test_bee_transcripts_are_read_with_free_speaker_labels():
     from review_kinds import bee_transcript
 

@@ -26,6 +26,9 @@ Decisions:
   card names the recording by title and day, and the picker offers the owner's first name.
   Enforced by:
   tests/test_review_kinds.py::test_a_bee_card_has_no_link_and_the_picker_offers_the_owner.
+- Each Bee recording is an entry of its own on the review page (heading, time, length), its
+  cards under it; a YouTube corpus stays one list of cards (owner, 2026-11-20). Enforced by:
+  tests/test_review_kinds.py::test_bee_recordings_are_entries_of_their_own_and_youtube_cards_stay_one_list.
 - Bee's transcript documents are read with Bee's refinement of the transcript schema: its source
   ids are `bee:<number>` and a segment's label is Bee's own speaker label. Enforced by:
   tests/test_review_kinds.py::test_bee_transcripts_are_read_with_free_speaker_labels.
@@ -144,6 +147,7 @@ def bee_review(owner_first_name: str = "") -> ReviewKind:
         role_pattern=r"[A-Za-z_0-9 ]+",
         refined_schema=bee_refined_schema(),
         rebuilt_by=BEE_REBUILT_BY,
+        source_entries=True,
     )
 
 
