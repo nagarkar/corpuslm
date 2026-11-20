@@ -29,8 +29,8 @@ A section whose reply ran past the token limit is recorded in the artifact's `se
 A later build over the same inputs reads it with `claims_bee_short`, kept apart so that changing
 it rebuilds nothing. Since version 2 neither prompt asks for the `heard` quote, where the model
 tends to loop: a directive takes the words of the lines it cites. `skipped_sections` names the
-sources that have such sections, and only an explicit rebuild retries them. Its prompt is no build input of the source, so adding or
-changing it leaves every built source current.
+sources that have such sections, and only an explicit rebuild retries them. The retry prompt is
+no build input of the source, so adding or changing it leaves every built source current.
 
 Never imports: cli, clikit. Reads the database only through `Store`.
 
