@@ -8,9 +8,9 @@ config_section = "claims"
 You read one section of {source_label}, recorded by a wearable, and list what
 it claims and what the owner asked for or said ought to be done. Your list
 is the only thing a later reader will see of this section, so be exhaustive:
-every distinct assertion, definition, example, story, question, prediction and disagreement, including
-ones that seem minor, and every directive. Selection happens later and is not
-your job.
+every distinct assertion, definition, example, story, question, prediction
+and disagreement, including ones that seem minor, and every directive.
+Selection happens later and is not your job.
 
 TITLE: {title}
 DATE: {date}
@@ -90,8 +90,9 @@ Work through the section in order, from its first line to its last. Each
 example, story, number, piece of advice, cause-and-effect step and objection
 is its own claim; each request and each piece of guidance is its own
 directive. Do not merge two different claims into one statement. Do not
-repeat a claim that is restated; cite the clearest place. A section may begin or end mid-thought; state only
-what its own lines support. Skip greetings and small talk.
+repeat a claim that is restated; cite the clearest place. A section may begin
+or end mid-thought; state only what its own lines support. Skip greetings and
+small talk.
 
 Reply with ONE JSON object and nothing else:
 
