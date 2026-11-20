@@ -1372,7 +1372,13 @@ def claims_build_board(
                     continue
                 try:
                     if source_id in unclassified:
-                        record = form.classify(store, jev, source_id, created_by="corpuslm")
+                        record = form.classify(
+                            store,
+                            jev,
+                            source_id,
+                            created_by="corpuslm",
+                            owner=claims.settings(client.config)["owner_first_name"],
+                        )
                         forms_classified += 1
                         form_cards += record["disagree"]
                         cost += record["cost_usd"]
@@ -1453,7 +1459,13 @@ def form_classify_board(
         stopped = ""
         for source_id in todo:
             try:
-                record = form.classify(store, jev, source_id, created_by="corpuslm")
+                record = form.classify(
+                    store,
+                    jev,
+                    source_id,
+                    created_by="corpuslm",
+                    owner=claims.settings(client.config)["owner_first_name"],
+                )
             except llm.SpendCapReached as error:
                 stopped = str(error)
                 break

@@ -11,12 +11,28 @@ device from a conversation. Both are recorded on the source row, `metadata.form 
 there is one, else Jev's, else the count's. A disagreement between the count and Jev is a review
 card of kind `form` (corpuslm.directives_page) until the owner rules.
 
+One case is settled without Jev's say: a recording whose only speaker labels are the owner's name
+and `Unknown` (or none) is the owner alone, because the recorder splits one voice between the
+two. It is a monologue; Jev is still asked and recorded, but only its `media` overrules (a
+podcast heard beside the owner is not the owner speaking), and its `dialogue` or `group` is set
+aside with no card. The record then carries `owner_alone: true`. `outdated` says when a record no
+longer fits the lines it was made from (the count or this case changed), so a caller classifies
+again.
+
 Never imports: cli, clikit. Reads the database only through `Store`.
 
 Decisions:
 - The count proposes, Jev decides, both are recorded, and a disagreement is a review card for
   the owner (owner, 2026-10-21). Enforced by:
   tests/test_form.py::test_the_count_proposes_jev_decides_and_a_disagreement_is_a_card.
+- A recording whose only labels are the owner's name and `Unknown` is a monologue unless Jev
+  says `media`; Jev's `dialogue` or `group` is recorded and set aside, with no review card. Why:
+  owner, 2026-11-20 (nagarkar/beelm#43): Bee split the owner's speech between the two labels and
+  Jev called two recordings of the owner alone a dialogue. (owner) Enforced by:
+  tests/test_form.py::test_the_owners_name_and_unknown_alone_is_a_monologue_unless_jev_says_media.
+- A form record is classified again when the lines it was made from changed their count or
+  stopped (or started) being the owner alone; the owner's ruling is never outdated. Enforced by:
+  tests/test_form.py::test_a_record_made_before_the_lines_changed_is_outdated.
 - Without `TYPESAFE_API_KEY` the count's label stands and the board says Jev was off; nothing
   fails. Enforced by: tests/test_form.py::test_without_jev_the_counts_label_stands.
 - The owner's ruling wins and is never overwritten by a reclassification. Enforced by:
@@ -25,7 +41,9 @@ Decisions:
 Terms:
 - **form**: monologue, dialogue, group or media; the shape of a recorded conversation.
 - **form record**: `metadata.form` on the source row: the count, the count's label, Jev's
-  label, the owner's, and the label in force.
+  label, the owner's, whether the lines are the owner alone, and the label in force.
+- **owner alone**: every speaker label is the owner's name, `Unknown` or empty, and the owner's
+  name is on at least one line.
 """
 
 from __future__ import annotations
@@ -70,6 +88,20 @@ def named_speakers(segments: list[dict]) -> list[str]:
     return list(seen)
 
 
+# What the recorder calls a voice it did not recognise; with the owner's name, the owner's own.
+UNRECOGNISED = frozenset({"unknown", ""})
+
+
+def owner_alone(segments: list[dict], owner: str) -> bool:
+    """Every speaker label is the owner's name, `Unknown` or empty, and the owner's name is on
+    at least one line. False without an owner's name."""
+    name = owner.strip().lower()
+    if not name:
+        return False
+    labels = {str(segment.get("speaker") or "").strip().lower() for segment in segments}
+    return name in labels and labels <= UNRECOGNISED | {name}
+
+
 def propose(segments: list[dict]) -> tuple[int, str]:
     """(the count, the label the count proposes)."""
     count = len(named_speakers(segments))
@@ -102,14 +134,24 @@ def state_of(segments: list[dict], count: int, proposed: str) -> dict:
 
 
 def classify(
-    store: Store, judge: judge_module.Judge | None, source_id: str, *, created_by: str
+    store: Store,
+    judge: judge_module.Judge | None,
+    source_id: str,
+    *,
+    created_by: str,
+    owner: str = "",
 ) -> dict:
     """Propose by count, ask Jev when there is one, write the form record (keeping the owner's
-    ruling when there is one) and return it with `cost_usd`, `cached` and `disagree`."""
+    ruling when there is one) and return it with `cost_usd`, `cached` and `disagree`. With the
+    owner's first name in `owner`, lines that are the owner alone are a monologue unless Jev says
+    `media`."""
     segments = store.best_segments(source_id)
     count, proposed = propose(segments)
     before = store.source_form(source_id) or {}
     record: dict = {"count": count, "proposed": proposed, "jev": None, "label": proposed}
+    alone = owner_alone(segments, owner)
+    if alone:
+        record["owner_alone"] = True
     cost, cached = 0.0, True
     if judge is not None:
         choice, probabilities, call = judge.choose(
@@ -121,7 +163,7 @@ def classify(
         )
         record["jev"] = choice
         record["jev_probabilities"] = {k: round(v, 3) for k, v in probabilities.items()}
-        record["label"] = choice
+        record["label"] = proposed if alone and choice != "media" else choice
         cost, cached = call["cost_usd"] or 0.0, call["cached"]
     if before.get("owner") in LABELS:
         record["owner"] = before["owner"]
@@ -135,11 +177,28 @@ def classify(
 
 
 def disagrees(record: dict) -> bool:
-    """The count and Jev differ and the owner has not ruled: a review card."""
+    """The count and Jev differ and the owner has not ruled: a review card. Not when the lines
+    are the owner alone and Jev said anything but `media`: that answer is set aside."""
+    if record.get("owner_alone") and record.get("jev") != "media":
+        return False
     return (
         record.get("jev") in LABELS
         and record.get("jev") != record.get("proposed")
         and record.get("owner") not in LABELS
+    )
+
+
+def outdated(store: Store, source_id: str, owner: str = "") -> bool:
+    """A form record that no longer fits the source's lines: the speaker count changed, or the
+    lines became (or stopped being) the owner alone. False with no record (nothing to redo) and
+    when the owner ruled."""
+    record = store.source_form(source_id)
+    if not record or record.get("owner") in LABELS:
+        return False
+    segments = store.best_segments(source_id)
+    count, _ = propose(segments)
+    return record.get("count") != count or bool(record.get("owner_alone")) != owner_alone(
+        segments, owner
     )
 
 
@@ -192,6 +251,8 @@ __all__ = [
     "disagrees",
     "label_of",
     "named_speakers",
+    "outdated",
+    "owner_alone",
     "propose",
     "rule",
     "sample",
