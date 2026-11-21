@@ -17,3 +17,6 @@ tests/js/node_modules/
 node_modules
 # No .env* path ever enters git (metalm guidelines/coding.md#security-and-secrets).
 .env*
+
+# The owner's credits for corpus manuscripts (document-credits.example.toml).
+document-credits.toml
