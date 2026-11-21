@@ -3,7 +3,9 @@ source (kind 'bee', no anchor link, an 'Unknown' speaker as a review item)."""
 
 from __future__ import annotations
 
+import dataclasses
 import json
+from datetime import datetime
 
 import pytest
 from review_kinds import (
@@ -314,3 +316,86 @@ def test_a_kind_with_its_own_schema_reads_documents_the_shared_one_rejects(
     assert any(
         card["kind"] == "ambiguity" for card in build(database, sources_directory, kind)["cards"]
     )
+
+
+# ---- one entry per source (a kind with `source_entries`) ----------------------------------------
+
+ENTRIES_KIND = dataclasses.replace(BEE_KIND, source_entries=True)
+
+
+def corpus_of_two_recordings(database, sources_directory) -> None:
+    """Two recordings with one card each; the second is the later one and has no heading."""
+    store = Store(database)
+    add_corpus_of_bee_sources(store, "Walks", [BEE_SOURCE, SECOND_BEE_SOURCE])
+    store.update_source(
+        BEE_SOURCE,
+        {
+            "title": "Kiln plans on the walk",
+            "published_at": "2026-10-03T09:14:00.000-07:00",
+            "duration_seconds": 8494,
+        },
+    )
+    store.update_source(
+        SECOND_BEE_SOURCE,
+        {"title": "", "published_at": "2026-10-04T18:02:00-07:00", "duration_seconds": 45},
+    )
+    write_source(sources_directory, BEE_SOURCE, bee_transcript())
+    second = bee_transcript(ambiguities=[ambiguity("amb-0001", 2, "kiln", "kiln", ["kiln", "kin"])])
+    write_source(sources_directory, SECOND_BEE_SOURCE, second)
+
+
+def test_a_kind_with_source_entries_gives_one_entry_per_source(database, sources_directory):
+    corpus_of_two_recordings(database, sources_directory)
+    data = build(database, sources_directory, kind=ENTRIES_KIND)
+    first, second = data["sources"]
+    assert first == {
+        "id": BEE_SOURCE,
+        "heading": "Kiln plans on the walk",
+        "recorded": "Sat 2026-10-03 09:14",
+        "sort": datetime.fromisoformat("2026-10-03T09:14:00-07:00").timestamp(),
+        "duration": "2 h 21 min",
+    }
+    assert second["id"] == SECOND_BEE_SOURCE and second["sort"] > first["sort"]
+    # every card sits under the entry of the source it is first heard in
+    assert {card["first"]["video_id"] for card in data["cards"]} == {BEE_SOURCE, SECOND_BEE_SOURCE}
+
+
+def test_a_source_with_no_heading_is_headed_by_its_time_and_id(database, sources_directory):
+    corpus_of_two_recordings(database, sources_directory)
+    second = build(database, sources_directory, kind=ENTRIES_KIND)["sources"][1]
+    assert second["heading"] == f"Sun 2026-10-04 18:02 · {SECOND_BEE_SOURCE}"
+    assert second["recorded"] == "Sun 2026-10-04 18:02" and second["duration"] == "45 s"
+
+
+def test_a_source_with_no_time_sorts_as_oldest_and_is_headed_by_its_id(database, sources_directory):
+    corpus_of_two_recordings(database, sources_directory)
+    Store(database).update_source(SECOND_BEE_SOURCE, {"published_at": "UNKNOWN"})
+    Store(database).update_source(SECOND_BEE_SOURCE, {"duration_seconds": None})
+    entry = next(
+        entry
+        for entry in build(database, sources_directory, kind=ENTRIES_KIND)["sources"]
+        if entry["id"] == SECOND_BEE_SOURCE
+    )
+    assert entry == {
+        "id": SECOND_BEE_SOURCE,
+        "heading": SECOND_BEE_SOURCE,
+        "recorded": "",
+        "sort": 0,
+        "duration": "",
+    }
+
+
+def test_a_source_with_no_card_has_no_entry_and_other_kinds_have_none(database, sources_directory):
+    corpus_of_two_recordings(database, sources_directory)
+    (sources_directory / SECOND_BEE_SOURCE / "transcript.json").write_text(
+        json.dumps(bee_transcript(ambiguities=[])), encoding="utf-8"
+    )
+    with_entries = build(database, sources_directory, kind=ENTRIES_KIND)
+    assert [entry["id"] for entry in with_entries["sources"]] == [BEE_SOURCE]
+    assert build(database, sources_directory)["sources"] == []  # a kind that keeps one list
+
+
+def test_the_page_carries_the_entry_controls(database, sources_directory):
+    corpus_of_two_recordings(database, sources_directory)
+    html = review_page.render(build(database, sources_directory, kind=ENTRIES_KIND))
+    assert 'id="heading-filter"' in html and 'id="sort"' in html and 'id="fold"' in html
