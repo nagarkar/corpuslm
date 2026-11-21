@@ -97,7 +97,13 @@ def load_credits() -> tuple[dict[str, str], str | None]:
     bad = sorted(key for key, value in data.items() if not isinstance(value, str))
     if bad:
         raise DocumentUnavailable(f"{path}: {', '.join(bad)} must be text")
-    return {key: value for key, value in data.items() if value.strip()}, None
+    credits = {key: value for key, value in data.items() if value.strip()}
+    if not credits:
+        return (
+            {},
+            f"the credits file at {path} is empty: the new manuscript has no author or narrator",
+        )
+    return credits, None
 
 
 class AuthorlmStore:

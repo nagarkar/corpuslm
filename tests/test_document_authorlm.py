@@ -181,9 +181,9 @@ class FakeAuthorlm:
 @pytest.fixture
 def real(tmp_path, monkeypatch):
     monkeypatch.setattr("corpuslm.document.FAKE_DIR", None)
-    blank = tmp_path / "blank-credits.toml"
-    blank.write_text("")
-    monkeypatch.setenv("CORPUSLM_DOCUMENT_CREDITS", str(blank))
+    filled = tmp_path / "filled-credits.toml"
+    filled.write_text(CREDITS)
+    monkeypatch.setenv("CORPUSLM_DOCUMENT_CREDITS", str(filled))
     fake = FakeAuthorlm(tmp_path)
     fake.install(monkeypatch)
     workspace = tmp_path / "ytlm-ws"
@@ -430,6 +430,18 @@ def test_no_credits_file_is_said_on_the_board(real, tmp_path, monkeypatch):
     store.ensure("dharma", book, "Dharma talks")
     assert "author" not in fake.manuscripts["dharma"]
     assert any("no credits file" in warning for warning in store.warnings)
+
+
+def test_an_empty_credits_file_is_said_on_the_board(real, tmp_path, monkeypatch):
+    fake, store, _ = real
+    credits = tmp_path / "credits.toml"
+    credits.write_text('author = ""\nnarrator = "  "\n')
+    monkeypatch.setenv("CORPUSLM_DOCUMENT_CREDITS", str(credits))
+    book = tmp_path / "book"
+    book.mkdir()
+    store.ensure("dharma", book, "Dharma talks")
+    assert "author" not in fake.manuscripts["dharma"]
+    assert any("is empty" in warning for warning in store.warnings)
 
 
 def test_a_mistyped_credit_is_declined_by_name(real, tmp_path, monkeypatch):
