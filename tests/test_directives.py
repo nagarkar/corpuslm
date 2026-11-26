@@ -164,6 +164,37 @@ def test_a_monologue_candidate_below_the_threshold_keeps_its_ordinary_kind(world
     assert out["cost_usd"] > 0  # the model read plus the three Jev questions
 
 
+@pytest.mark.parametrize(
+    ("probability", "expected_kind", "expected_directives"),
+    [(0.5999, "prediction", 0), (0.6, "directive", 1), (0.6001, "directive", 1)],
+)
+def test_directive_threshold_is_inclusive_and_uses_unrounded_probability(
+    world, monkeypatch, probability, expected_kind, expected_directives
+):
+    made = world.judge([])
+    monkeypatch.setattr(
+        judge.Judge,
+        "yes",
+        lambda *args, **kwargs: (probability, {"cost_usd": 0.0}),
+    )
+    claim = {
+        "kind": "directive",
+        "basis": "commitment",
+        "text": "Call Wren tomorrow.",
+        "heard": "I will call Wren tomorrow",
+        "else_kind": "prediction",
+    }
+    (kept,), stats = directives.gate(
+        made, [claim], form="monologue", threshold=0.6, tag_prefix="boundary"
+    )
+    assert kept["kind"] == expected_kind
+    assert (stats["asked"], stats["directives"], stats["demoted"]) == (
+        1,
+        expected_directives,
+        1 - expected_directives,
+    )
+
+
 def test_the_threshold_is_read_from_config(tmp_path):
     world = World(tmp_path, threshold=0.75)
     try:
