@@ -402,20 +402,7 @@ class _Parser(clikit.Parser):
         self.exit(1, f"error: {message}. Type '{PROG} help' for the verbs.\n")
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = _Parser(prog=PROG)
-    verbs = parser.add_subparsers(dest="verb", metavar="<verb>")
-
-    def leaf(group, name: str, help_text: str, key: str):
-        sub = group.add_parser(name, help=help_text)
-        clikit.describe(sub, *DESCRIPTIONS[key])
-        return sub
-
-    verbs_help = leaf(verbs, "help", "list the verbs, or show one verb's options", "help")
-    verbs_help.add_argument("topic", nargs="*", help="a verb, then its subverb")
-    doctor_parser = leaf(verbs, "doctor", "check a transcript database; changes nothing", "doctor")
-    doctor_parser.add_argument("database", metavar="DB_PATH", help="the transcript database file")
-    leaf(verbs, "completion", "print the bash completion script", "completion")
+def _add_review_parsers(verbs, leaf):
     review = verbs.add_parser("review", help="the review page: page, serve, apply, check")
     review_verbs = review.add_subparsers(dest="review_verb", metavar="<subverb>")
     for name, help_text in (
@@ -459,6 +446,23 @@ def build_parser() -> argparse.ArgumentParser:
     accept_parser.add_argument(
         "--dry-run", action="store_true", help="count and print; write nothing"
     )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = _Parser(prog=PROG)
+    verbs = parser.add_subparsers(dest="verb", metavar="<verb>")
+
+    def leaf(group, name: str, help_text: str, key: str):
+        sub = group.add_parser(name, help=help_text)
+        clikit.describe(sub, *DESCRIPTIONS[key])
+        return sub
+
+    verbs_help = leaf(verbs, "help", "list the verbs, or show one verb's options", "help")
+    verbs_help.add_argument("topic", nargs="*", help="a verb, then its subverb")
+    doctor_parser = leaf(verbs, "doctor", "check a transcript database; changes nothing", "doctor")
+    doctor_parser.add_argument("database", metavar="DB_PATH", help="the transcript database file")
+    leaf(verbs, "completion", "print the bash completion script", "completion")
+    _add_review_parsers(verbs, leaf)
     suggestions = verbs.add_parser("suggestions", help="the model's recorded suggestions: record")
     suggestions_verbs = suggestions.add_subparsers(dest="suggestions_verb", metavar="<subverb>")
     record_parser = leaf(
