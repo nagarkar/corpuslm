@@ -57,6 +57,47 @@ def run(capsys, *argv):
     return code, json.loads(capsys.readouterr().out)
 
 
+@pytest.mark.parametrize(
+    ("verb", "options", "expected"),
+    [
+        ("page", [], {"out": None, "dry_run": False}),
+        ("page", ["--out", "page.html", "--dry-run"], {"out": "page.html", "dry_run": True}),
+        ("serve", [], {"port": None, "dry_run": False}),
+        ("serve", ["--port", "8799", "--dry-run"], {"port": 8799, "dry_run": True}),
+        ("apply", [], {"kind": None, "dry_run": False}),
+        ("apply", ["--kind", "bee", "--dry-run"], {"kind": "bee", "dry_run": True}),
+        ("check", [], {}),
+        (
+            "accept-suggestions",
+            ["--kind", "bee", "--before", "2026-10-01", "--dry-run"],
+            {"kind": "bee", "before": "2026-10-01", "dry_run": True},
+        ),
+    ],
+)
+def test_review_parser_options(verb, options, expected):
+    args = cli.build_parser().parse_args(["review", verb, "--config", "review.toml", *options])
+    assert (args.verb, args.review_verb, args.config) == ("review", verb, "review.toml")
+    assert {key: getattr(args, key) for key in expected} == expected
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["page"],
+        ["serve"],
+        ["apply"],
+        ["check"],
+        ["accept-suggestions", "--kind", "bee", "--before", "2026-10-01"],
+        ["accept-suggestions", "--config", "review.toml", "--before", "2026-10-01"],
+        ["accept-suggestions", "--config", "review.toml", "--kind", "bee"],
+    ],
+)
+def test_review_parser_requires_arguments(arguments):
+    with pytest.raises(SystemExit) as stopped:
+        cli.build_parser().parse_args(["review", *arguments])
+    assert stopped.value.code == 1
+
+
 def test_review_page_writes_one_page_of_every_kind_and_dry_run_writes_nothing(
     config, tmp_path, capsys
 ):
