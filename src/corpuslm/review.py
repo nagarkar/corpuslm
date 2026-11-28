@@ -99,6 +99,10 @@ class ReviewKind:
     # `corpuslm review apply` lands the kind's answers only where the tool registered a rebuilder
     # (`corpuslm.review_rebuilders`); otherwise it leaves them unlanded and names this verb.
     rebuilt_by: str = ""
+    # True when the review page shows each source of this kind as an entry of its own (its
+    # heading, when it was recorded, its length) with its cards under it, sorted by date and
+    # filtered by heading text; False keeps the corpus one list of cards.
+    source_entries: bool = False
 
 
 def item_pattern(review_key_prefix: str = "spk") -> re.Pattern[str]:
