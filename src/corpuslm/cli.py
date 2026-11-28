@@ -1059,6 +1059,12 @@ def report_next(setups: dict, left: dict[str, int]) -> str:
 def review_accept_suggestions_board(
     settings: ReviewSettings, kind: str, before: str, dry_run: bool
 ) -> dict:
+    """Save recorded suggestions as review answers for ``kind`` before ``before``.
+
+    Use ``settings`` for the database and return counts and next steps in a
+    dictionary; ``dry_run`` previews without writing, and saved answers still need
+    ``review apply``.
+    """
     setups = kind_setups(settings)
     if kind not in setups:
         raise SettingsError(
